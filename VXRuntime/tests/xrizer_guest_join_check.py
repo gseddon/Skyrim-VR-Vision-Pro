@@ -43,7 +43,7 @@ def main():
     text = (out / 'runtime.log').read_text()
     assert rc == 0, f'joined xrizer guest failed: {rc}'
     assert 'xrizer_guest_join: actual provider Init0/System019 matrices/empty-frame cancellation -> ok' in text, 'missing guest verdict'
-    assert 'xrizer_guest_join: actual native Init return 0' in text, 'missing native initialization'
+    assert 'xrizer_guest_bridge: actual native Init return 0' in text, 'missing native initialization'
     for name in ['IVRSystem_019', 'IVRCompositor_022', 'FnTable:IVRSystem_019']:
         assert re.search(r'actual native interface ' + re.escape(name) + r' pointer 0x[0-9a-f]+ error 0', text), f'missing actual interface {name}'
     assert 'native stats waits 0 publishes 0 cancels 0' in text, 'refused poses acquired a frame'
