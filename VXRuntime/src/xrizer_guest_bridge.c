@@ -31,151 +31,158 @@ static int initialized, cleaned, consumed;
 
 static void require(int ok) { if (!ok) { vx_log("xrizer_guest_bridge: invalid fixture state/argument"); abort(); } }
 static void **native_table(guest_object *self) { require(self && self->native); return *(void ***)self->native; }
-static WINAPI void unsupported_core_0(void) { vx_log("xrizer_guest_bridge: unsupported IVRClientCore_003 slot 0"); abort(); }
-static WINAPI void unsupported_core_1(void) { vx_log("xrizer_guest_bridge: unsupported IVRClientCore_003 slot 1"); abort(); }
-static WINAPI void unsupported_core_2(void) { vx_log("xrizer_guest_bridge: unsupported IVRClientCore_003 slot 2"); abort(); }
-static WINAPI void unsupported_core_3(void) { vx_log("xrizer_guest_bridge: unsupported IVRClientCore_003 slot 3"); abort(); }
-static WINAPI void unsupported_core_4(void) { vx_log("xrizer_guest_bridge: unsupported IVRClientCore_003 slot 4"); abort(); }
-static WINAPI void unsupported_core_5(void) { vx_log("xrizer_guest_bridge: unsupported IVRClientCore_003 slot 5"); abort(); }
-static WINAPI void unsupported_core_6(void) { vx_log("xrizer_guest_bridge: unsupported IVRClientCore_003 slot 6"); abort(); }
-static WINAPI void unsupported_system_0(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 0"); abort(); }
-static WINAPI void unsupported_system_1(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 1"); abort(); }
-static WINAPI void unsupported_system_2(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 2"); abort(); }
-static WINAPI void unsupported_system_3(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 3"); abort(); }
-static WINAPI void unsupported_system_4(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 4"); abort(); }
-static WINAPI void unsupported_system_5(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 5"); abort(); }
-static WINAPI void unsupported_system_6(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 6"); abort(); }
-static WINAPI void unsupported_system_7(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 7"); abort(); }
-static WINAPI void unsupported_system_8(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 8"); abort(); }
-static WINAPI void unsupported_system_9(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 9"); abort(); }
-static WINAPI void unsupported_system_10(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 10"); abort(); }
-static WINAPI void unsupported_system_11(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 11"); abort(); }
-static WINAPI void unsupported_system_12(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 12"); abort(); }
-static WINAPI void unsupported_system_13(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 13"); abort(); }
-static WINAPI void unsupported_system_14(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 14"); abort(); }
-static WINAPI void unsupported_system_15(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 15"); abort(); }
-static WINAPI void unsupported_system_16(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 16"); abort(); }
-static WINAPI void unsupported_system_17(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 17"); abort(); }
-static WINAPI void unsupported_system_18(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 18"); abort(); }
-static WINAPI void unsupported_system_19(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 19"); abort(); }
-static WINAPI void unsupported_system_20(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 20"); abort(); }
-static WINAPI void unsupported_system_21(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 21"); abort(); }
-static WINAPI void unsupported_system_22(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 22"); abort(); }
-static WINAPI void unsupported_system_23(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 23"); abort(); }
-static WINAPI void unsupported_system_24(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 24"); abort(); }
-static WINAPI void unsupported_system_25(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 25"); abort(); }
-static WINAPI void unsupported_system_26(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 26"); abort(); }
-static WINAPI void unsupported_system_27(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 27"); abort(); }
-static WINAPI void unsupported_system_28(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 28"); abort(); }
-static WINAPI void unsupported_system_29(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 29"); abort(); }
-static WINAPI void unsupported_system_30(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 30"); abort(); }
-static WINAPI void unsupported_system_31(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 31"); abort(); }
-static WINAPI void unsupported_system_32(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 32"); abort(); }
-static WINAPI void unsupported_system_33(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 33"); abort(); }
-static WINAPI void unsupported_system_34(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 34"); abort(); }
-static WINAPI void unsupported_system_35(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 35"); abort(); }
-static WINAPI void unsupported_system_36(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 36"); abort(); }
-static WINAPI void unsupported_system_37(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 37"); abort(); }
-static WINAPI void unsupported_system_38(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 38"); abort(); }
-static WINAPI void unsupported_system_39(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 39"); abort(); }
-static WINAPI void unsupported_system_40(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 40"); abort(); }
-static WINAPI void unsupported_system_41(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 41"); abort(); }
-static WINAPI void unsupported_system_42(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 42"); abort(); }
-static WINAPI void unsupported_system_43(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 43"); abort(); }
-static WINAPI void unsupported_system_44(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 44"); abort(); }
-static WINAPI void unsupported_system_45(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 45"); abort(); }
-static WINAPI void unsupported_system_46(void) { vx_log("xrizer_guest_bridge: unsupported IVRSystem_019 slot 46"); abort(); }
-static WINAPI void unsupported_compositor_0(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 0"); abort(); }
-static WINAPI void unsupported_compositor_1(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 1"); abort(); }
-static WINAPI void unsupported_compositor_2(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 2"); abort(); }
-static WINAPI void unsupported_compositor_3(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 3"); abort(); }
-static WINAPI void unsupported_compositor_4(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 4"); abort(); }
-static WINAPI void unsupported_compositor_5(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 5"); abort(); }
-static WINAPI void unsupported_compositor_6(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 6"); abort(); }
-static WINAPI void unsupported_compositor_7(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 7"); abort(); }
-static WINAPI void unsupported_compositor_8(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 8"); abort(); }
-static WINAPI void unsupported_compositor_9(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 9"); abort(); }
-static WINAPI void unsupported_compositor_10(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 10"); abort(); }
-static WINAPI void unsupported_compositor_11(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 11"); abort(); }
-static WINAPI void unsupported_compositor_12(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 12"); abort(); }
-static WINAPI void unsupported_compositor_13(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 13"); abort(); }
-static WINAPI void unsupported_compositor_14(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 14"); abort(); }
-static WINAPI void unsupported_compositor_15(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 15"); abort(); }
-static WINAPI void unsupported_compositor_16(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 16"); abort(); }
-static WINAPI void unsupported_compositor_17(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 17"); abort(); }
-static WINAPI void unsupported_compositor_18(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 18"); abort(); }
-static WINAPI void unsupported_compositor_19(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 19"); abort(); }
-static WINAPI void unsupported_compositor_20(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 20"); abort(); }
-static WINAPI void unsupported_compositor_21(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 21"); abort(); }
-static WINAPI void unsupported_compositor_22(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 22"); abort(); }
-static WINAPI void unsupported_compositor_23(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 23"); abort(); }
-static WINAPI void unsupported_compositor_24(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 24"); abort(); }
-static WINAPI void unsupported_compositor_25(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 25"); abort(); }
-static WINAPI void unsupported_compositor_26(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 26"); abort(); }
-static WINAPI void unsupported_compositor_27(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 27"); abort(); }
-static WINAPI void unsupported_compositor_28(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 28"); abort(); }
-static WINAPI void unsupported_compositor_29(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 29"); abort(); }
-static WINAPI void unsupported_compositor_30(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 30"); abort(); }
-static WINAPI void unsupported_compositor_31(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 31"); abort(); }
-static WINAPI void unsupported_compositor_32(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 32"); abort(); }
-static WINAPI void unsupported_compositor_33(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 33"); abort(); }
-static WINAPI void unsupported_compositor_34(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 34"); abort(); }
-static WINAPI void unsupported_compositor_35(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 35"); abort(); }
-static WINAPI void unsupported_compositor_36(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 36"); abort(); }
-static WINAPI void unsupported_compositor_37(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 37"); abort(); }
-static WINAPI void unsupported_compositor_38(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 38"); abort(); }
-static WINAPI void unsupported_compositor_39(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 39"); abort(); }
-static WINAPI void unsupported_compositor_40(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 40"); abort(); }
-static WINAPI void unsupported_compositor_41(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 41"); abort(); }
-static WINAPI void unsupported_compositor_42(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 42"); abort(); }
-static WINAPI void unsupported_compositor_43(void) { vx_log("xrizer_guest_bridge: unsupported IVRCompositor_022 slot 43"); abort(); }
-static WINAPI void unsupported_fns_0(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 0"); abort(); }
-static WINAPI void unsupported_fns_1(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 1"); abort(); }
-static WINAPI void unsupported_fns_2(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 2"); abort(); }
-static WINAPI void unsupported_fns_3(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 3"); abort(); }
-static WINAPI void unsupported_fns_4(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 4"); abort(); }
-static WINAPI void unsupported_fns_5(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 5"); abort(); }
-static WINAPI void unsupported_fns_6(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 6"); abort(); }
-static WINAPI void unsupported_fns_7(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 7"); abort(); }
-static WINAPI void unsupported_fns_8(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 8"); abort(); }
-static WINAPI void unsupported_fns_9(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 9"); abort(); }
-static WINAPI void unsupported_fns_10(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 10"); abort(); }
-static WINAPI void unsupported_fns_11(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 11"); abort(); }
-static WINAPI void unsupported_fns_12(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 12"); abort(); }
-static WINAPI void unsupported_fns_13(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 13"); abort(); }
-static WINAPI void unsupported_fns_14(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 14"); abort(); }
-static WINAPI void unsupported_fns_15(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 15"); abort(); }
-static WINAPI void unsupported_fns_16(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 16"); abort(); }
-static WINAPI void unsupported_fns_17(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 17"); abort(); }
-static WINAPI void unsupported_fns_18(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 18"); abort(); }
-static WINAPI void unsupported_fns_19(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 19"); abort(); }
-static WINAPI void unsupported_fns_20(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 20"); abort(); }
-static WINAPI void unsupported_fns_21(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 21"); abort(); }
-static WINAPI void unsupported_fns_22(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 22"); abort(); }
-static WINAPI void unsupported_fns_23(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 23"); abort(); }
-static WINAPI void unsupported_fns_24(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 24"); abort(); }
-static WINAPI void unsupported_fns_25(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 25"); abort(); }
-static WINAPI void unsupported_fns_26(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 26"); abort(); }
-static WINAPI void unsupported_fns_27(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 27"); abort(); }
-static WINAPI void unsupported_fns_28(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 28"); abort(); }
-static WINAPI void unsupported_fns_29(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 29"); abort(); }
-static WINAPI void unsupported_fns_30(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 30"); abort(); }
-static WINAPI void unsupported_fns_31(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 31"); abort(); }
-static WINAPI void unsupported_fns_32(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 32"); abort(); }
-static WINAPI void unsupported_fns_33(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 33"); abort(); }
-static WINAPI void unsupported_fns_34(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 34"); abort(); }
-static WINAPI void unsupported_fns_35(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 35"); abort(); }
-static WINAPI void unsupported_fns_36(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 36"); abort(); }
-static WINAPI void unsupported_fns_37(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 37"); abort(); }
-static WINAPI void unsupported_fns_38(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 38"); abort(); }
-static WINAPI void unsupported_fns_39(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 39"); abort(); }
-static WINAPI void unsupported_fns_40(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 40"); abort(); }
-static WINAPI void unsupported_fns_41(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 41"); abort(); }
-static WINAPI void unsupported_fns_42(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 42"); abort(); }
-static WINAPI void unsupported_fns_43(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 43"); abort(); }
-static WINAPI void unsupported_fns_44(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 44"); abort(); }
-static WINAPI void unsupported_fns_45(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 45"); abort(); }
-static WINAPI void unsupported_fns_46(void) { vx_log("xrizer_guest_bridge: unsupported FnTable:IVRSystem_019 slot 46"); abort(); }
+static void unsupported_slot(const char *interface, unsigned slot) {
+    vx_log("xrizer_guest_bridge: unsupported %s slot %u", interface, slot);
+#ifdef __aarch64__
+    { void xa_report(void); xa_report(); }
+#endif
+    abort();
+}
+static WINAPI void unsupported_core_0(void) { unsupported_slot("IVRClientCore_003", 0); }
+static WINAPI void unsupported_core_1(void) { unsupported_slot("IVRClientCore_003", 1); }
+static WINAPI void unsupported_core_2(void) { unsupported_slot("IVRClientCore_003", 2); }
+static WINAPI void unsupported_core_3(void) { unsupported_slot("IVRClientCore_003", 3); }
+static WINAPI void unsupported_core_4(void) { unsupported_slot("IVRClientCore_003", 4); }
+static WINAPI void unsupported_core_5(void) { unsupported_slot("IVRClientCore_003", 5); }
+static WINAPI void unsupported_core_6(void) { unsupported_slot("IVRClientCore_003", 6); }
+static WINAPI void unsupported_system_0(void) { unsupported_slot("IVRSystem_019", 0); }
+static WINAPI void unsupported_system_1(void) { unsupported_slot("IVRSystem_019", 1); }
+static WINAPI void unsupported_system_2(void) { unsupported_slot("IVRSystem_019", 2); }
+static WINAPI void unsupported_system_3(void) { unsupported_slot("IVRSystem_019", 3); }
+static WINAPI void unsupported_system_4(void) { unsupported_slot("IVRSystem_019", 4); }
+static WINAPI void unsupported_system_5(void) { unsupported_slot("IVRSystem_019", 5); }
+static WINAPI void unsupported_system_6(void) { unsupported_slot("IVRSystem_019", 6); }
+static WINAPI void unsupported_system_7(void) { unsupported_slot("IVRSystem_019", 7); }
+static WINAPI void unsupported_system_8(void) { unsupported_slot("IVRSystem_019", 8); }
+static WINAPI void unsupported_system_9(void) { unsupported_slot("IVRSystem_019", 9); }
+static WINAPI void unsupported_system_10(void) { unsupported_slot("IVRSystem_019", 10); }
+static WINAPI void unsupported_system_11(void) { unsupported_slot("IVRSystem_019", 11); }
+static WINAPI void unsupported_system_12(void) { unsupported_slot("IVRSystem_019", 12); }
+static WINAPI void unsupported_system_13(void) { unsupported_slot("IVRSystem_019", 13); }
+static WINAPI void unsupported_system_14(void) { unsupported_slot("IVRSystem_019", 14); }
+static WINAPI void unsupported_system_15(void) { unsupported_slot("IVRSystem_019", 15); }
+static WINAPI void unsupported_system_16(void) { unsupported_slot("IVRSystem_019", 16); }
+static WINAPI void unsupported_system_17(void) { unsupported_slot("IVRSystem_019", 17); }
+static WINAPI void unsupported_system_18(void) { unsupported_slot("IVRSystem_019", 18); }
+static WINAPI void unsupported_system_19(void) { unsupported_slot("IVRSystem_019", 19); }
+static WINAPI void unsupported_system_20(void) { unsupported_slot("IVRSystem_019", 20); }
+static WINAPI void unsupported_system_21(void) { unsupported_slot("IVRSystem_019", 21); }
+static WINAPI void unsupported_system_22(void) { unsupported_slot("IVRSystem_019", 22); }
+static WINAPI void unsupported_system_23(void) { unsupported_slot("IVRSystem_019", 23); }
+static WINAPI void unsupported_system_24(void) { unsupported_slot("IVRSystem_019", 24); }
+static WINAPI void unsupported_system_25(void) { unsupported_slot("IVRSystem_019", 25); }
+static WINAPI void unsupported_system_26(void) { unsupported_slot("IVRSystem_019", 26); }
+static WINAPI void unsupported_system_27(void) { unsupported_slot("IVRSystem_019", 27); }
+static WINAPI void unsupported_system_28(void) { unsupported_slot("IVRSystem_019", 28); }
+static WINAPI void unsupported_system_29(void) { unsupported_slot("IVRSystem_019", 29); }
+static WINAPI void unsupported_system_30(void) { unsupported_slot("IVRSystem_019", 30); }
+static WINAPI void unsupported_system_31(void) { unsupported_slot("IVRSystem_019", 31); }
+static WINAPI void unsupported_system_32(void) { unsupported_slot("IVRSystem_019", 32); }
+static WINAPI void unsupported_system_33(void) { unsupported_slot("IVRSystem_019", 33); }
+static WINAPI void unsupported_system_34(void) { unsupported_slot("IVRSystem_019", 34); }
+static WINAPI void unsupported_system_35(void) { unsupported_slot("IVRSystem_019", 35); }
+static WINAPI void unsupported_system_36(void) { unsupported_slot("IVRSystem_019", 36); }
+static WINAPI void unsupported_system_37(void) { unsupported_slot("IVRSystem_019", 37); }
+static WINAPI void unsupported_system_38(void) { unsupported_slot("IVRSystem_019", 38); }
+static WINAPI void unsupported_system_39(void) { unsupported_slot("IVRSystem_019", 39); }
+static WINAPI void unsupported_system_40(void) { unsupported_slot("IVRSystem_019", 40); }
+static WINAPI void unsupported_system_41(void) { unsupported_slot("IVRSystem_019", 41); }
+static WINAPI void unsupported_system_42(void) { unsupported_slot("IVRSystem_019", 42); }
+static WINAPI void unsupported_system_43(void) { unsupported_slot("IVRSystem_019", 43); }
+static WINAPI void unsupported_system_44(void) { unsupported_slot("IVRSystem_019", 44); }
+static WINAPI void unsupported_system_45(void) { unsupported_slot("IVRSystem_019", 45); }
+static WINAPI void unsupported_system_46(void) { unsupported_slot("IVRSystem_019", 46); }
+static WINAPI void unsupported_compositor_0(void) { unsupported_slot("IVRCompositor_022", 0); }
+static WINAPI void unsupported_compositor_1(void) { unsupported_slot("IVRCompositor_022", 1); }
+static WINAPI void unsupported_compositor_2(void) { unsupported_slot("IVRCompositor_022", 2); }
+static WINAPI void unsupported_compositor_3(void) { unsupported_slot("IVRCompositor_022", 3); }
+static WINAPI void unsupported_compositor_4(void) { unsupported_slot("IVRCompositor_022", 4); }
+static WINAPI void unsupported_compositor_5(void) { unsupported_slot("IVRCompositor_022", 5); }
+static WINAPI void unsupported_compositor_6(void) { unsupported_slot("IVRCompositor_022", 6); }
+static WINAPI void unsupported_compositor_7(void) { unsupported_slot("IVRCompositor_022", 7); }
+static WINAPI void unsupported_compositor_8(void) { unsupported_slot("IVRCompositor_022", 8); }
+static WINAPI void unsupported_compositor_9(void) { unsupported_slot("IVRCompositor_022", 9); }
+static WINAPI void unsupported_compositor_10(void) { unsupported_slot("IVRCompositor_022", 10); }
+static WINAPI void unsupported_compositor_11(void) { unsupported_slot("IVRCompositor_022", 11); }
+static WINAPI void unsupported_compositor_12(void) { unsupported_slot("IVRCompositor_022", 12); }
+static WINAPI void unsupported_compositor_13(void) { unsupported_slot("IVRCompositor_022", 13); }
+static WINAPI void unsupported_compositor_14(void) { unsupported_slot("IVRCompositor_022", 14); }
+static WINAPI void unsupported_compositor_15(void) { unsupported_slot("IVRCompositor_022", 15); }
+static WINAPI void unsupported_compositor_16(void) { unsupported_slot("IVRCompositor_022", 16); }
+static WINAPI void unsupported_compositor_17(void) { unsupported_slot("IVRCompositor_022", 17); }
+static WINAPI void unsupported_compositor_18(void) { unsupported_slot("IVRCompositor_022", 18); }
+static WINAPI void unsupported_compositor_19(void) { unsupported_slot("IVRCompositor_022", 19); }
+static WINAPI void unsupported_compositor_20(void) { unsupported_slot("IVRCompositor_022", 20); }
+static WINAPI void unsupported_compositor_21(void) { unsupported_slot("IVRCompositor_022", 21); }
+static WINAPI void unsupported_compositor_22(void) { unsupported_slot("IVRCompositor_022", 22); }
+static WINAPI void unsupported_compositor_23(void) { unsupported_slot("IVRCompositor_022", 23); }
+static WINAPI void unsupported_compositor_24(void) { unsupported_slot("IVRCompositor_022", 24); }
+static WINAPI void unsupported_compositor_25(void) { unsupported_slot("IVRCompositor_022", 25); }
+static WINAPI void unsupported_compositor_26(void) { unsupported_slot("IVRCompositor_022", 26); }
+static WINAPI void unsupported_compositor_27(void) { unsupported_slot("IVRCompositor_022", 27); }
+static WINAPI void unsupported_compositor_28(void) { unsupported_slot("IVRCompositor_022", 28); }
+static WINAPI void unsupported_compositor_29(void) { unsupported_slot("IVRCompositor_022", 29); }
+static WINAPI void unsupported_compositor_30(void) { unsupported_slot("IVRCompositor_022", 30); }
+static WINAPI void unsupported_compositor_31(void) { unsupported_slot("IVRCompositor_022", 31); }
+static WINAPI void unsupported_compositor_32(void) { unsupported_slot("IVRCompositor_022", 32); }
+static WINAPI void unsupported_compositor_33(void) { unsupported_slot("IVRCompositor_022", 33); }
+static WINAPI void unsupported_compositor_34(void) { unsupported_slot("IVRCompositor_022", 34); }
+static WINAPI void unsupported_compositor_35(void) { unsupported_slot("IVRCompositor_022", 35); }
+static WINAPI void unsupported_compositor_36(void) { unsupported_slot("IVRCompositor_022", 36); }
+static WINAPI void unsupported_compositor_37(void) { unsupported_slot("IVRCompositor_022", 37); }
+static WINAPI void unsupported_compositor_38(void) { unsupported_slot("IVRCompositor_022", 38); }
+static WINAPI void unsupported_compositor_39(void) { unsupported_slot("IVRCompositor_022", 39); }
+static WINAPI void unsupported_compositor_40(void) { unsupported_slot("IVRCompositor_022", 40); }
+static WINAPI void unsupported_compositor_41(void) { unsupported_slot("IVRCompositor_022", 41); }
+static WINAPI void unsupported_compositor_42(void) { unsupported_slot("IVRCompositor_022", 42); }
+static WINAPI void unsupported_compositor_43(void) { unsupported_slot("IVRCompositor_022", 43); }
+static WINAPI void unsupported_fns_0(void) { unsupported_slot("FnTable:IVRSystem_019", 0); }
+static WINAPI void unsupported_fns_1(void) { unsupported_slot("FnTable:IVRSystem_019", 1); }
+static WINAPI void unsupported_fns_2(void) { unsupported_slot("FnTable:IVRSystem_019", 2); }
+static WINAPI void unsupported_fns_3(void) { unsupported_slot("FnTable:IVRSystem_019", 3); }
+static WINAPI void unsupported_fns_4(void) { unsupported_slot("FnTable:IVRSystem_019", 4); }
+static WINAPI void unsupported_fns_5(void) { unsupported_slot("FnTable:IVRSystem_019", 5); }
+static WINAPI void unsupported_fns_6(void) { unsupported_slot("FnTable:IVRSystem_019", 6); }
+static WINAPI void unsupported_fns_7(void) { unsupported_slot("FnTable:IVRSystem_019", 7); }
+static WINAPI void unsupported_fns_8(void) { unsupported_slot("FnTable:IVRSystem_019", 8); }
+static WINAPI void unsupported_fns_9(void) { unsupported_slot("FnTable:IVRSystem_019", 9); }
+static WINAPI void unsupported_fns_10(void) { unsupported_slot("FnTable:IVRSystem_019", 10); }
+static WINAPI void unsupported_fns_11(void) { unsupported_slot("FnTable:IVRSystem_019", 11); }
+static WINAPI void unsupported_fns_12(void) { unsupported_slot("FnTable:IVRSystem_019", 12); }
+static WINAPI void unsupported_fns_13(void) { unsupported_slot("FnTable:IVRSystem_019", 13); }
+static WINAPI void unsupported_fns_14(void) { unsupported_slot("FnTable:IVRSystem_019", 14); }
+static WINAPI void unsupported_fns_15(void) { unsupported_slot("FnTable:IVRSystem_019", 15); }
+static WINAPI void unsupported_fns_16(void) { unsupported_slot("FnTable:IVRSystem_019", 16); }
+static WINAPI void unsupported_fns_17(void) { unsupported_slot("FnTable:IVRSystem_019", 17); }
+static WINAPI void unsupported_fns_18(void) { unsupported_slot("FnTable:IVRSystem_019", 18); }
+static WINAPI void unsupported_fns_19(void) { unsupported_slot("FnTable:IVRSystem_019", 19); }
+static WINAPI void unsupported_fns_20(void) { unsupported_slot("FnTable:IVRSystem_019", 20); }
+static WINAPI void unsupported_fns_21(void) { unsupported_slot("FnTable:IVRSystem_019", 21); }
+static WINAPI void unsupported_fns_22(void) { unsupported_slot("FnTable:IVRSystem_019", 22); }
+static WINAPI void unsupported_fns_23(void) { unsupported_slot("FnTable:IVRSystem_019", 23); }
+static WINAPI void unsupported_fns_24(void) { unsupported_slot("FnTable:IVRSystem_019", 24); }
+static WINAPI void unsupported_fns_25(void) { unsupported_slot("FnTable:IVRSystem_019", 25); }
+static WINAPI void unsupported_fns_26(void) { unsupported_slot("FnTable:IVRSystem_019", 26); }
+static WINAPI void unsupported_fns_27(void) { unsupported_slot("FnTable:IVRSystem_019", 27); }
+static WINAPI void unsupported_fns_28(void) { unsupported_slot("FnTable:IVRSystem_019", 28); }
+static WINAPI void unsupported_fns_29(void) { unsupported_slot("FnTable:IVRSystem_019", 29); }
+static WINAPI void unsupported_fns_30(void) { unsupported_slot("FnTable:IVRSystem_019", 30); }
+static WINAPI void unsupported_fns_31(void) { unsupported_slot("FnTable:IVRSystem_019", 31); }
+static WINAPI void unsupported_fns_32(void) { unsupported_slot("FnTable:IVRSystem_019", 32); }
+static WINAPI void unsupported_fns_33(void) { unsupported_slot("FnTable:IVRSystem_019", 33); }
+static WINAPI void unsupported_fns_34(void) { unsupported_slot("FnTable:IVRSystem_019", 34); }
+static WINAPI void unsupported_fns_35(void) { unsupported_slot("FnTable:IVRSystem_019", 35); }
+static WINAPI void unsupported_fns_36(void) { unsupported_slot("FnTable:IVRSystem_019", 36); }
+static WINAPI void unsupported_fns_37(void) { unsupported_slot("FnTable:IVRSystem_019", 37); }
+static WINAPI void unsupported_fns_38(void) { unsupported_slot("FnTable:IVRSystem_019", 38); }
+static WINAPI void unsupported_fns_39(void) { unsupported_slot("FnTable:IVRSystem_019", 39); }
+static WINAPI void unsupported_fns_40(void) { unsupported_slot("FnTable:IVRSystem_019", 40); }
+static WINAPI void unsupported_fns_41(void) { unsupported_slot("FnTable:IVRSystem_019", 41); }
+static WINAPI void unsupported_fns_42(void) { unsupported_slot("FnTable:IVRSystem_019", 42); }
+static WINAPI void unsupported_fns_43(void) { unsupported_slot("FnTable:IVRSystem_019", 43); }
+static WINAPI void unsupported_fns_44(void) { unsupported_slot("FnTable:IVRSystem_019", 44); }
+static WINAPI void unsupported_fns_45(void) { unsupported_slot("FnTable:IVRSystem_019", 45); }
+static WINAPI void unsupported_fns_46(void) { unsupported_slot("FnTable:IVRSystem_019", 46); }
 static WINAPI int core_init(guest_object *self, int type, const char *startup) {
     require(self == &core && !initialized);
     native_init_fn fn = (native_init_fn)native_table(self)[0];
