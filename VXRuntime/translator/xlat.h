@@ -77,6 +77,8 @@ typedef struct {
     int lazy_flags;              // xlat_block_linked: the engine has a pending-flags stub (XR_FLAGS sites call it)
     int lazy_record;             //   this instruction's flags are recorded, not computed (flags_arith)
     int lazy_done;               //   (flags_arith did record them)
+    uint64_t refused_rip;        // linked-block failure location, valid only on refusal
+    const char *refused_reason;  // decode, control, or instruction; static storage
     int aot;                     // made ahead of time (translator/aot.c): host addresses as XR_ABS sites, not immediates
     int (*plain)(uint64_t rip);  // aot: instructions whose ordered access may cross 16 bytes (a profile, VXRT_AOT_SPLITS):
     uint64_t cur_rip;            //   DMB, a plain access, DMB, as the engine patches them (LDAPR / STLR fault there)
