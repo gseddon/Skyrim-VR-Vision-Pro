@@ -145,6 +145,14 @@ def capture(args):
         for path in (root, overlay, temp):
             path.mkdir()
         env = {k: v for k, v in os.environ.items() if not k.startswith(('VXRT_', 'VERANTYX_'))}
+        if getattr(args, 'experimental_xrizer', False):
+            env = {k: v for k, v in env.items() if not k.startswith('XDG_')}
+            for kind in ('STATE', 'CONFIG', 'CACHE', 'DATA'):
+                path = out / 'xdg' / kind.lower()
+                path.mkdir(parents=True, mode=0o700)
+                env[f'XDG_{kind}_HOME'] = str(path)
+            env['VXRT_XRIZER_OPENVR'] = '1'
+            result.setdefault('diagnostic', {})['experimental_xrizer'] = 'development host; injected head and disconnected controllers'
         env.update(VXRT_ROOT=str(root), VXRT_OVERLAY=f'{source}:{overlay}', VXRT_AOT_DIR=str(directory),
                    VXRT_AOT_STRICT='1', VXRT_NO_WINE='1', VXRT_STEAM_BRIDGE='0', VXRT_MESSAGEBOX='auto',
                    VXRT_NO_ACTIVATE='1', VXRT_MUTE='1', VERANTYX_AUDIO='0', TMPDIR=str(temp),
@@ -170,7 +178,7 @@ def capture(args):
                                    modules=[dict(path=str(p), sha256=digest(p)) for p in modules],
                                    read_only_inputs=input_hashes)
         cmd = ['/usr/bin/arch', '-arm64', str(runtime), str(exe)]
-        result.update(command=cmd, cwd=str(assets), environment={k:v for k,v in env.items() if k.startswith(('VXRT_', 'VERANTYX_')) or k=='TMPDIR'}, timeout_seconds=args.seconds)
+        result.update(command=cmd, cwd=str(assets), environment={k:v for k,v in env.items() if k.startswith(('VXRT_', 'VERANTYX_')) or k=='TMPDIR' or (getattr(args, 'experimental_xrizer', False) and k.startswith('XDG_'))}, timeout_seconds=args.seconds)
         log = out/'startup.log'
         timed_out = False
         with log.open('wb') as f:
@@ -213,6 +221,7 @@ def main():
     ap.add_argument('--out'); ap.add_argument('--seconds', type=float, default=20)
     ap.add_argument('--callback-depth-limit', type=int, help='diagnostic only: stop at nested callback depth 2..256')
     ap.add_argument('--trace-openvr-init', action='store_true', help='diagnostic only: transparently log real OpenVR initialization results')
+    ap.add_argument('--experimental-xrizer', action='store_true', help='select experimental native xrizer development host; requires a configured runtime')
     ap.add_argument('--validate', metavar='RESULT_JSON')
     args = ap.parse_args()
     try:
