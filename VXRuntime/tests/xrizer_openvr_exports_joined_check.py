@@ -46,6 +46,8 @@ def main():
         'real_compositor':bool(re.search(r'actual native interface IVRCompositor_022 pointer 0x[0-9a-f]+ error 0',log)),
         'development_label':'xrizer dev host: offscreen synthetic stationary head, disconnected controllers, 1024x1024' in log,
         'standing_cancel': log.count('xrizer dev host: cancelled frame 1 pose 1') == 1,
+        'actual_game_query': 'xrizer_guest_bridge: System019 slot28 device 0 property 1000 capacity 256 result 0 error 4' in log,
+        'property_controls': all(x in log for x in ('device 0 property 1002 capacity 0 result 10 error 3', 'device 0 property 1002 capacity 9 result 10 error 3', 'device 0 property 1002 capacity 10 result 10 error 0', 'device 0 property 1002 capacity 10 result 10 error -1', 'device 17 property 1002 capacity 10 result 0 error 5')),
         'two_pixels': bool(re.search(r'xrizer dev audit: pair frame 2 pose 2 variant 0 pixels match',log)) and bool(re.search(r'xrizer dev audit: pair frame 3 pose 3 variant 1 pixels match',log)),
         'normal_consumption': all(f'xrizer dev host: offscreen fresh pair frame {n} pose {n} (4x3, 4x3), no display' in log for n in (2,3)),
         'leases_and_drain': bool(re.search(r'xrizer dev audit: drained pairs 2 reader leases 2/2 source leases (\d+)/\1 copies 4 lifecycle 1/1/1',log)),
