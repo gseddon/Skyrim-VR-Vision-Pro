@@ -20,6 +20,8 @@ struct vx_xros_xrizer_host {
     KlNativeMetalHost metal;
     KlNativeImageSyncHost sync;
     KlNativeViewConfiguration views;
+    KlNativeViewGeometry geometry;
+    unsigned geometry_available;
     KlNativeSessionEvent events[EVENT_CAPACITY];
     unsigned event_head, event_count, surface_ready, attempted, registered, retiring, retired;
     unsigned readers, publishing;
@@ -40,6 +42,14 @@ static XrResult available(void *ctx) {
 static XrResult get_views(void *ctx, KlNativeViewConfiguration *out) {
     vx_xros_xrizer_host *h=ctx; if (!out) return XR_ERROR_VALIDATION_FAILURE;
     pthread_mutex_lock(&h->lock); int ready=h->surface_ready && !h->retiring && !h->retired; if (ready) *out=h->views; pthread_mutex_unlock(&h->lock);
+    return ready ? XR_SUCCESS : XR_ERROR_FORM_FACTOR_UNAVAILABLE;
+}
+static XrResult get_geometry(void *ctx, KlNativeViewGeometry *out) {
+    vx_xros_xrizer_host *h=ctx; if (!out) return XR_ERROR_VALIDATION_FAILURE;
+    pthread_mutex_lock(&h->lock);
+    int ready=h->surface_ready && h->geometry_available && !h->retiring && !h->retired;
+    if (ready) *out=h->geometry;
+    pthread_mutex_unlock(&h->lock);
     return ready ? XR_SUCCESS : XR_ERROR_FORM_FACTOR_UNAVAILABLE;
 }
 static XrResult poll_event(void *ctx, KlNativeSessionEvent *out) {
@@ -194,10 +204,12 @@ int vx_xros_xrizer_register(vx_xros_xrizer_host *h, const vx_xros_xrizer_static_
     h->attempted=1; h->api=*api; pthread_mutex_unlock(&h->lock);
     KlNativeHost host={.version=1,.size=sizeof(host),.context=h,.hmd_available=available};
     KlNativeViewHost views={KL_NATIVE_VIEW_HOST_VERSION,sizeof(views),h,get_views};
+    KlNativeViewGeometryHost geometry={KL_NATIVE_VIEW_GEOMETRY_VERSION,sizeof(geometry),h,get_geometry};
     KlNativeSessionHost session={KL_NATIVE_SESSION_HOST_VERSION,sizeof(session),h,poll_event,begin_session,end_session,request_exit};
     KlNativeFrameHost frame={KL_NATIVE_FRAME_HOST_VERSION,sizeof(frame),h,wait_frame,publish_pair,cancel_frame};
     KlNativeInputHost input={KL_NATIVE_INPUT_HOST_VERSION,sizeof(input),h,sample_input};
     if (kl_native_configure(&host)!=XR_SUCCESS || kl_native_configure_views(&views)!=XR_SUCCESS ||
+        kl_native_configure_view_geometry(&geometry)!=XR_SUCCESS ||
         kl_native_configure_metal(&h->metal)!=XR_SUCCESS || kl_native_configure_image_sync(&h->sync)!=XR_SUCCESS ||
         kl_native_configure_session(&session)!=XR_SUCCESS || kl_native_configure_frame(&frame)!=XR_SUCCESS ||
         kl_native_configure_input(&input)!=XR_SUCCESS || api->configure_provider(kl_native_get_instance_proc_addr) ||
@@ -211,6 +223,15 @@ int vx_xros_xrizer_surface(vx_xros_xrizer_host *h, int ready, const KlNativeView
     if (ready) h->views=*views;
     h->surface_ready=(unsigned)ready;
     if (!ready) vx_xros_mailbox_invalidate(h->mailbox);
+    pthread_mutex_unlock(&h->lock); return 0;
+}
+int vx_xros_xrizer_geometry(vx_xros_xrizer_host *h, const KlNativeViewGeometry *geometry) {
+    if (!h || (geometry && (geometry->version!=KL_NATIVE_VIEW_GEOMETRY_VERSION || geometry->struct_size<sizeof(*geometry)))) return -1;
+    pthread_mutex_lock(&h->lock);
+    if (h->retiring || h->retired) { pthread_mutex_unlock(&h->lock); return -1; }
+    if (geometry) h->geometry=*geometry;
+    else memset(&h->geometry,0,sizeof h->geometry);
+    h->geometry_available=geometry!=NULL;
     pthread_mutex_unlock(&h->lock); return 0;
 }
 int vx_xros_xrizer_event(vx_xros_xrizer_host *h, KlNativeSessionEvent event) {
