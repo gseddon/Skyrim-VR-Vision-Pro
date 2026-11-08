@@ -34,6 +34,8 @@ extern int vx_xrizer_dev_audit_observe(uint32_t variant);
 @property(nonatomic) uint64_t nextFrame;
 @property(nonatomic) unsigned width, height;
 @property(nonatomic) BOOL outstanding;
+/* Opt-in development choice (VXRT_XRIZER_DEV_STAGE=1): declare the synthetic local origin to be the floor. */
+@property(nonatomic) BOOL syntheticStage;
 #ifdef VXRT_XRIZER_DEV_AUDIT
 @property(nonatomic) BOOL audit;
 @property(nonatomic) unsigned published, acquired, released, begins, exits, ends;
@@ -115,6 +117,8 @@ static XrResult wait_frame(void *p,KlNativeFrameSample *out) {
         .predicted_display_period=INT64_C(11111111),.should_render=XR_TRUE,
         .head_location_flags=XR_SPACE_LOCATION_ORIENTATION_VALID_BIT|XR_SPACE_LOCATION_POSITION_VALID_BIT,
         .local_from_head={.orientation={0,0,0,1},.position={0,1.6f,0}},
+        .stage_valid=h.syntheticStage ? XR_TRUE : XR_FALSE,
+        .local_from_stage={.orientation={0,0,0,1},.position={0,0,0}},
         .head_from_eye={{{0,0,0,1},{-.032f,0,0}},{{0,0,0,1},{.032f,0,0}}},
         .fov={{-.785398f,.785398f,.785398f,-.785398f},{-.785398f,.785398f,.785398f,-.785398f}}};
     h.sample=*out; h.outstanding=YES;
@@ -219,6 +223,8 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
 #ifdef VXRT_XRIZER_DEV_AUDIT
         h.audit=getenv("VXRT_XRIZER_DEV_AUDIT") && !strcmp(getenv("VXRT_XRIZER_DEV_AUDIT"),"1");
 #endif
+        h.syntheticStage=getenv("VXRT_XRIZER_DEV_STAGE") && !strcmp(getenv("VXRT_XRIZER_DEV_STAGE"),"1");
+        if (h.syntheticStage) vx_log("xrizer dev host: synthetic stage declared valid (local origin is the floor); development only");
         h.width=width; h.height=height; h.device=MTLCreateSystemDefaultDevice(); h.queue=[h.device newCommandQueue];
         h.inputTime=now_ns(); h.frames=vx_native_vr_create(keep,drop);
         if (!h.device || !h.queue || !h.inputTime || !h.frames) return -1;

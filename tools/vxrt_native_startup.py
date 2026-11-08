@@ -220,6 +220,14 @@ def capture(args):
             env['VXRT_AOT_NULL_DIAGNOSTIC'] = '1'
             result.setdefault('diagnostic', {}).update(null_target_trace=True,
                 null_target_scope='opt-in null-target snapshot; diagnostic evidence only')
+        if getattr(args, 'dev_synthetic_stage', False):
+            if not getattr(args, 'experimental_xrizer', False):
+                raise ValueError('--dev-synthetic-stage requires --experimental-xrizer')
+            env['VXRT_XRIZER_DEV_STAGE'] = '1'
+            result.setdefault('diagnostic', {})['dev_synthetic_stage'] = 'synthetic origin declared the floor; not a physical floor or tracking claim'
+        if getattr(args, 'trace_files', False):
+            env['VXRT_TRACE_FILES'] = '1'
+            result.setdefault('diagnostic', {})['trace_failed_file_opens'] = True
         if ring_at is not None:
             env['VXRT_TRACE_CALLS_RING'] = '1'
             env['VXRT_TRACE_CALLS_RING_AT'] = str(ring_at)
@@ -288,6 +296,8 @@ def main():
     ap.add_argument('--callback-depth-limit', type=int, help='diagnostic only: stop at nested callback depth 2..256')
     ap.add_argument('--trace-openvr-init', action='store_true', help='diagnostic only: transparently log real OpenVR initialization results')
     ap.add_argument('--trace-null-target', action='store_true', help='diagnostic only: capture a null AOT target snapshot')
+    ap.add_argument('--dev-synthetic-stage', action='store_true', help='diagnostic only: the experimental dev host declares its synthetic local origin to be the floor, so Standing tracking space is valid; no physical floor is claimed')
+    ap.add_argument('--trace-files', action='store_true', help='diagnostic only: log guest file opens that fail, with the path (VXRT_TRACE_FILES=1)')
     ap.add_argument('--trace-call-ring', type=int, metavar='SECONDS', help='diagnostic only: dump each thread\'s last runtime calls after this many seconds, before the timeout')
     ap.add_argument('--experimental-xrizer', action='store_true', help='select experimental native xrizer development host; requires a configured runtime')
     ap.add_argument('--xrizer-dylib', help='absolute path to the pinned native ARM64 xrizer dylib for experimental mode')
