@@ -1,7 +1,7 @@
 # Skyrim VR native Darwin AOT implementation plan
 
 Date: 8 November 2026 (Europe/London)
-Status: source checkpoint published; original game reaches OpenVR initialization failure; owned native xrizer/provider stereo and separate Windows ABI proofs pass; joined guest/provider fixture in progress; game scene and physical headset unproven
+Status: source checkpoint published; original game reaches OpenVR initialization failure; owned native xrizer/provider stereo and separate Windows ABI proofs pass; joined guest/provider initialization and matrices pass; next round approved; Terra implementation starting; guest stereo, game scene and physical headset unproven
 
 ## Overview
 
@@ -26,13 +26,119 @@ The source-only checkpoint is published in `gseddon/Skyrim-VR-Vision-Pro`, branc
 not disturbed; see `MIGRATION.md`. Private game inputs, translated game code,
 toolchains and raw run evidence remain local. One source repository is sufficient.
 
+## Approved next implementation round
+
+This section is the current work order; later phase descriptions retain the
+longer project scope and historical evidence. The user approved this round and instructed implementation to begin. All implementation roles use
+`gpt-6.1-terra`; the parent coordinates, reviews and integrates. Completed
+historical workers on other models remain idle.
+
+### Outcome
+
+Connect the real prepared Skyrim executable to the same native XR stack that
+passes the owned fixture, then measure the next actual game checkpoint or
+precisely diagnosed blocker. First prove guest D3D11 stereo and repeatable pose
+calls so the game does not become the test harness for an unverified bridge.
+This round does not promise a menu, scene, physical controller or playable game.
+
+### Three Terra roles and exclusive ownership
+
+| Role | First assignment | Exit evidence | Ownership |
+| --- | --- | --- | --- |
+| A — Guest stereo and reusable ABI bridge | Extend the verified MSVC guest to create actual D3D11 eye textures and call real xrizer Submit through static Windows wrappers. Resolve guest resources through the validated D3D11 registry; use the actual device/queue, producer completion and destination completion. Extract reusable wrappers needed by the game. | At least two changing stereo pairs with independently checked pixels/crops, frame/pose IDs, matched leases and drained cleanup; positive strict-AOT counters and zero fallback. Invalid handles/device mismatch and a meaningful failure/retry control must fail honestly. | `VXRuntime/tests/xrizer_guest_*`, new reusable `VXRuntime/src/xrizer_guest_*` bridge files, component `tests/xrizer_guest_host.*`/shared fixture helpers, and Apple Metal resource adapter `src/metal_host.m`/`include/apple_metal_host.h`. No loader or Rust/provider-core edits. |
+| B — Repeatable poses and input semantics | Continue real xrizer/Klepton action/space work. Make remaining initialization, legacy action/binding and frame-update failures fallible. Implement the actually required action/binding/state subset using explicit host snapshots; unconnected controllers remain inactive. Preserve real sample time, origin and tracking validity. | Repeated nonzero pose calls through actual xrizer, including changing valid/invalid head samples, disconnected controllers, unsupported-feature refusal, frame cancellation and cleanup without panic or stale input. Remove guards only for paths covered by these tests. | `third_party/xrizer/**` and `third_party/klepton_openxr/**`, excluding A's helper/resource files. Provider host contracts are owned here; A/C request changes through this owner. Sony Sense host wiring follows the agreed contract; physical tracking remains a separate gate. |
+| C — Actual Skyrim startup and AOT feasibility | Audit the exact game bootstrap exports/interfaces; wire loader exports to A's reusable bridge, preserving real factory/init/errors. Prepare pinned private inputs/configuration in the new source checkout. While A/B progress, test that routing with owned callers and investigate the recorded callback fault or broad regression only through bounded, relevant reproducers. | After the relevant A/B gates, an actual bounded strict-AOT Skyrim run with sealed input/compiler/runtime/module identities, actual exports/interfaces, earliest reached checkpoint and first blocker. Reduce each new code/API/ABI defect to an owned reproducer, fix it, then remeasure. Missing counters remain unknown. | `VXRuntime/src/loader.c`, new game-facing OpenVR export routing, compiler/dispatch and observed Windows compatibility fixes, `tools/skyrim_aot_pipeline.py`, `tools/vxrt_native_startup.py`, their tests and game investigation reports. No second OpenVR implementation or direct native pointers in guest tables. |
+
+The parent owns Makefile/build/scanner integration, shared test scheduling,
+plans and root provenance/notices. Delegate specific build edits to one Terra
+owner at a time. Cross-owner changes are requested and integrated explicitly;
+no two agents edit the same file. Keep a maintained bootstrap method list:
+System019/Compositor022 are established starting versions, not full coverage;
+other version strings become implementation work only when actually required.
+
+### How the lanes join
+
+1. **Agree the integration contract first.** A/C agree how the reusable static
+   guest objects/export routing compose; A/B agree device/queue identity,
+   texture lease/completion and frame/pose snapshots. Freeze a small versioned
+   boundary before independent implementation. Preserve default fail-closed
+   behavior; any development provider is explicitly selected and labelled.
+2. **A and B execute independent owned proofs.** A may initially use zero-count
+   pose arrays and an injected Mac host to isolate actual guest texture/Submit
+   behavior. B proves real nonzero pose semantics separately. Neither proves
+   physical tracking or Skyrim compatibility.
+3. **Join A+B at one reviewed revision.** Repeat the owned Windows D3D11 stereo
+   fixture using actual nonzero pose arrays across multiple frames, supported
+   inactive-controller behavior and teardown. Run applicable owned regressions
+   and required runtime checks; preserve unresolved broad failures explicitly.
+4. **C advances the game immediately once its needed calls pass.** Run the
+   original game code from the private prepared image through the proven
+   native backend on Mac. Record actual initialization, first eye submission,
+   menu/scene or exact first failure. Fix demonstrated causes and repeat; no
+   unchanged error110 retries, fabricated success or patched game null checks.
+   Reuse unchanged hash/base-matched AOT modules; do not regenerate the whole
+   game for an unrelated host fix.
+5. **Continue toward standalone in parallel with game fixes.** After Mac
+   integration, A carries the same owned fixture into visionOS simulator while
+   B connects real Apple-host clock/tracking/input and C continues game
+   feasibility. Simulator success is separately labelled. Stage a concrete
+   integrated device fixture before requesting physical install/launch approval.
+
+Actual game progress does not wait for full Sony Sense hardware acceptance or
+a complete OpenXR implementation. A development run may use explicitly
+injected head state and genuinely disconnected controllers, once its reachable
+calls are safe; this establishes only that development checkpoint. If the game
+requires an unsupported method, stop at that call and implement/test its real
+semantics. Standalone physical acceptance still requires actual local tracking,
+controllers, lifecycle and target-device resource measurements.
+
+### Workspaces, cost and continued supervision
+
+- Start new work from the published standalone repository, current checkpoint
+  `fc17152`, plus this approved plan. Use dedicated `codex/` branches/worktrees
+  with isolated outputs and integrate stable commits into the source repo.
+  Preserve the old checkout and immutable evidence as read-only references.
+  Copy only required pinned private inputs; reuse existing local toolchains
+  and immutable artifacts via explicit paths where supported. Do not relocate
+  credentials, originals or old evidence, or rebuild large subjects needlessly.
+- Launch at most three Terra workers, with the parent as the fourth active
+  slot. If the prior session thread limit still prevents new Terra agents,
+  reuse the existing Terra worker and queue the roles; report the constraint
+  rather than silently using another model. Never restart the old non-Terra
+  workers for implementation without the user's agreement.
+- Require a first checkpoint within three minutes, then inspect progress at
+  least every three minutes. A checkpoint identifies a result or concrete
+  progress, next test and blocker; a long compiler run reports progress instead
+  of starting duplicate builds. Parent progress updates remain concise.
+- Serialize GPU/runtime/simulator tests and fixed AOT scratch; parallel source
+  work and isolated builds only where they do not conflict. Run one integrated
+  regression batch per meaningful candidate rather than repeating full builds
+  in every lane. Record source-to-binary provenance as the candidate is built.
+- After approval, workers continue through the next dependency-ready assignment
+  instead of stopping after each small fix. The parent reviews/checks/publishes
+  verified checkpoints and assigns the next bounded task. After two failed
+  approaches, narrow or redirect; after three no-progress attempts, document
+  and stop that loop while independent work continues. Architecture changes,
+  new out-of-scope downloads or physical-device actions come back to the user.
+
+### Review points
+
+The first meaningful review is the joined guest D3D11/pose fixture; the next is
+Skyrim's first measured result with native XR. Neither has a reliable time
+estimate yet. New compiler/code-discovery limitations, unavoidable runtime code
+generation or a launch requirement conflicting with standalone execution are
+make-or-break findings and should be surfaced immediately. Existing callback
+and broad D3D12 failures remain visible until reproduced/classified and fixed;
+fixture progress does not waive them. Only the later physical human playtest
+can establish playable.
+
 ## Current Position and Next Acceptance Gates
 
 Updated after the xrizer decision and Apple cross-builds on 8 November 2026. The active-priority subplan above now determines immediate work order; this section and the phase sections retain the full XR integration scope and evidence. Earlier diagnostic results remain useful but are not xrizer acceptance.
 
 | Area | Established | Still to prove |
 | --- | --- | --- |
-| AOT / Windows compatibility | Owned CPU/D3D11 suite passes strict AOT on Mac and in visionOS simulator; actual MSVC guest scalar/float/matrix static-wrapper tests pass with zero fallback | Complete observed interface coverage, actual guest/provider join and clean broad runtime baseline |
+| AOT / Windows compatibility | Owned CPU/D3D11 suite passes strict AOT on Mac and in visionOS simulator; actual MSVC guest scalar/float/matrix static-wrapper tests pass with zero fallback | Complete observed interface coverage, guest/provider stereo and clean broad runtime baseline |
 | D3D11 / Metal / native frame exchange | Owned native xrizer/provider stereo fixture passes real pixel, identity, ownership and four failure/retry checks | Actual Windows D3D11 guest handles through xrizer, full lifecycle and physical presentation/input |
 | xrizer Apple port | Owned native frontend initializes and submits Metal stereo through the adapted provider; ordinary initialization remains disabled | Real host tracking, fallible nonzero pose/input setup, complete restart/shutdown and connected Windows guest graphics |
 | Skyrim VR | Private prepared code and guest modules built; actual native AOT probes reach genuine OpenVR error110 | Connect the proven native XR path; no menu, stereo frame, scene, controller or performance result |
