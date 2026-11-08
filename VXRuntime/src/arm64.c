@@ -222,7 +222,7 @@ static void __attribute__((noreturn)) engine_fault(x86_ctx *c, int r) {
     case X86_FAULT_UD: vx_seh_fault(0xC000001D, 0, NULL);                 // STATUS_ILLEGAL_INSTRUCTION
     case X86_FAULT_GP: vx_seh_fault(0xC0000096, 0, NULL);                 // STATUS_PRIVILEGED_INSTRUCTION
     case X86_FAULT_PF: {                                                  // (vCPU: an access fault)
-        uint64_t p[2] = { c->fault_info >> 63, c->fault_info & ~(1ull << 63) };
+        uint64_t p[2] = { !c->rip && !c->fault_info ? 8 : c->fault_info >> 63, c->fault_info & ~(1ull << 63) };
         vx_seh_fault(0xC0000005, 2, p);
     }
     default:
