@@ -176,6 +176,130 @@ static void pd2dq(xlat_buf *b, int r, int s, int trunc) {
     E(b, a64_vmov(r, V_U));
 }
 
+// Legacy MMX (no 66/F2/F3 prefix). MM0-MM7 are the low 64 bits of x87 physical
+// registers R0-R7. A write sets that register's exponent to all ones. Every
+// MMX instruction marks all eight abridged tags valid. Intel SDM Vol. 1, 9.5-9.6.
+static unsigned mm_st(int r) { return (unsigned)__builtin_offsetof(x86_ctx, st) + (unsigned)r * 16u; }
+static void mm_load(xlat_buf *b, int v, int r) {
+    E(b, a64_ldr(8, T_A, XC, mm_st(r)));
+    E(b, a64_fmov_dx(v, T_A));
+}
+static void mm_tags(xlat_buf *b) {
+    mov_imm(b, T_A, 0xFF);
+    E(b, a64_str(1, T_A, XC, (uint32_t)__builtin_offsetof(x86_ctx, ftag)));
+}
+static void mm_store(xlat_buf *b, int r, int v) {
+    unsigned off = mm_st(r);
+    E(b, a64_umov_d(T_A, v, 0));
+    E(b, a64_str(8, T_A, XC, off));
+    mov_imm(b, T_A, 0xFFFF);
+    E(b, a64_str(2, T_A, XC, off + 8));
+    mm_tags(b);
+}
+static int mm_r(int reg) { return reg <= 7 ? reg : -1; }
+static void mm_m64(xlat_buf *b, const x86_insn *d, int v, uint64_t next) {
+    if (d->mod == 3) { mm_load(b, v, d->rm & 7); return; }
+    int s = xmm_rm(b, d, 8, next);
+    if (s != v) E(b, a64_vmov(v, s));
+}
+static void mm_binop(xlat_buf *b, const x86_insn *d, uint64_t next, int kind) {
+    int dst = d->reg & 7;
+    if (kind == 0 && d->mod == 3 && (d->rm & 7) == dst) { E(b, a64_movi0(V_R)); mm_store(b, dst, V_R); return; }
+    mm_m64(b, d, V_W, next);
+    mm_load(b, V_R, dst);
+    if (kind == 1) { E(b, a64_ext(V_T, V_R, V_R, 4)); E(b, a64_ext(V_U, V_W, V_W, 4)); E(b, a64_zip1_16b(V_R, V_T, V_U)); }
+    else if (kind == 2) { E(b, a64_ext(V_T, V_R, V_R, 4)); E(b, a64_ext(V_U, V_W, V_W, 4)); E(b, a64_zip1_8h(V_R, V_T, V_U)); }
+    else if (kind == 3) E(b, a64_zip1_16b(V_R, V_R, V_W));
+    else if (kind == 4) E(b, a64_zip1_8h(V_R, V_R, V_W));
+    else if (kind == 5) { E(b, a64_smull_lo(1, V_T, V_R, V_W)); E(b, a64_uzp2(1, V_R, V_T, V_T)); }
+    else if (kind == 6) E(b, a64_add8h(V_R, V_R, V_W));
+    else if (kind == 7) E(b, a64_sub8h(V_R, V_R, V_W));
+    else if (kind == 8) E(b, a64_sqadd(1, V_R, V_R, V_W));
+    else if (kind == 9) E(b, a64_uqsub(1, V_R, V_R, V_W));
+    else if (kind == 10) E(b, a64_vorr(V_R, V_R, V_W));
+    else E(b, a64_veor(V_R, V_R, V_W));
+    mm_store(b, dst, V_R);
+}
+static void mm_shift_imm(xlat_buf *b, int reg, int es, int left, int c) {
+    mm_load(b, V_R, reg);
+    if (c <= 0) { mm_store(b, reg, V_R); return; }
+    if (c >= es) E(b, a64_movi0(V_R));
+    else E(b, left ? a64_shl(es, V_R, V_R, c) : a64_ushr(es, V_R, V_R, c));
+    mm_store(b, reg, V_R);
+}
+static void mm_pslld(xlat_buf *b, const x86_insn *d, uint64_t next) {
+    int dst = d->reg & 7;
+    mm_load(b, V_R, dst);
+    mm_m64(b, d, V_W, next);
+    E(b, a64_umov_d(T_A, V_W, 0));
+    mov_imm(b, S0, 32);
+    E(b, a64_cmp(T_A, S0));
+    E(b, a64_csel(T_A, S0, T_A, HI));
+    E(b, a64_dupg(2, V_T, T_A));
+    E(b, a64_ushl(2, V_R, V_R, V_T));
+    mm_store(b, dst, V_R);
+}
+// 0: translated; -1: not one of the reached Bink forms.
+static int xlat_mmx(xlat_buf *b, const x86_insn *d, uint64_t next) {
+    if (d->prefixes & X86_P_LOCK) return -1;
+    int op = d->opcode;
+    if (op == 0x6E || op == 0x7E) {
+        int w = d->opsize == 8 ? 8 : 4, dst = d->reg & 7;
+        if (mm_r(d->reg) < 0 || (d->mod == 3 && mm_r(d->rm) < 0)) return -1;
+        if (op == 0x6E) {
+            if (d->mod == 3) { rd_rm(b, d, T_A, w, next); E(b, w == 8 ? a64_fmov_dx(V_R, T_A) : a64_fmov_sw(V_R, T_A)); }
+            else { int s = xmm_rm(b, d, w, next); E(b, a64_vmov(V_R, s)); }
+            mm_store(b, dst, V_R);
+        } else {
+            mm_load(b, V_R, dst);
+            if (d->mod != 3) ea(b, d, next, 0);
+            E(b, w == 8 ? a64_umov_d(T_A, V_R, 0) : a64_umov_s(T_A, V_R, 0));
+            if (d->mod == 3) wr_reg(b, d, d->rm, T_A, w); else wr_rm(b, d, T_A, w);
+            mm_tags(b);
+        }
+        return 0;
+    }
+    if (op == 0x6F || op == 0x7F) {
+        int a = d->reg & 7, c = d->rm & 7;
+        if (mm_r(d->reg) < 0 || (d->mod == 3 && mm_r(d->rm) < 0)) return -1;
+        if (op == 0x6F) { mm_m64(b, d, V_R, next); mm_store(b, a, V_R); }
+        else if (d->mod == 3) { mm_load(b, V_R, a); mm_store(b, c, V_R); }
+        else {
+            mm_load(b, V_R, a);
+            ea(b, d, next, 0);
+            E(b, a64_umov_d(T_A, V_R, 0));
+            wr_rm(b, d, T_A, 8);
+            mm_tags(b);
+        }
+        return 0;
+    }
+    if (op == 0x71 || op == 0x72) {
+        if (d->mod != 3 || mm_r(d->rm) < 0) return -1;
+        int g = d->reg & 7, c = (int)(uint8_t)d->imm;
+        if (op == 0x71 && g == 2) mm_shift_imm(b, d->rm & 7, 16, 0, c);
+        else if (op == 0x71 && g == 6) mm_shift_imm(b, d->rm & 7, 16, 1, c);
+        else if (op == 0x72 && g == 6) mm_shift_imm(b, d->rm & 7, 32, 1, c);
+        else return -1;
+        return 0;
+    }
+    if (mm_r(d->reg) < 0 || (d->mod == 3 && mm_r(d->rm) < 0)) return -1;
+    int kind = -1;
+    if (op == 0xEF) kind = 0;
+    else if (op == 0x68) kind = 1;
+    else if (op == 0x69) kind = 2;
+    else if (op == 0x60) kind = 3;
+    else if (op == 0x61) kind = 4;
+    else if (op == 0xE5) kind = 5;
+    else if (op == 0xFD) kind = 6;
+    else if (op == 0xF9) kind = 7;
+    else if (op == 0xED) kind = 8;
+    else if (op == 0xD9) kind = 9;
+    else if (op == 0xEB) kind = 10;
+    else if (op == 0xF2) { mm_pslld(b, d, next); return 0; }
+    if (kind < 0) return -1;
+    mm_binop(b, d, next, kind);
+    return 0;
+}
 
 // 1: not an SSE instruction; 0: translated; -1: not supported (yet).
 static int xlat_sse(xlat_buf *b, const x86_insn *d, uint64_t next) {
@@ -212,7 +336,7 @@ static int xlat_sse(xlat_buf *b, const x86_insn *d, uint64_t next) {
     int sse_op = (op >= 0x10 && op <= 0x17) || (op >= 0x28 && op <= 0x2F) || (op >= 0x50 && op <= 0x7F) || op == 0xC2 ||
                  op == 0xC4 || op == 0xC5 || op == 0xC6 || op >= 0xD0;
     if (!sse_op) return 1;
-    if (op >= 0x60 && pf == 0 && !(op >= 0x50 && op <= 0x5F) && op != 0xC2 && op != 0xC6) return -1;   // (MMX)
+    if (op >= 0x60 && pf == 0 && !(op >= 0x50 && op <= 0x5F) && op != 0xC2 && op != 0xC6) return xlat_mmx(b, d, next);
 
     switch (op) {
     case 0x10: case 0x11: {                                               // MOVUPS/UPD/SS/SD
