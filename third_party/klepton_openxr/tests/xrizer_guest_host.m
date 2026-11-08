@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 extern "C" {
 #include "view_host.h"
+#include "input_host.h"
 #include "metal_host_bridge.h"
 }
 @interface SourceEye : NSObject
@@ -25,7 +26,7 @@ extern "C" {
 @implementation StereoHost
 @end
 static unsigned ticket_tokens[8];
-static unsigned sessions_created,sessions_destroyed;
+static unsigned sessions_created,sessions_destroyed,input_samples;
 static unsigned image_acquires,image_waits,image_releases,copy_failures,write_failures,publish_failures;
 static bool fail_wait_once,fail_copy_once,fail_write_once,fail_publish_once;
 static XrSession original_session;
@@ -81,11 +82,17 @@ static XrResult view_configuration(void *ctx,KlNativeViewConfiguration *out){
         .recommendedImageRectHeight=8,.maxImageRectHeight=8,.recommendedSwapchainSampleCount=1,.maxSwapchainSampleCount=1};
     return XR_SUCCESS;
 }
+static XrResult input_snapshot(void *ctx,KlNativeInputSample *sample){
+    StereoHost *h=stereo(ctx); ++input_samples;
+    *sample={.sample_id=1,.sample_time=h.clockBase+30,.hand_connected={XR_FALSE,XR_FALSE}}; return XR_SUCCESS;
+}
 static XrResult poll_host(void *ctx,KlNativeSessionEvent *event){
     StereoHost *h=stereo(ctx);if(!h.event.type)return XR_EVENT_UNAVAILABLE;
-    *event=h.event;h.event={};return XR_SUCCESS;
+    *event=h.event;h.event={};
+    if(event->type==KL_NATIVE_SESSION_VISIBLE) h.event={KL_NATIVE_SESSION_FOCUSED,h.clockBase+22};
+    return XR_SUCCESS;
 }
-static XrResult begin_host(void *ctx,XrTime *time){StereoHost *h=stereo(ctx);++h.begins;*time=h.clockBase+20;return XR_SUCCESS;}
+static XrResult begin_host(void *ctx,XrTime *time){StereoHost *h=stereo(ctx);++h.begins;*time=h.clockBase+20;h.event={KL_NATIVE_SESSION_VISIBLE,h.clockBase+21};return XR_SUCCESS;}
 static XrResult request_exit(void *ctx){
     StereoHost *h=stereo(ctx);assert(!h.event.type && !h.outstanding);++h.exits;
     h.event={KL_NATIVE_SESSION_STOPPING,h.clockBase+INT64_C(100000000)};return XR_SUCCESS;
@@ -104,6 +111,7 @@ static XrResult wait_host(void *ctx,KlNativeFrameSample *sample){
         .head_from_eye={{{0,0,0,1},{-.032f,0,0}},{{0,0,0,1},{.032f,0,0}}},
         .fov={{-.7f,.8f,.9f,-.6f},{-.73f,.82f,.9f,-.6f}},.stage_valid=XR_TRUE,
         .local_from_stage={.orientation={0,1,0,0},.position={4,5,6}}};
+    sample->local_from_head.position.x=(float)n;
     h.sample=*sample;h.outstanding=sample->ticket;
     printf("host sample: frame=%llu pose=%llu predicted_ns=%lld; latched before source GPU producer\n",
         (unsigned long long)sample->frame_id,(unsigned long long)sample->pose_id,(long long)sample->predicted_display_time);
@@ -166,7 +174,7 @@ static void check_pair(StereoHost *h,const vx_native_vr_frame *frame,unsigned va
     check_pixels(h,frame,variant);KlNativeFrameSample sample=h.sample;
     assert(frame->pose.frame_id==sample.frame_id && frame->pose.pose_id==sample.pose_id && frame->pose.tracking_valid);
     assert(fabs(frame->pose.pose_time-(double)sample.predicted_display_time/1e9)<1e-9);
-    const float origin[16]={0,0,-1,0,0,1,0,0,1,0,0,0,1,2,3,1};
+    const float origin[16]={0,0,-1,0,0,1,0,0,1,0,0,0,sample.local_from_head.position.x,2,3,1};
     for(unsigned i=0;i<16;++i)near(frame->pose.origin_from_head[i],origin[i]);
     for(unsigned eye=0;eye<2;++eye){
         const float expected[16]={1,0,0,0,0,1,0,0,0,0,1,0,eye?.032f:-.032f,0,0,1};
@@ -196,6 +204,8 @@ int vx_xrizer_guest_host_create(const char *path,const XrizerMetalHost *external
         KlNativeSessionHost session={.version=KL_NATIVE_SESSION_HOST_VERSION,.struct_size=sizeof(session),.context=ctx,
             .poll_event=poll_host,.begin_session=begin_host,.end_session=end_host,.request_exit=request_exit};
         KlNativeFrameHost frames={KL_NATIVE_FRAME_HOST_VERSION,sizeof(frames),ctx,wait_host,publish_pair,cancel_host};
+        KlNativeInputHost input={KL_NATIVE_INPUT_HOST_VERSION,sizeof(input),ctx,input_snapshot};
+        assert(kl_native_configure_input(&input)==XR_SUCCESS);
         sync={KL_NATIVE_IMAGE_SYNC_HOST_VERSION,sizeof(sync),ctx,wait_available,complete_writes};
         assert(kl_native_configure(&system)==XR_SUCCESS && kl_native_configure_metal(&resources)==XR_SUCCESS && kl_native_configure_views(&views)==XR_SUCCESS);
         assert(kl_native_configure_session(&session)==XR_SUCCESS && kl_native_configure_image_sync(&sync)==XR_SUCCESS && kl_native_configure_frame(&frames)==XR_SUCCESS);
@@ -228,7 +238,7 @@ void vx_xrizer_guest_host_get_stats(vx_xrizer_guest_host *fixture,vx_xrizer_gues
     StereoHost *h=joined_object(fixture);assert(out);
     *out={.waits=h.waits,.publishes=h.publishes,.cancels=h.cancels,.begins=h.begins,.exits=h.exits,.ends=h.ends,
         .sessions_created=sessions_created,.sessions_destroyed=sessions_destroyed,
-        .source_acquires=h.sourceAcquires,.source_releases=h.sourceReleases,.source_copies=h.sourceCopies,
+        .source_acquires=h.sourceAcquires,.source_releases=h.sourceReleases,.source_copies=h.sourceCopies,.input_samples=input_samples,
         .frame_id=h.sample.frame_id,.pose_id=h.sample.pose_id,.predicted_display_time=h.sample.predicted_display_time,
         .outstanding=h.outstanding?1u:0u};
 }
@@ -254,7 +264,7 @@ int vx_xrizer_guest_host_finish(vx_xrizer_guest_host *fixture){
     if(h.outstanding || h.frames || h.begins!=1 || h.exits!=1 || h.ends!=1 || sessions_created!=1 || sessions_destroyed!=1 ||
         h.sourceAcquires!=h.sourceReleases || retained!=released)return -1;
     KlNativeMetalHost resources=h.resources;
-    assert(kl_native_configure_frame(NULL)==XR_SUCCESS && kl_native_configure_image_sync(NULL)==XR_SUCCESS && kl_native_configure_session(NULL)==XR_SUCCESS);
+    assert(kl_native_configure_input(NULL)==XR_SUCCESS && kl_native_configure_frame(NULL)==XR_SUCCESS && kl_native_configure_image_sync(NULL)==XR_SUCCESS && kl_native_configure_session(NULL)==XR_SUCCESS);
     assert(kl_native_configure_views(NULL)==XR_SUCCESS && kl_native_configure_metal(NULL)==XR_SUCCESS && kl_apple_metal_host_destroy(&resources)==XR_SUCCESS);
     fixture->finished=true;return 0;
 }

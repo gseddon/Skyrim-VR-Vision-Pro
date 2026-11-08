@@ -9,7 +9,7 @@ extern "C" {
 typedef struct vx_xrizer_guest_host vx_xrizer_guest_host;
 typedef struct vx_xrizer_guest_host_stats {
     uint32_t waits, publishes, cancels, begins, exits, ends;
-    uint32_t sessions_created, sessions_destroyed, source_acquires, source_releases, source_copies;
+    uint32_t sessions_created, sessions_destroyed, source_acquires, source_releases, source_copies, input_samples;
     uint64_t frame_id, pose_id;
     int64_t predicted_display_time;
     uint32_t outstanding;
