@@ -1,31 +1,57 @@
 # Skyrim VR prepared-input AOT feasibility plan
 
-Current source checkpoint: `gseddon/Skyrim-VR-Vision-Pro`, `codex/standalone-import` (`a17ccd6`). Active agents/private builds remain in the original integration checkout during migration; see `MIGRATION.md`. Joined real Windows guest → xrizer → native provider proof is in progress; native Metal fixtures and separate guest ABI controls already pass. No game scene or physical controller acceptance is claimed.
-
-
 Date: 8 November 2026 (Europe/London)
-Status: prepared input and first bounded native probes complete; code availability improved substantially; full AOT feasibility remains open.
+Status: private prepared input and eight bounded new-repository native probes complete; the latest strict run exposes a Bink translation gap; complete AOT feasibility remains open.
 
 ## Active work and ownership
 
-The active AOT worker is `/root/inspect_native_vr` (repurposed existing worker; historical task name). The parent supervises and owns this plan, build integration and evidence tools. Work continues in `/Users/gseddon/git/VeRantyx/build/worktrees/native-darwin-aot`; this main-checkout plan is synchronized from that implementation checkout. The separate Terra XR worker owns the Klepton/xrizer lane and does not replace this investigation.
+The source and active worktrees are now in `gseddon/Skyrim-VR-Vision-Pro`, branch
+`codex/standalone-import`; see `MIGRATION.md` and the main plan's approved-round
+work order. The earlier VeRantyx implementation checkout is read-only evidence
+and private-artifact reference. Historical workers are idle.
 
-Current task: verify Windows guest-to-native XR ABI and close remaining compiler/runtime risks, while the XR lane implements the real provider. The earliest actual game blocker is now directly observed: `probe-skyrim-009` transparently traced the genuine Valve `VR_InitInternal2` returning token0/error110 (`Init_PathRegistryNotFound`), then `VR_GetGenericInterface("IVRCompositor_022")` returning NULL/error109 (`Init_NotInitialized`). The System019 initialization branch is skipped after that error; the later `BSOpenVR` member dereference therefore sees NULL. Do not patch the null check or manufacture a VR interface. No more unchanged missing-runtime retries are justified. The original module bytes/search roots stayed unchanged.
+Terra A (`terra-guest-stereo`) currently owns a narrow compiler investigation of
+actual probe `xrizer-game-008`. Terra B (`terra-pose-input`) continues isolated
+standalone xrizer/provider/Apple-host integration. The parent runs pinned game
+probes in `terra-skyrim-aot`, updates plans and integrates reviewed source. The
+Terra C worker is stopped after automatic content review rejected its turns;
+that rejection is recorded in the main plan. Do not infer a running worker from
+an old task name.
 
-Before that boundary, exact missing-import diagnostics, the observed empty Microsoft CRT telemetry hooks, and observed XInput1_3 ordinals4/3 have owned red/green proofs. AOT entry counts reached 3.3 million on the last API-stop probe. The later guest-exception runs emitted no summary, so their AOT execution/fallback totals remain unknown. The separate probe007 native callback fault is unresolved; owned opt-in callback tracing passes shallow/deep/default controls but did not establish its cause.
+Current observed gate: actual Skyrim now initializes native xrizer, creates its
+D3D11 device, reaches Compositor022/WaitGetPoses and passes real PollNextEvent
+calls. Probe007 reported 3,539,503 AOT entries with zero fallback up to its
+intentional event-wrapper stop. After the owned event-layout proof passed,
+probe008 stopped at **binkw64.dll+0x1d48**, inside its loaded hash/base-matched
+module: 3,351,147 entries, one strict fallback request/missing address. The
+translator did not execute. No game stereo image, menu or scene is established.
 
-The active worker is running a stable candidate006 regression batch, then a tests-only Windows x64 C++/FnTable ABI spike for factory/scalar/float/matrix returns using static generated wrappers. This does not expose native Rust function pointers directly to guest vtables or imply real game VR success. The native xrizer frontend now initializes/shuts down through an owned injected provider fixture in the parallel lane; Windows guest calls and full stereo remain distinct gates.
+Initial static triage finds that target is a discovered EMMS/RET leaf; the
+missing emitted block appears to be an unsupported instruction rather than an
+undiscovered function. This remains a hypothesis until the owned instruction
+reproducer, emitted-module inspection and differential test prove it. Keep
+**discovered**, **emitted**, **loaded** and **executed** code sets separate.
+Next: owned red/green semantic proof against Rosetta, narrow compiler fix if
+confirmed, required AOT suite, then regenerate only the affected private Bink
+module with explicit hash/base/compiler provenance before one changed probe.
+Do not enable fallback or rebuild unrelated game modules to hide the gap.
 
-Candidate `aot-suite` passes. Required broad checks remain red/unresolved at the last batch: kernelx's released-memory assertion and an SMC write fault; isolated original/candidate controls passed. Earlier runners/modules/results remain intact under unique candidate basenames.
-Next gate: prove the exact Windows member/FnTable ABI with owned AOT calls, join to the real native xrizer/provider fixture, then retry the actual game with that proven backend. Keep unresolved callback and broad-baseline faults separate; continue owned proof -> candidate checks -> bounded game probe for demonstrated changes. Preserve the earlier runner/module hashes and ledger evidence; never overwrite them to advance a test.
+The separate intermittent native SIGBUS remains unresolved. New raw fault
+register/stack-bound logging passes its owned real-signal control, but probe007
+and008 did not reproduce that game fault. Missing summaries in other probes
+remain unknown. Broad runtime checks are still red; current paired controls
+and skipped tests are in `research/2026-11-08-runtime-regression-round2.md`.
+All game receipts, sealed observations, commands and limitations are indexed
+in `research/2026-11-08-skyrim-native-bootstrap-round2.md`. Authentication is not
+a fixture gate; no ownership or Steamworks success is fabricated.
 
 ## Overview
 
 Follow the Android port's workflow at the process level: prepare a readable executable, discover functions and indirect targets, translate the game and required guest DLLs, test instruction semantics, and iteratively close missing-code gaps from strict execution. Apply it to the user's Windows x86-64 Skyrim VR build and existing VXRuntime ARM64 compiler. Keep D3D11-to-Metal and xrizer; do not replace them with the Android port's x86-32 C lifter or D3D9/Vulkan renderer.
 
-This is the active feasibility subplan of `plans/2026-11-08-skyrim-vr-native-darwin-aot.md`. Work in `build/worktrees/native-darwin-aot` from the main checkout. The user subsequently requested a supervised xrizer lane in parallel. Keep that lane independent of the game/compiler investigation; its revised Klepton reuse direction is now confirmed: adapt the OpenXR core to our existing Apple host, with tracked controllers as the first physical input target. The existing compiler/graphics fixtures remain useful controls.
+This is the active feasibility subplan of `plans/2026-11-08-skyrim-vr-native-darwin-aot.md`. Work in the new repository worktrees listed in `MIGRATION.md`; the former `build/worktrees/native-darwin-aot` is read-only reference. The user subsequently requested a supervised xrizer lane in parallel. Keep that lane independent of the game/compiler investigation; its revised Klepton reuse direction is now confirmed: adapt the OpenXR core to our existing Apple host, with tracked controllers as the first physical input target. The existing compiler/graphics fixtures remain useful controls.
 
-## Current State
+## Prepared-input baseline and historical evidence
 
 - Checkpoint commits: main plan/guidance `3e5fdf2`; implementation/xrizer Apple build port `b4a205f`. The checkpoint explicitly records incomplete XR and failed broad baseline checks.
 - Original Skyrim VR EXE SHA-256: `6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971`. It is PE32+ x86-64, with entry RVA `0x392e310` in `.bind`.
