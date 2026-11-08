@@ -21,6 +21,22 @@ struct VXSpatialCandidate {
     let live: Bool
 }
 
+enum VXSpatialSide { case unspecified, left, right }
+
+/* SDK chirality is unspecified, left, or right. A held side wins. An unknown
+ * hold falls back to the accessory's inherent hand. Neither source yields an
+ * index when both are unspecified. Hand anchors are not a side. */
+func vxSpatialHandIndex(held: VXSpatialSide?, inherent: VXSpatialSide) -> Int? {
+    let side: VXSpatialSide
+    if let held, held != .unspecified { side = held }
+    else { side = inherent }
+    switch side {
+    case .left: return 0
+    case .right: return 1
+    case .unspecified: return nil
+    }
+}
+
 // Conservative diagnostic freshness envelope; real device validation must
 // establish the appropriate limit before these observations drive a game.
 func vxSpatialTimeValid(_ sample: Double, presentation: Double) -> Bool {
