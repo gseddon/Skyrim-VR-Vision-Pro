@@ -1592,7 +1592,11 @@ int main(int argc, char **argv, char **envp) {
     if (vx_xrizer_openvr_enabled()) {
         size_t count = 0;
         const vx_export *exports = vx_xrizer_openvr_exports(&count);
-        if (vx_native_openvr_enabled() || vx_xrizer_dev_host_start(getenv("VXRT_XRIZER_DYLIB"), 1024, 1024))
+        unsigned width = 1024, height = 1024;
+#ifdef VXRT_XRIZER_DEV_AUDIT
+        if (getenv("VXRT_XRIZER_DEV_AUDIT") && !strcmp(getenv("VXRT_XRIZER_DEV_AUDIT"), "1")) { width = 4; height = 3; }
+#endif
+        if (vx_native_openvr_enabled() || vx_xrizer_dev_host_start(getenv("VXRT_XRIZER_DYLIB"), width, height))
             vx_log("xrizer dev host: configuration unavailable or conflicting; OpenVR initialization fails closed");
         vx_register_module("openvr_api.dll", exports, count);
     } else
