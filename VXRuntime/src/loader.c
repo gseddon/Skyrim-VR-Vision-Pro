@@ -21,6 +21,11 @@
 #include <pthread.h>
 #include "vx.h"
 #include "native_openvr.h"
+#ifdef VXRT_XRIZER_XROS_FIXTURE
+#include "xrizer_openvr_exports.h"
+#include "xrizer_xros_fixture.h"
+#include "xrizer_xros_fixture_guest.h"
+#endif
 #ifdef VXRT_XRIZER_DEV_HOST
 #include "xrizer_openvr_exports.h"
 #include "xrizer_dev_host.h"
@@ -1582,11 +1587,29 @@ int main(int argc, char **argv, char **envp) {
     vx_dpapi_init();
     vx_client_init();
     vx_steambridge_init();
-#ifndef VXRT_XRIZER_DEV_HOST
+#if !defined(VXRT_XRIZER_DEV_HOST) && !defined(VXRT_XRIZER_XROS_FIXTURE)
     if (getenv("VXRT_XRIZER_OPENVR") && !strcmp(getenv("VXRT_XRIZER_OPENVR"), "1")) {
         vx_log("xrizer dev host: this runtime was built without experimental xrizer support");
         exit(1);
     }
+#endif
+#ifdef VXRT_XRIZER_XROS_FIXTURE
+    if (vx_xros_fixture_enabled()) {
+        if (vx_native_openvr_enabled() || vx_xros_fixture_wait_ready()) {
+            vx_log("xrizer xros fixture: compositor geometry unavailable; refusing startup");
+            exit(1);
+        }
+        size_t count = 0;
+        const vx_export *exports = vx_xrizer_openvr_exports(&count);
+        vx_register_module("openvr_api.dll", exports, count);
+        static const vx_export audit[] = {
+            {"VXRT_XrosFixtureVerifyPair", vx_xros_fixture_verify_pair},
+            {"VXRT_XrosFixturePrepareShutdown", vx_xros_fixture_prepare_shutdown},
+            {"VXRT_XrosFixtureInjectLoss", vx_xros_fixture_inject_loss},
+            {"VXRT_XrosFixtureVerifyShutdown", vx_xros_fixture_verify_shutdown},
+        };
+        vx_register_module("vxrt_xros_fixture_audit.dll", audit, sizeof(audit)/sizeof(audit[0]));
+    } else
 #endif
 #ifdef VXRT_XRIZER_DEV_HOST
     if (vx_xrizer_openvr_enabled()) {
