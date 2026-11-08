@@ -407,12 +407,13 @@ d3d_texture *d3d_texture_wrap(d3d_device *dev, const uint32_t desc[TD_COUNT], vo
     t->mtl = mtl;
     t->base.destroy = texture_destroy;
     t->base.vtbl2 = d3d_dxgi_resource_vtbl();
-    t->shared = shared;
+    t->shared = shared; t->external_origin = 1;
     if (desc[TD_MISC] & 0x100) t->keyed_vtbl = d3d_keyed_mutex_vtbl();
     return t;
 }
 d3d_texture *d3d_texture_create(d3d_device *dev, const uint32_t desc[TD_COUNT], HRESULT *hr) { return texture_create(dev, desc, 2, 1, hr); }
 void d3d_texture_replace(d3d_texture *t, void *mtl_texture) {
+    t->external_origin = 1;
     if (t->mtl) CFBridgingRelease(t->mtl);
     t->mtl = mtl_texture;
     id<MTLTexture> tex = (__bridge id<MTLTexture>)mtl_texture;
@@ -722,6 +723,45 @@ void d3d_flush(d3d_device *dev, int wait) {
 // looks at what is unsent: a call then either sees the work still unsent (and its event waits for this flush), or
 // finds it committed already (and its own command buffer goes after it).
 static pthread_mutex_t g_events_lock = PTHREAD_RECURSIVE_MUTEX_INITIALIZER;
+#ifdef VXRT_GUEST_PRODUCER_TESTING
+static int g_test_fail_next_producer;
+void d3d_test_fail_next_producer(void) { __atomic_store_n(&g_test_fail_next_producer, 1, __ATOMIC_RELEASE); }
+#endif
+// Metal buffers retain their encoded resources until completion. Each callback
+// also holds the device; timed-out checked waits never discard pending work.
+static void track_producer(d3d_device *dev, id<MTLCommandBuffer> cmd) {
+    d3d_addref(&dev->base);
+#ifdef VXRT_GUEST_PRODUCER_TESTING
+    int injected = __atomic_exchange_n(&g_test_fail_next_producer, 0, __ATOMIC_ACQ_REL);
+    if (injected) vx_log("xrizer_guest_stereo: injected producer status failure (test control)");
+#else
+    int injected = 0;
+#endif
+    __atomic_add_fetch(&dev->producer_submitted, 1, __ATOMIC_RELEASE);
+    [cmd addCompletedHandler:^(id<MTLCommandBuffer> done) {
+        if (done.status != MTLCommandBufferStatusCompleted || done.error || injected)
+            __atomic_store_n(&dev->producer_failed, 1, __ATOMIC_RELEASE);
+        __atomic_add_fetch(&dev->producer_completed, 1, __ATOMIC_RELEASE);
+        d3d_release(&dev->base);
+    }];
+}
+// The caller serializes immediate-context recording. The lock stops initial
+// data uploads from committing during this snapshot and bounded wait.
+int d3d_flush_checked(d3d_device *dev) {
+    if (!dev || !dev->context || !dev->queue) return -1;
+    pthread_mutex_lock(&g_events_lock);
+    d3d_flush(dev, 0);
+    uint64_t target = __atomic_load_n(&dev->producer_submitted, __ATOMIC_ACQUIRE);
+    uint64_t deadline = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) + 5000000000ull;
+    while (__atomic_load_n(&dev->producer_completed, __ATOMIC_ACQUIRE) < target) {
+        if (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) >= deadline) { pthread_mutex_unlock(&g_events_lock); return -1; }
+        usleep(1000);
+    }
+    int failed = __atomic_load_n(&dev->producer_failed, __ATOMIC_ACQUIRE);
+    pthread_mutex_unlock(&g_events_lock);
+    return failed ? -1 : 0;
+}
+
 // Sets the events (handles of their own, duplicated at the call) and closes those handles once a command buffer
 // committed now has finished: Metal runs one queue's command buffers in order, so everything committed to the queue
 // before it has finished too. Takes over the array.
@@ -751,6 +791,7 @@ static void flush_work(d3d_device *dev, int wait) {
         CFRelease(c->pre_enc); c->pre_enc = NULL;
         id<MTLCommandBuffer> pre = CFBridgingRelease(c->pre);
         c->pre = NULL;
+        track_producer(dev, pre);
         [pre commit];
     }
     if (!c->cmd) {
@@ -780,6 +821,7 @@ static void flush_work(d3d_device *dev, int wait) {
         if (__builtin_available(macOS 14.4, *)) os_sync_wake_by_address_all((void *)&dev->completed, 8, OS_SYNC_WAKE_BY_ADDRESS_NONE);
     }];
     d3d_gpu_profile_submit(dev, (__bridge void *)cmd);
+    track_producer(dev, cmd);
     [cmd commit];
     events_after_flush(dev);
     pthread_mutex_unlock(&g_events_lock);
@@ -1398,7 +1440,12 @@ static void upload_texture(d3d_context *c, d3d_texture *t, uint32_t sub, const u
     [blit copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:pitch sourceBytesPerImage:image sourceSize:sz
                toTexture:(__bridge id<MTLTexture>)t->mtl destinationSlice:slice destinationLevel:mip destinationOrigin:o];
     [blit endEncoding];
-    if (own) [own commit];
+    if (own) {
+        pthread_mutex_lock(&g_events_lock);
+        track_producer(t->base.dev, own);
+        [own commit];
+        pthread_mutex_unlock(&g_events_lock);
+    }
 }
 // The newest Apple GPU family the device supports (MTLGPUFamilyApple7 = 1007 ... Apple10 = 1010; later ones are
 // probed too, so a newer chip reports its own number).
