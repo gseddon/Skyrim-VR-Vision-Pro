@@ -7,8 +7,11 @@
 #include <stdlib.h>
 #include <string.h>
 static int near(float a,float b) { return isfinite(a) && fabsf(a-b)<0.00002f; }
-static WINAPI int VXRT_DevAuditCheck(uint32_t variant) {
+static int observed[2], results[2];
+int vx_xrizer_dev_audit_observe(uint32_t variant) {
     if (variant>1) return -1;
+    if (observed[variant]) return -1;
+    observed[variant]=1; results[variant]=-1;
     vx_native_vr_frame frame;
     if (vx_xrizer_dev_audit_acquire(&frame)) return -1;
     int ok=frame.pose.tracking_valid && frame.pose.frame_id && frame.pose.pose_id &&
@@ -54,8 +57,9 @@ static WINAPI int VXRT_DevAuditCheck(uint32_t variant) {
     vx_log("xrizer dev audit: pair frame %llu pose %llu variant %u pixels %s",(unsigned long long)frame.pose.frame_id,
         (unsigned long long)frame.pose.pose_id,variant,ok ? "match" : "mismatch");
     if (vx_xrizer_dev_audit_release(frame.lease)) ok=0;
-    return ok ? 0 : -1;
+    return results[variant]=ok ? 0 : -1;
 }
+static WINAPI int VXRT_DevAuditCheck(uint32_t variant) { return variant<2 && observed[variant] ? results[variant] : -1; }
 static WINAPI int VXRT_DevAuditFinish(void) { return vx_xrizer_dev_audit_finish(); }
 static const vx_export exports[]={VX_EXPORT(VXRT_DevAuditCheck),VX_EXPORT(VXRT_DevAuditFinish)};
 __attribute__((constructor)) static void register_audit(void) {
