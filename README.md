@@ -6,7 +6,7 @@ Experimental work toward running an owned Windows x86-64 Skyrim VR build locally
 
 This is a development checkpoint, not a working game release.
 
-- Actual native Skyrim probes initialize xrizer, create a D3D11 device and reach WaitGetPoses/event polling. The latest strict probe stops at an undiscovered Bink DLL block after 3.35 million AOT entries; the prior checkpoint reported 3.54 million with zero fallback. The intermittent native SIGBUS remains unresolved. No game stereo image, menu or scene is established.
+- Actual native Skyrim probes initialize xrizer, create a D3D11 device and reach WaitGetPoses/event polling. A Bink EMMS block refused after 3.35 million AOT entries now has an owned compiler fix; the prior checkpoint reported 3.54 million with zero fallback. The latest game probe hits the separate SIGBUS with its native stack pointer below the recorded stack bound; root cause remains under investigation. No game stereo image, menu or scene is established.
 - The owned Windows guest passes real xrizer/provider stereo pixels, nonzero injected poses, static optics, event-layout conversion and clean ownership/lifecycle through the normal development host: 107 AOT entries, zero fallback.
 - The static Apple host adapter passes a native Mac Metal fixture with two stereo pairs and two no-render cycles. The real xrizer/provider/adapter also statically links for visionOS simulator; existing-app integration and simulator execution remain in progress.
 - CPU AOT semantic checks pass, including split modules. Broad runtime regressions remain red; see [the current baseline report](research/2026-11-08-runtime-regression-round2.md).
