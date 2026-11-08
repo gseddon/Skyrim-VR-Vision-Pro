@@ -868,7 +868,7 @@ static void write_part(const image *im, FILE *o, size_t first, size_t end, uint6
     }
     fprintf(o, "\teor x16, x17, x17, lsr #14\n\teor x16, x16, x17, lsr #29\n\tand x16, x16, #%#llx\n"
                "\tadrp x30, _vxaot_table@PAGE\n\tadd x30, x30, _vxaot_table@PAGEOFF\n\tadd x30, x30, x16, lsl #4\n"
-               "1:\n\tldp x22, x16, [x30], #16\n\tcmp x22, x17\n\tb.eq 2f\n\tcbnz x22, 1b\n\tb Lexit\n"
+               "1:\n\tldp x22, x16, [x30], #16\n\tcbz x22, Lexit\n\tcmp x22, x17\n\tb.eq 2f\n\tb 1b\n"
                "2:\n\tadrp x30, Lcode@PAGE\n\tadd x30, x30, Lcode@PAGEOFF\n\tadd x16, x30, x16\n\tbr x16\n",
             (unsigned long long)(tsize - 1));
     fprintf(o, "Lflags:\n");

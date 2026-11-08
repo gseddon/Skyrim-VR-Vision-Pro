@@ -428,15 +428,22 @@ void vx_log_caller_stack(int max) {
     if ((uint64_t)(uintptr_t)sp < top && top - (uint64_t)(uintptr_t)sp < (256ull << 20)) vx_log_stack_scan(sp, top, max);
 }
 
+static const char *access_kind(uint64_t type) {
+    switch (type) { case 0: return "read"; case 1: return "write"; case 8: return "execute"; default: return "unknown"; }
+}
+static const char *access_action(uint64_t type) {
+    switch (type) { case 0: return ", reading "; case 1: return ", writing "; case 8: return ", executing "; default: return ", unknown access to "; }
+}
+
 // VXRT_TRACE_SEH=1: a CPU fault of the program's code, before its handlers see it (a handler that catches it, writes
 // a dump and ends the process would otherwise leave no trace of the fault).
 static void trace_fault(const EXCEPTION_RECORD *rec, const CONTEXT *ctx) {
     if (!seh_trace()) return;
     const vx_image *m = vx_image_at(ctx->rip);
-    vx_log("SEH: exception %#x at %s+%#llx (thread %u, address %#llx%s)", rec->code, m ? m->name : "?",
+    vx_log("SEH: exception %#x at %s+%#llx (thread %u, address %#llx%s%s)", rec->code, m ? m->name : "?",
            m ? (unsigned long long)(ctx->rip - (uint64_t)(uintptr_t)m->base) : (unsigned long long)ctx->rip,
            (unsigned)vx_current_tid(), rec->nparams > 1 ? (unsigned long long)rec->info[1] : 0ull,
-           rec->nparams > 1 ? (rec->info[0] ? ", write" : ", read") : "");
+           rec->nparams > 1 ? ", " : "", rec->nparams > 1 ? access_kind(rec->info[0]) : "");
     static const char *const names[16] = { "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15" };
     char regs[512]; int k = 0;
     for (int i = 0; i < 16 && k < (int)sizeof regs - 32; i++) k += snprintf(regs + k, sizeof regs - k, " %s=%llx", names[i], (unsigned long long)ctx->gpr[i]);
@@ -488,7 +495,7 @@ static void __attribute__((noreturn)) dispatch(EXCEPTION_RECORD *rec, CONTEXT *c
         if (g_unhandled_filter(&ep) == -1) resume(ctx);
     }
     vx_log("unhandled exception %#x at %p%s%#llx (rax %#llx rcx %#llx rdx %#llx rbx %#llx rsi %#llx rdi %#llx r8 %#llx)", rec->code, rec->address,
-           rec->nparams > 1 ? (rec->info[0] ? ", writing " : ", reading ") : ", ", rec->nparams > 1 ? (unsigned long long)rec->info[1] : 0ull,
+           rec->nparams > 1 ? access_action(rec->info[0]) : ", ", rec->nparams > 1 ? (unsigned long long)rec->info[1] : 0ull,
            (unsigned long long)ctx->gpr[0], (unsigned long long)ctx->gpr[1], (unsigned long long)ctx->gpr[2], (unsigned long long)ctx->gpr[3],
            (unsigned long long)ctx->gpr[6], (unsigned long long)ctx->gpr[7], (unsigned long long)ctx->gpr[8]);
     CONTEXT walk = *ctx;                          // the program's frames, unwound
