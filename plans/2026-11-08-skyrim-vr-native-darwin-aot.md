@@ -1,7 +1,11 @@
 # Skyrim VR native Darwin AOT implementation plan
 
 Date: 8 November 2026 (Europe/London)
-Status: supervised Terra implementation active in the standalone repository; actual Skyrim reaches native WaitGetPoses and event polling; Bink EMMS gap corrected in an owned proof; latest probe captures native stack exhaustion evidence; intermittent native fault and broad regression gates remain open; simulator integration in progress; physical headset and game scene unproven
+Status: probe 012 executed under Candidate 14; prior false null-call crash resolved; Skyrim reaches full D3D11 render context setup and OpenVR Compositor 022 acquisition, executing 3,493,721 AOT entries before strict stop at Bink MMX video block 0xf0000e1de (binkw64.dll+0xe1de). 12-row ledger verified. Simulator XR integration awaits execution check; broad regression, physical headset and game scene gates remain open.
+
+## Current continuation checkpoint
+
+Candidate 14 was built and validated against owned null snapshot check (25 AOT entries, 0 fallback) and joined guest stereo fixture (107 AOT entries, 0 fallback). Actual game probe 012 verified that the single-part table sentinel fix resolved the false null-call exception from probe 011; Skyrim advanced through OpenVR Compositor acquisition, event polling, and complete D3D11 rendering initialization with 3.49M entries before stopping strictly on an un-translated MMX block in Bink video playback (`binkw64.dll+0xe1de`). The 12-row ledger validates with head `ff959c89b6395fcf266ea1590a119d3e9b1ea2c1992a0560ffa917ee6036f2b9`. Immediate next focus: (1) Bink MMX decoder translation for `0xf0000e1de` (`pxor %mm5, %mm5`), and (2) Terra B's integrated simulator execution check.
 
 ## Overview
 

@@ -159,3 +159,30 @@ Normal-depth probe011 used that host with the unchanged EMMS Bink manifest, pinn
 The exception log records RAX `0x3a034aca8`, RCX `0x3a034ad20`, RDX `0x424b27dd0`, RSI `0x1430c1d50`, RDI2 and R8=0. Its legacy wording says “writing0” because the logger treats any nonzero access type as a write; the known null-fetch path sets execute type8, as independently checked by the owned handler. The logger needs a truthful executing/reading/writing distinction. The concrete object's origin/vtable/lifetime remains unknown: static inspection finds a game keyed lookup followed by virtual slot1 supplying a global object later called at slot6. This is not proof of game corruption or a missing runtime COM method. Next is an opt-in guarded self-memory snapshot of candidate object/vtable/slot, with explicit unreadable results, before any semantic implementation.
 
 Result SHA-256 `376f35ea6edabbe8b017403e95197bcf7c27fc7a32e36d9a873babf266e2c1e3`, log `a9be6f6b05cfb22c8354d3f20bffbb64871e967bcfb537c6c6a743afb4873f2b`. Exact command and pinned owned-result identities are in `build/xrizer-candidate-13/game011-command.json`; observations are in `build/xrizer-game-011/`. Earlier native and stack-local fixture failures remain preserved; this run does not prove every historical crash had this cause.
+
+## Candidate 14 and actual probe 012: false null-call resolution and Bink MMX discovery stop
+
+Candidate 14 incorporates Terra A's hash-table sentinel check fix in single-part module code (`write_part` checking `cbz x22, Lexit` before `cmp x22, x17`), safe opt-in null-target context capture (`xa_trace_null_target`), and SEH execute access violation label correction. Before running the game probe, Candidate 14 passed both required pre-flight gates:
+1. Owned null snapshot check (`aot_null_snapshot_check.py` against `oracle2.exe` / `split2` / `label2`): passed `snapshot valid/unreadable/default, execute/read/write labels -> ok` with 25 AOT entries, 0 fallbacks, exit 0.
+2. Joined guest stereo fixture (`check_slot30.py` against `xrizer_guest_devhost.exe`): passed all 20 invariant checks including D3D11 stereo, poses, property queries, hidden mesh, and 107 AOT entries / 0 fallbacks, exit 0.
+
+Host runtime SHA-256 `8af027abfcae2a245d44d22043f41c18ce829a27dd4b29f620c6d24e7af74962`, helper `1a0555faa605c026b36371c4bf714fe29552e7e51d7a70cff9c28587aa4edce3`, tested Mac xrizer `71aed9176b0f201072385a5f7bb43672fe23f27cd140cb6e0660d35a5df4211e`.
+
+Probe 012 ran with `--trace-null-target` (setting `VXRT_AOT_NULL_DIAGNOSTIC=1`), normal depth, isolated roots, and the 18 unchanged prepared/EMMS modules. Preconditions passed (`user_not_playing: true`); read-only inputs and source remained unchanged (`o3`, `o4`).
+
+Crucially, **the guest unhandled access violation at address 0 from probe 011 did not recur**:
+* `CoCreateInstance` failed with `0x80040154` as expected for the missing optional COM class, but the runtime cleanly handled the returned error code without false dispatch to address 0.
+* Execution proceeded smoothly into full OpenVR compositor and D3D11 initialization:
+  * Acquired `IVRCompositor_022` (`0x1046b0878`)
+  * Polled OpenVR events via System019 slot30 (`size 48 result 0`)
+  * Queried controller roles for devices 1 and 2 (`controller_index = 0xffffffff`, disconnected)
+  * Render setup: `ctx_clear_rtv`, `om_set_targets_and_uavs`, `om_set_depth`, `rs_set_state`, `ctx_rs_set_viewports`, `om_set_blend`, `swapchain_get_fullscreen`, and `render_size` (GetRecommendedRenderTargetSize)
+  * Set constant buffers (`vs_set_cbs`, `ps_set_cbs`), called `GetClientRect`, `PeekMessageA`, `ctx_map`, and `timeGetTime`
+* The probe then halted strictly at **`binkw64.dll+0xe1de`** (`0xf0000e1de`), exiting 3 (`o1`) on missing recompiled code.
+* The summary reports **3,493,721 AOT entries, 1 fallback request, and 1 missing address** (`o5`, `o6`, `o8=true`, `o9=false`).
+* No unhandled exception, native signal (`o10`), or xrizer panic (`o14`) occurred.
+
+Disassembly and refusal audit identify `0xf0000e1de` as a block in section `BINK32` of `binkw64.dll`, following conditional branch `18000e1d8: je 0x18000e3a7`. The block was previously recorded in `build/terra-refusal-detail/classes.txt:64` as refused due to MMX instruction `pxor %mm5, %mm5` at `pc=0xf0000e1f0`. This proves the stop is an MMX decoder discovery/translation gap in Bink video playback, not a game crash or interface failure.
+
+Result SHA-256 `76f1ec1d32c9fc219ce7a37856f914a2b89e27969379205192e06e93cdd5d20a`, log `cccbf08a5375111710bbfaa6a5bcbf618bb4537aa62a86807a72f46f6567b3b9`. Result validation and twelve-row ledger verification pass (head `ff959c89b6395fcf266ea1590a119d3e9b1ea2c1992a0560ffa917ee6036f2b9`). Command and artifacts are in `build/xrizer-candidate-14/game012-command.json`; observations are in `build/xrizer-game-012/`.
+
