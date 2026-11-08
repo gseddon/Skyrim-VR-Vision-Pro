@@ -1,7 +1,7 @@
 # Skyrim VR native Darwin AOT implementation plan
 
 Date: 8 November 2026 (Europe/London)
-Status: prepared input available; native AOT startup investigation active; Klepton native provider bootstrap implemented; full xrizer integration pending; functional XR and game scene unproven
+Status: source checkpoint published; original game reaches OpenVR initialization failure; owned native xrizer/provider stereo and separate Windows ABI proofs pass; joined guest/provider fixture in progress; game scene and physical headset unproven
 
 ## Overview
 
@@ -13,9 +13,18 @@ This is a fresh plan. No completed stage, source fix, baseline or game result fr
 
 The user selected the Android-style preparation/discovery/translation workflow and explicitly authorized unpacking private working copies of their owned game. Follow [the focused feasibility plan](2026-11-08-skyrim-vr-prepared-input-aot-feasibility.md) for the game/compiler lane. The user subsequently requested supervised XR work in parallel, and now requests a researched Klepton-based plan and confirmed the existing Apple host with Sony PS VR2 Sense controllers as the first input target. It defines input validation, dependency closure, artifact identity, semantic tests, strict startup and iteration gates. The original Steam installation remains read-only. AGENTS.md now records this authorization; the prior DRM-removal exclusion is removed. Steamworks responses and anti-cheat are not to be fabricated or bypassed.
 
-Pinned Steamless successfully prepared a private image: unexplained executable-section bytes fell from 78.98% to 0.86%. Actual strict native probes now reach EXE CRT initialization; the latest (`probe-skyrim-003`) records 2,537,167 AOT entries and a strict stop at an unclassified no-image address, with original inputs unchanged. A menu, scene and complete game-code semantics remain unproven. See the focused plan for evidence and the systematic build/probe workflow.
+Pinned Steamless successfully prepared a private image: unexplained executable-section bytes fell from 78.98% to 0.86%. Actual strict native probes now reach the original OpenVR initialization. `probe-skyrim-009` transparently observed Valve token0/error110 (`Init_PathRegistryNotFound`), followed by NULL compositor/error109; the game later dereferences the uninitialized `BSOpenVR` member. The earlier no-image address was classified as a missing import stub. Original inputs remain unchanged. A menu, scene and complete game-code semantics remain unproven. See the focused plan for evidence and the systematic build/probe workflow.
 
 The confirmed XR revision reuses selected Klepton OpenXR and visionOS host code behind native xrizer, adding the missing Metal binding while retaining D3D11→Metal. See [the xrizer/Klepton workstream](2026-11-08-xrizer-klepton-native-openxr.md). The user confirmed this boundary; Phase A provider extraction has begun under supervised Terra ownership.
+
+## Source control and active checkout
+
+The source-only checkpoint is published in `gseddon/Skyrim-VR-Vision-Pro`, branch
+`codex/standalone-import`, initial commit `a17ccd6`. The new checkout is
+`/Users/gseddon/git/Skyrim-VR-Vision-Pro`. Agents currently continue in
+`VeRantyx/build/worktrees/native-darwin-aot` so ongoing builds and evidence are
+not disturbed; see `MIGRATION.md`. Private game inputs, translated game code,
+toolchains and raw run evidence remain local. One source repository is sufficient.
 
 ## Current Position and Next Acceptance Gates
 
@@ -23,10 +32,10 @@ Updated after the xrizer decision and Apple cross-builds on 8 November 2026. The
 
 | Area | Established | Still to prove |
 | --- | --- | --- |
-| AOT / Windows compatibility | Owned CPU/D3D11 suite passes strict AOT on Mac and in visionOS simulator; simulated stereo fixture passes on Mac with zero fallback | Skyrim's reachable code/dependency coverage, Windows-to-xrizer ABI, and a clean broad runtime baseline |
-| D3D11 / Metal / native frame exchange | Actual pixel checks and offscreen stereo presenter/queue tests pass; local tracking/input wiring and the visionOS host build | xrizer's Metal swapchain path, full frame/session lifecycle and physical presentation/input |
-| xrizer Apple port | Frontend builds on three Apple targets; high-level Metal binding and typed texture-lease bridge pass host mock/layout tests | Bridge is disconnected; real provider/backend/compositor error propagation and GPU/session integration remain absent; init still refuses |
-| Skyrim VR | Private prepared code and guest modules built; actual native AOT probes reach EXE CRT initialization | Current no-image target needs classification; no menu, stereo frame, scene, controller or performance result |
+| AOT / Windows compatibility | Owned CPU/D3D11 suite passes strict AOT on Mac and in visionOS simulator; actual MSVC guest scalar/float/matrix static-wrapper tests pass with zero fallback | Complete observed interface coverage, actual guest/provider join and clean broad runtime baseline |
+| D3D11 / Metal / native frame exchange | Owned native xrizer/provider stereo fixture passes real pixel, identity, ownership and four failure/retry checks | Actual Windows D3D11 guest handles through xrizer, full lifecycle and physical presentation/input |
+| xrizer Apple port | Owned native frontend initializes and submits Metal stereo through the adapted provider; ordinary initialization remains disabled | Real host tracking, fallible nonzero pose/input setup, complete restart/shutdown and connected Windows guest graphics |
+| Skyrim VR | Private prepared code and guest modules built; actual native AOT probes reach genuine OpenVR error110 | Connect the proven native XR path; no menu, stereo frame, scene, controller or performance result |
 | Physical Vision Pro | Unsigned owned-fixture device app built | Signing/install/launch, available address space/memory, local stereo/tracking/input/audio and sustained operation |
 
 Do not report a completion percentage: these are risk-reduction milestones, and the largest game-specific uncertainty is still untested.
@@ -63,8 +72,8 @@ xrizer owns the OpenVR compatibility behavior. It does not supply Apple's OpenXR
 
 ### Immediate uncertainties and stop conditions
 
-- Prepared-image analysis now leaves 0.86% of executable-section bytes unexplained; the earlier 78.98% figure describes the wrapped original. Neither number establishes executable-path completeness. Metadata gaps, refused blocks, callback discovery and instruction/ABI semantics still require measured investigation. The latest no-image strict stop must be classified before assuming another static-code gap. Actual scene execution remains the game feasibility gate.
-- `check` has an intermittent released-memory assertion reproduced in the source-unmodified Rosetta baseline; `check-arm64` has a thread/SMC-area failure also seen in the clean bootstrap. Isolate and fix with reproducers. These block declaring the broad baseline accepted, but do not require stopping independent source work. A JIT-specific failure and strict-AOT correctness must be measured separately.
+- Prepared-image analysis now leaves 0.86% of executable-section bytes unexplained; the earlier 78.98% figure describes the wrapped original. Neither number establishes executable-path completeness. Metadata gaps, refused blocks, callback discovery and instruction/ABI semantics still require measured investigation. The earlier no-image stop was classified as a missing Windows import. Current startup is blocked at real OpenVR initialization; the separate native callback SIGBUS remains unresolved. Actual scene execution remains the game feasibility gate.
+- Broad checks remain unresolved: the latest Rosetta and ARM64 candidate runs fail in D3D12 native object release; baseline/regression classification requires an equivalent control. Earlier released-memory and thread/SMC failures were also observed. Isolate and fix with reproducers. These block declaring the broad baseline accepted, but do not require stopping independent source work. A JIT-specific failure and strict-AOT correctness must be measured separately.
 - The existing custom OpenVR adapter uses System021/Compositor026 and test-only readback/expiry exports. Its fixture is a reference, not the production ABI contract. Add a fixture for the pinned xrizer's System019/Compositor022 (plus other interfaces as actually needed), and move diagnostics to host-side evidence rather than making xrizer implement test-only OpenVR exports.
 - The current host provides rotation-only image reprojection and no reconstructed scene depth. Physical translation, world scale/origin and comfort need explicit tests; the old clip-space marker cannot prove them. Haptics, overlays, audio and unsupported MSAA/format paths remain separate coverage items.
 

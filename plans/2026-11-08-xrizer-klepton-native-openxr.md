@@ -1,5 +1,8 @@
 # xrizer → Klepton-derived native OpenXR → visionOS
 
+
+Current source checkpoint: `gseddon/Skyrim-VR-Vision-Pro`, `codex/standalone-import` (`a17ccd6`). Active agents/private builds remain in the original integration checkout during migration; see `MIGRATION.md`. Joined real Windows guest → xrizer → native provider proof is in progress; native Metal fixtures and separate guest ABI controls already pass. No game scene or physical controller acceptance is claimed.
+
 8 November 2026. Implementation plan after source research. **User confirmed existing Apple host + adapted Klepton core; Sony PS VR2 Sense controllers first. Phase A started.** Existing AOT/compiler work continues independently.
 
 ## Outcome and architecture

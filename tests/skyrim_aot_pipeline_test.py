@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import tempfile
 import unittest
@@ -9,6 +10,22 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'tools'))
 import skyrim_aot_pipeline as p
+
+
+def owned_pe(image_size=0x2000):
+    b = bytearray(0x400)
+    b[:2] = b'MZ'; struct.pack_into('<I', b, 0x3c, 0x80)
+    b[0x80:0x84] = b'PE\0\0'
+    struct.pack_into('<HH', b, 0x84, 0x8664, 1)
+    struct.pack_into('<H', b, 0x94, 0xf0)
+    struct.pack_into('<H', b, 0x98, 0x20b)
+    struct.pack_into('<I', b, 0x98+16, 0x1000)
+    struct.pack_into('<Q', b, 0x98+24, 0x140000000)
+    struct.pack_into('<II', b, 0x98+56, image_size, 0x200)
+    struct.pack_into('<I', b, 0x98+108, 16)
+    struct.pack_into('<IIII', b, 0x188+8, 0x200, 0x1000, 0x200, 0x200)
+    struct.pack_into('<I', b, 0x188+36, 0x60000020)
+    return b
 
 
 class PipelineTest(unittest.TestCase):
@@ -19,8 +36,8 @@ class PipelineTest(unittest.TestCase):
         self.compiler = self.root/'compiler'; self.compiler.write_bytes(b'compiler')
         self.script = self.root/'builder'; self.script.write_bytes(b'build script')
         self.original = self.root/'original'; self.original.write_bytes(b'original')
-        self.exe = self.root/'prepared.exe'; self.exe.write_bytes(b'prepared')
-        self.dll = self.root/'guest.dll'; self.dll.write_bytes(b'dll')
+        self.exe = self.root/'prepared.exe'; self.exe.write_bytes(owned_pe())
+        self.dll = self.root/'guest.dll'; self.dll.write_bytes(owned_pe())
         self.runtime = self.root/'runtime'; self.runtime.write_bytes(b'runtime')
         self.assets = self.root/'assets'; self.assets.mkdir()
         self.cache = self.root/'cache'
@@ -50,6 +67,28 @@ class PipelineTest(unittest.TestCase):
                     p.key_for(m,ident,'changed','script',1)[0], p.key_for(m,ident,'compiler','changed',1)[0],
                     p.key_for(m,ident,'compiler','script',2)[0]]
         self.assertTrue(all(key != v for v in variants))
+
+    def test_layout_rejects_wrong_isa_truncated_data_and_unbacked_sections(self):
+        for change in ('machine', 'truncated', 'raw_bounds', 'entry'):
+            with self.subTest(change=change):
+                b = owned_pe()
+                if change == 'machine': struct.pack_into('<H', b, 0x84, 0xaa64)
+                elif change == 'truncated': b = b[:100]
+                elif change == 'raw_bounds': struct.pack_into('<I', b, 0x188+20, 0x10000)
+                else: struct.pack_into('<I', b, 0x98+16, 0x1800)
+                self.exe.write_bytes(b)
+                self.cfg['prepared']['sha256'] = p.digest(self.exe)
+                with self.assertRaisesRegex(ValueError, 'PE layout'):
+                    p.prepare(self.cfg)
+
+    def test_distinct_module_bases_must_not_overlap_image_ranges(self):
+        self.exe.write_bytes(owned_pe(0x20000))
+        self.cfg['prepared']['sha256'] = p.digest(self.exe)
+        self.cfg['dlls'][0]['base'] = '0x140010000'
+        with self.assertRaisesRegex(ValueError, 'mappings overlap'):
+            p.prepare(self.cfg)
+        self.cfg['dlls'][0]['base'] = '0x140020000'
+        self.assertEqual(p.prepare(self.cfg)['modules'][0]['pe']['image_size'], 0x20000)
 
     def test_failed_build_never_enters_cache(self):
         def failure(cmd, **kw):

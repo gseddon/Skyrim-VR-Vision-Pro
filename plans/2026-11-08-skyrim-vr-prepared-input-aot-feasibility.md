@@ -1,5 +1,8 @@
 # Skyrim VR prepared-input AOT feasibility plan
 
+Current source checkpoint: `gseddon/Skyrim-VR-Vision-Pro`, `codex/standalone-import` (`a17ccd6`). Active agents/private builds remain in the original integration checkout during migration; see `MIGRATION.md`. Joined real Windows guest → xrizer → native provider proof is in progress; native Metal fixtures and separate guest ABI controls already pass. No game scene or physical controller acceptance is claimed.
+
+
 Date: 8 November 2026 (Europe/London)
 Status: prepared input and first bounded native probes complete; code availability improved substantially; full AOT feasibility remains open.
 
@@ -191,3 +194,22 @@ The no-image target from `probe-skyrim-003` is now classified. Observed ordinal 
 `runs/skyrim-feasibility/systematic-checks/aot-suite.log`: exit 0, callback regression plus unsplit/split owned suite, positive AOT entries and zero fallback. Fourteen Python audit/dependency/pipeline/startup tests pass. Ledger validation passes with nine records including the actual orchestration control run.
 
 Fresh broad checks are still red: `check.log` exits 2 after a native `d3d_release` crash during `d3d12.exe`; this differs from the earlier intermittent kernelx assertion and requires isolation before attributing it to a baseline or change. `check-arm64.log` exits 2 at the known `threads.exe+0x83f2` exception. The compiler fix is not a clean broad runtime acceptance result.
+
+
+### Systematic pipeline: PE and mapping preflight
+
+The pipeline now validates each prepared/guest module as AMD64 PE32+ before
+planning, building or cache reuse: complete headers/section table, bounded
+image/header/directory data, file-backed section bounds, nonoverlapping virtual
+sections and an executable entry point when nonzero. Mapping checks use full
+64K-rounded image ranges, so distinct selected bases can no longer conceal an
+overlap or 64-bit overflow. The manifest records the inspected layout.
+
+Twenty root Python tests pass, including wrong-ISA/truncated/unbacked-entry
+controls and an overlapping-module rejection with an adjacent-range positive
+control. Read-only checks also accept the actual prepared Skyrim image
+(59,957,248-byte image, nine sections), private d3dx9_42 and X3DAudio1_7 inputs.
+This is basic structural validation, not a claim that every instruction can
+execute, that imports close, or that the prepared image's provenance has been
+independently established. Compiler-binary-to-source build provenance remains
+an explicit follow-up.
