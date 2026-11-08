@@ -234,6 +234,11 @@ int main(int argc,char **argv){
         auto get_interface=(void *(*)(void *,const char *,int *))core_vtable[3];assert(init(core,1,NULL)==0);
         error=-1;auto compositor=(vr::IVRCompositor *)get_interface(core,vr::IVRCompositor_Version,&error);assert(compositor && error==0);
         error=-1;void *system19=get_interface(core,"IVRSystem_019",&error);assert(system19 && error==0);
+        auto adapter19=(void(*)(void *,int32_t *))(*(void ***)system19)[7];
+        struct { uint32_t before; int32_t index; uint32_t after; } adapter={0x12345678,42,0x87654321};
+        adapter19(system19,&adapter.index);adapter19(system19,nullptr);
+        assert(adapter.index==-1 && adapter.before==0x12345678 && adapter.after==0x87654321);
+        puts("actual native System019 slot7: unavailable DXGI mapping reports -1; null and guard words safe");
         auto role19=(vr::TrackedDeviceIndex_t(*)(void *,vr::ETrackedControllerRole))(*(void ***)system19)[18];
         assert(role19(system19,vr::TrackedControllerRole_LeftHand)==vr::k_unTrackedDeviceIndexInvalid);
         assert(role19(system19,vr::TrackedControllerRole_RightHand)==vr::k_unTrackedDeviceIndexInvalid);

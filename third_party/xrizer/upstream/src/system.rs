@@ -892,8 +892,16 @@ impl vr::IVRSystem026_Interface for System {
                 .expect("Failed to get vulkan physical device") as _;
         }
     }
-    fn GetDXGIOutputInfo(&self, _: *mut i32) {
-        todo!()
+    fn GetDXGIOutputInfo(&self, index: *mut i32) {
+        #[cfg(target_vendor = "apple")]
+        {
+            // No verified mapping between the provider Metal device and the
+            // guest DXGI adapter registry is available. OpenVR specifies -1
+            // for an error instead of inventing an adapter index.
+            if let Some(index) = unsafe { index.as_mut() } { *index = -1; }
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        { let _ = index; todo!() }
     }
     fn GetD3D9AdapterIndex(&self) -> i32 {
         todo!()
