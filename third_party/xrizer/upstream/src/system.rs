@@ -394,9 +394,10 @@ impl vr::IVRSystem026_Interface for System {
         state: *mut vr::VRControllerState_t,
         state_size: u32,
     ) -> bool {
-        self.input
-            .force(|_| Input::new(self.openxr.clone()))
-            .get_legacy_controller_state(device_index, state, state_size)
+        let Ok(input) = self.input.try_force(|_| Input::try_new(self.openxr.clone())) else {
+            return false;
+        };
+        input.get_legacy_controller_state(device_index, state, state_size)
     }
     fn GetHiddenAreaMesh(
         &self,

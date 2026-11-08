@@ -864,25 +864,24 @@ impl vr::IVRCompositor029_Interface for Compositor {
         if render_pose_count != 0 || game_pose_count != 0 {
             return vr::EVRCompositorError::RequestFailed;
         }
-        if render_pose_count == 0 {
+        if (render_pose_count != 0 && render_pose_array.is_null()) || (game_pose_count != 0 && game_pose_array.is_null()) {
+            return vr::EVRCompositorError::RequestFailed;
+        }
+        if render_pose_count == 0 && game_pose_count == 0 {
             return vr::EVRCompositorError::None;
         }
-        let render_poses = unsafe {
-            std::slice::from_raw_parts_mut(render_pose_array, render_pose_count as usize)
-        };
         let Ok(input) = self.input.try_force(|_| Input::try_new(self.openxr.clone())) else {
             return vr::EVRCompositorError::RequestFailed;
         };
-        input.get_poses(render_poses, None);
-
-        // Not entirely sure how the game poses are supposed to differ from the render poses,
-        // but a lot of games use the game pose array for controller positions.
+        if render_pose_count > 0 {
+            let render_poses = unsafe { std::slice::from_raw_parts_mut(render_pose_array, render_pose_count as usize) };
+            input.get_poses(render_poses, None);
+        }
+        // xrizer currently uses the same latched poses for game and render.
+        // Populate separately so unequal counts and game-only calls are safe.
         if game_pose_count > 0 {
-            let game_poses = unsafe {
-                std::slice::from_raw_parts_mut(game_pose_array, game_pose_count as usize)
-            };
-            assert!(game_poses.len() <= render_poses.len());
-            game_poses.copy_from_slice(&render_poses[0..game_poses.len()]);
+            let game_poses = unsafe { std::slice::from_raw_parts_mut(game_pose_array, game_pose_count as usize) };
+            input.get_poses(game_poses, None);
         }
 
         vr::EVRCompositorError::None
