@@ -146,6 +146,9 @@ class ProbeTest(unittest.TestCase):
             path = Path(env[f'XDG_{kind}_HOME'])
             self.assertTrue(path.is_dir() and path.is_relative_to(Path(self.args.out)))
         self.assertIn('development host', result['diagnostic']['experimental_xrizer'])
+        self.assertEqual(probe.validate(result), [])
+        dylib.write_bytes(b'changed')
+        self.assertIn('xrizer_dylib artifact changed or missing', probe.validate(result))
 
     def test_xrizer_requires_explicit_absolute_dylib(self):
         self.args.experimental_xrizer = True
