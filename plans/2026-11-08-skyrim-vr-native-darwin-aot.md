@@ -21,9 +21,9 @@ The confirmed XR revision reuses selected Klepton OpenXR and visionOS host code 
 
 The source-only checkpoint is published in `gseddon/Skyrim-VR-Vision-Pro`, branch
 `codex/standalone-import`, initial commit `a17ccd6`. The new checkout is
-`/Users/gseddon/git/Skyrim-VR-Vision-Pro`. Agents currently continue in
-`VeRantyx/build/worktrees/native-darwin-aot` so ongoing builds and evidence are
-not disturbed; see `MIGRATION.md`. Private game inputs, translated game code,
+`/Users/gseddon/git/Skyrim-VR-Vision-Pro`. The approved round now uses three Terra worktrees inside this new repository;
+see `MIGRATION.md`. The previous VeRantyx implementation checkout is a read-only
+reference for private artifacts and immutable evidence. Private game inputs, translated game code,
 toolchains and raw run evidence remain local. One source repository is sufficient.
 
 ## Approved next implementation round
@@ -32,6 +32,18 @@ This section is the current work order; later phase descriptions retain the
 longer project scope and historical evidence. The user approved this round and instructed implementation to begin. All implementation roles use
 `gpt-6.1-terra`; the parent coordinates, reviews and integrates. Completed
 historical workers on other models remain idle.
+
+### Active assignments
+
+- Terra A `/root/terra_guest_stereo_round2`: `build/worktrees/terra-guest-stereo`.
+- Terra B `/root/terra_pose_input_round2`: `build/worktrees/terra-pose-input`.
+- Terra C `/root/terra_skyrim_aot_round2`: `build/worktrees/terra-skyrim-aot`.
+
+All three launched successfully from approved plan commit `8eb61b4`. The prior
+session limit did not recur; no non-Terra implementation workers were resumed.
+First checkpoints established the reusable guest bridge, unchanged frame-host
+contract and a separate coherent input snapshot. A has the first runtime test
+slot; B/C source and isolated CPU work proceed in parallel.
 
 ### Outcome
 

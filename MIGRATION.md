@@ -1,20 +1,23 @@
 # Workspace and source-control migration
 
-8 November 2026. One repository is sufficient for the standalone project and its pinned source dependencies.
+8 November 2026. One repository is sufficient for the standalone project and its pinned source dependencies. The source, approved plan and all new implementation work are now in `gseddon/Skyrim-VR-Vision-Pro`.
 
 | Location | Role |
 | --- | --- |
-| `/Users/gseddon/git/Skyrim-VR-Vision-Pro` | New source repository, `codex/standalone-import` |
-| `/Users/gseddon/git/VeRantyx/build/worktrees/native-darwin-aot` | Active agents/builds/private evidence during this uninterrupted source migration |
-| `/Users/gseddon/git/VeRantyx` | Original main checkout with mirrored plans |
-| `.../build/worktrees/skyrim-vr` | Earlier Skyrim experiment, preserved |
-| `.../build/worktrees/native-darwin-{mac,headset,contract}` | Earlier parallel port checkouts, preserved |
+| `/Users/gseddon/git/Skyrim-VR-Vision-Pro` | Integration checkout, branch `codex/standalone-import` |
+| `build/worktrees/terra-guest-stereo` in this repository | Terra A: guest graphics/ABI, branch `codex/terra-guest-stereo` |
+| `build/worktrees/terra-pose-input` in this repository | Terra B: poses/input, branch `codex/terra-pose-input` |
+| `build/worktrees/terra-skyrim-aot` in this repository | Terra C: actual Skyrim/AOT, branch `codex/terra-skyrim-aot` |
+| `/Users/gseddon/git/VeRantyx/build/worktrees/native-darwin-aot` | Previous implementation checkout; read-only reference for private artifacts and earlier evidence |
+| `/Users/gseddon/git/VeRantyx/build/toolchains/xrizer-rust` | Existing repository-local Rust/Cargo installation; reused with separate output/XDG directories |
 
-Agents continue their current work in the implementation checkout while source snapshots are checked into the new repository. No old worktree is reset, removed or repointed. At a natural checkpoint, agents can move to the new source checkout after private build/input paths are configured and existing evidence remains valid. Until then, new verified source increments are synchronized independently of private artifacts.
+The approved round starts from `8eb61b4` (implementation checkpoint `fc17152` plus the approved plan). The three new agents are Terra; historical workers remain idle. New tests/builds/evidence stay in each new worktree's ignored output paths. Private game inputs are copied only when needed and checked by hash; unchanged AOT modules may be reused by explicit immutable paths after matching descriptors/bases. No old worktree is reset, removed or repointed.
 
-GitHub authentication for this repository uses its own `GH_CONFIG_DIR` under `.git/gh-auth` and a repository-local HTTPS credential helper. No credentials are committed. Existing global configuration is preserved. Use that environment for `gh` operations on this repository; ordinary Git uses the local helper.
+The other original VeRantyx checkouts remain preserved: main checkout, `skyrim-vr` and `native-darwin-{mac,headset,contract}`. No source synchronization back into them is required now.
 
-The imported checkpoint has known failing broad runtime checks. Source control preserves this experimental state and its explicit limitations; the import is not a compatibility or playability claim.
+GitHub authentication for this repository uses its own `GH_CONFIG_DIR` under the integration checkout's `.git/gh-auth` and a repository-local HTTPS credential helper. No credentials are committed. Existing global configuration is preserved. Use that environment for `gh` operations on this repository; ordinary Git uses the local helper.
+
+The imported checkpoint has known failing broad runtime checks. Source control preserves this experimental state and its explicit limitations; it is not a compatibility or playability claim. Historical import verification follows.
 
 ## Import verification
 
@@ -40,6 +43,7 @@ It passes with 33 AOT entries and zero fallback, including real provider
 initialization, matrix returns and cancellation/cleanup, without drawing.
 Later provider action identity and xrizer failure controls have separate test
 evidence; the artifact pins distinguish them from the frozen Stage1 build.
-The latest root Python suite has 20 passing tests. All three agents are paused
-at safe checkpoints for a planning review; Stage2 has not started. Next
-implementation assignments should use Terra for the user's cost preference.
+The latest root Python suite has 20 passing tests. The three original agents paused at safe checkpoints for planning. The user
+then approved the next round: three new Terra agents now work in the new
+repository as listed above. Stage2 guest stereo, poses/input and actual game
+routing are active; this does not change the earlier acceptance scope.
