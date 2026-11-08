@@ -338,6 +338,36 @@ static inline void native_return(x86_ctx *c) {
     c->rip = *sp; c->gpr[4] += 8;
     if (c->ras) c->ras = (c->ras & ~(uint64_t)((1u << XLAT_RAS_BITS) - 1)) | ((c->ras - 16) & ((1u << XLAT_RAS_BITS) - 1));
 }
+// Opt-in, bounded self-reads for diagnosing a null indirect call. RCX/RAX are
+// candidates; their interpretation depends on the guest callsite.
+static int null_read_word(uint64_t address, uint64_t *value) {
+    mach_vm_size_t got = 0;
+    return address && address <= UINT64_MAX - sizeof(*value) &&
+        mach_vm_read_overwrite(mach_task_self(), address, sizeof(*value),
+            (mach_vm_address_t)(uintptr_t)value, &got) == KERN_SUCCESS && got == sizeof(*value);
+}
+void xa_trace_null_target(const x86_ctx *c) {
+    static unsigned emitted;
+    unsigned n = __atomic_load_n(&emitted, __ATOMIC_RELAXED);
+    do { if (n >= 4) return; } while (!__atomic_compare_exchange_n(&emitted, &n, n + 1, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+    uint64_t object = c->gpr[1], table = c->gpr[0], v = 0, caller = 0;
+    int caller_ok = null_read_word(c->gpr[4], &caller);
+    int object_ok = null_read_word(object, &v);
+    vx_log("aot-null-target: candidates rcx=%#llx object-word=%s%#llx rax=%#llx caller=%s%#llx",
+        (unsigned long long)object, object_ok ? "" : "unreadable:", (unsigned long long)(object_ok ? v : 0),
+        (unsigned long long)table, caller_ok ? "" : "unreadable:", (unsigned long long)(caller_ok ? caller : 0));
+    for (unsigned i = 0; i < 8; i++) {
+        uint64_t offset = (uint64_t)i * 8, entry = 0;
+        if (table > UINT64_MAX - offset || !null_read_word(table + offset, &entry)) {
+            vx_log("aot-null-target: candidate table slot %u unreadable", i); break;
+        }
+        const char *image = vx_image_name_at(entry);
+        Dl_info info = {0};
+        dladdr((void *)(uintptr_t)entry, &info);
+        vx_log("aot-null-target: candidate table slot %u=%#llx image=%s native=%s", i,
+            (unsigned long long)entry, image ? image : "unknown", info.dli_sname ? info.dli_sname : "unknown");
+    }
+}
 int xa_run(xe *e, x86_ctx *c, uint64_t stop, void (*(*native)(uint64_t))(x86_ctx *)) {
     if (g_strict < 0) g_strict = getenv("VXRT_AOT_STRICT") && atoi(getenv("VXRT_AOT_STRICT"));
     for (;;) {
@@ -345,7 +375,7 @@ int xa_run(xe *e, x86_ctx *c, uint64_t stop, void (*(*native)(uint64_t))(x86_ctx
         uint64_t rip = c->rip;
         if (rip == stop) return 0;
         // NULL is a guest instruction-fetch fault, not a hit in the initially empty thunk cache.
-        if (!rip) { c->fault = X86_FAULT_PF; c->fault_info = 0; return X86_FAULT_PF; }
+        if (!rip) { if (getenv("VXRT_AOT_NULL_DIAGNOSTIC")) xa_trace_null_target(c); c->fault = X86_FAULT_PF; c->fault_info = 0; return X86_FAULT_PF; }
         // (a thread's cache of the last addresses: a module's block, or a native function's thunk; most exits are
         // native calls and the returns from them, and the searches below cost more than the call)
         xa_cached *k = &t_cache[(rip ^ rip >> 12) & (NCACHE - 1)];
