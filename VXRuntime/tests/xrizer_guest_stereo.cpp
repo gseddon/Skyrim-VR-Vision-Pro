@@ -46,6 +46,10 @@ extern "C" void mainCRTStartup() {
     check(core->Init(vr::VRApplication_Scene,nullptr)==0,3);
     auto comp=(vr::IVRCompositor *)core->GetGenericInterface(vr::IVRCompositor_Version,(vr::EVRInitError *)&error);
     check(comp && !error,4);
+    auto system=(vr::IVRSystem *)core->GetGenericInterface(vr::IVRSystem_Version,(vr::EVRInitError *)&error);
+    check(system && !error,26);
+    check(system->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand)==vr::k_unTrackedDeviceIndexInvalid &&
+          system->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_RightHand)==vr::k_unTrackedDeviceIndexInvalid,27);
     void *device=nullptr,*context=nullptr; check(create(nullptr,1,nullptr,0,nullptr,0,7,&device,nullptr,&context)==0 && device && context,5);
     Desc desc={8,8,1,1,28,1,0,0,0x20,0,0}; void *textures[2]={};
     void *bad_device=nullptr,*bad_context=nullptr,*bad_texture=nullptr;
@@ -69,8 +73,22 @@ extern "C" void mainCRTStartup() {
     Desc shared_desc=desc; shared_desc.misc=2; void *shared=nullptr;
     check(((create_texture_fn)table(device)[5])(device,&shared_desc,nullptr,&shared)==0 && shared,18);
     const vr::VRTextureBounds_t bounds={.25f,.125f,.75f,.5f};
+    float first_position=0;
     for (unsigned frame=0;frame<2;++frame) {
-        check(comp->WaitGetPoses(nullptr,0,nullptr,0)==0,7);
+        struct { unsigned long long before; vr::TrackedDevicePose_t values[3]; unsigned long long after; }
+            poses={0x123456789abcdef0ull,{},0xfedcba9876543210ull};
+        check(comp->WaitGetPoses(poses.values,3,nullptr,0)==0,7);
+        check(poses.before==0x123456789abcdef0ull && poses.after==0xfedcba9876543210ull &&
+              poses.values[0].bDeviceIsConnected && poses.values[0].bPoseIsValid &&
+              !poses.values[1].bDeviceIsConnected && !poses.values[1].bPoseIsValid &&
+              !poses.values[2].bDeviceIsConnected && !poses.values[2].bPoseIsValid,28);
+        float current=poses.values[0].mDeviceToAbsoluteTracking.m[0][3];
+        if (!frame) first_position=current; else check(current!=first_position,29);
+        vr::TrackedDevicePose_t last[3]={},one={};
+        check(comp->GetLastPoses(last,3,nullptr,0)==0 && last[0].bPoseIsValid &&
+              last[0].mDeviceToAbsoluteTracking.m[0][3]==current && !last[1].bDeviceIsConnected,30);
+        check(comp->GetLastPoseForTrackedDeviceIndex(0,&one,nullptr)==0 && one.bPoseIsValid &&
+              one.mDeviceToAbsoluteTracking.m[0][3]==current,31);
         if (!frame) {
             vr::Texture_t invalid={(void *)0x1234,vr::TextureType_DirectX,vr::ColorSpace_Linear};
             check(comp->Submit(vr::Eye_Left,&invalid,&bounds,vr::Submit_Default)==vr::VRCompositorError_InvalidTexture,13);
@@ -96,7 +114,7 @@ extern "C" void mainCRTStartup() {
     for (unsigned eye=0;eye<2;++eye) ((release_fn)table(textures[eye])[2])(textures[eye]);
     ((release_fn)table(context)[2])(context); ((release_fn)table(device)[2])(device);
     core->Cleanup(); check(finish()==0,11);
-    const char message[]="xrizer_guest_stereo: real D3D11 two changing stereo pairs -> ok\n"; unsigned written=0;
+    const char message[]="xrizer_guest_stereo: real D3D11 two changing stereo pairs and nonzero poses -> ok\n"; unsigned written=0;
     check(WriteFile(GetStdHandle((unsigned)-11),message,sizeof message-1,&written,nullptr) && written==sizeof message-1,12);
     ExitProcess(0);
 }

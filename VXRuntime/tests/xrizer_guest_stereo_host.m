@@ -45,6 +45,8 @@ static WINAPI int StereoCheck(unsigned variant) {
     vx_xrizer_guest_host_stats stats; vx_xrizer_guest_host_get_stats(host,&stats);
     vx_log("xrizer_guest_stereo: observed waits %u publishes %u cancels %u outstanding %u frame %llu pose %llu",
            stats.waits,stats.publishes,stats.cancels,stats.outstanding,(unsigned long long)stats.frame_id,(unsigned long long)stats.pose_id);
+    if (variant && !stats.input_samples) return -1;
+    vx_log("xrizer_guest_stereo: disconnected input snapshots %u", stats.input_samples);
     if (stats.waits!=variant+1 || stats.publishes!=variant+1 || stats.cancels || stats.outstanding ||
         stats.frame_id!=101+variant || stats.pose_id!=201+variant) return -1;
     vx_log("xrizer_guest_stereo: leases %llu/%llu copies %llu frame %llu pose %llu", (unsigned long long)acquired,(unsigned long long)released,(unsigned long long)copied,
