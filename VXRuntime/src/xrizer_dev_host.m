@@ -17,6 +17,9 @@
 #include "frame_host.h"
 #include "input_host.h"
 #include "apple_metal_host.h"
+#ifdef VXRT_XRIZER_DEV_AUDIT
+extern int vx_xrizer_dev_audit_observe(uint32_t variant);
+#endif
 
 @interface VXDevXRHost : NSObject
 @property(nonatomic,strong) id<MTLDevice> device;
@@ -183,9 +186,9 @@ static XrResult publish(void *p,const KlNativeFramePair *pair) {
     for (unsigned i=0;i<2;i++) { if (vx_native_vr_complete(h.frames,frame,i)) goto failed; completed|=1u<<i; }
 #ifdef VXRT_XRIZER_DEV_AUDIT
     if (h.audit) {
-        ++h.published; h.outstanding=NO;
+        ++h.published;
         vx_log("xrizer dev audit: published frame %llu pose %llu",(unsigned long long)pose.frame_id,(unsigned long long)pose.pose_id);
-        return XR_SUCCESS;
+        (void)vx_xrizer_dev_audit_observe(h.published-1);
     }
 #endif
     vx_native_vr_frame read;
@@ -252,7 +255,7 @@ int vx_xrizer_dev_audit_acquire(vx_native_vr_frame *out) {
 int vx_xrizer_dev_audit_release(uint64_t lease) {
     VXDevXRHost *h=dev_host;
     if (!h || !h.audit || !h.frames || h.acquired!=h.released+1 || vx_native_vr_release(h.frames,lease)) return -1;
-    ++h.released; vx_native_vr_reset(h.frames); return 0;
+    ++h.released; return 0;
 }
 int vx_xrizer_dev_audit_finish(void) {
     VXDevXRHost *h=dev_host; uint64_t acquired=0,released=0,copied=0;
