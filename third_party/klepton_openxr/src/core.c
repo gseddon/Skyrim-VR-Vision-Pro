@@ -376,7 +376,7 @@ static XrResult XRAPI_CALL klxr_DestroyActionSet(XrActionSet set) {
     return XR_ERROR_HANDLE_INVALID;
 }
 /* Adapted from upstream CreateAction/DestroyAction lines 3361-3384; this
- * first owned slice stores pose-action identity only, with no tracking claim. */
+ * first owned slice stores pose/boolean action identity only, with no input claim. */
 static XrResult XRAPI_CALL klxr_CreateAction(XrActionSet set, const XrActionCreateInfo *info, XrAction *out) {
     XrInstance owner = XR_NULL_HANDLE;
     for (unsigned i = 0; i < ACTION_SET_LIMIT; ++i)
@@ -384,7 +384,7 @@ static XrResult XRAPI_CALL klxr_CreateAction(XrActionSet set, const XrActionCrea
     if (!owner) return XR_ERROR_HANDLE_INVALID;
     if (!info || !out || info->type != XR_TYPE_ACTION_CREATE_INFO || info->next) return XR_ERROR_VALIDATION_FAILURE;
     *out = XR_NULL_HANDLE;
-    if (info->actionType != XR_ACTION_TYPE_POSE_INPUT) return XR_ERROR_FEATURE_UNSUPPORTED;
+    if (info->actionType != XR_ACTION_TYPE_POSE_INPUT && info->actionType != XR_ACTION_TYPE_BOOLEAN_INPUT) return XR_ERROR_FEATURE_UNSUPPORTED;
     if (!memchr(info->actionName, 0, sizeof info->actionName) || !info->actionName[0]) return XR_ERROR_NAME_INVALID;
     if (!memchr(info->localizedActionName, 0, sizeof info->localizedActionName) || !info->localizedActionName[0]) return XR_ERROR_LOCALIZED_NAME_INVALID;
     char path[XR_MAX_ACTION_NAME_SIZE + 2]; path[0] = '/';
@@ -834,9 +834,18 @@ static int local_from_space(XrSpace space, const KlNativeFrameSample *sample, Xr
 static XrResult XRAPI_CALL klxr_LocateSpace(XrSpace space, XrSpace base_space, XrTime time, XrSpaceLocation *location) {
     if (!valid_space(space) || !valid_space(base_space)) return XR_ERROR_HANDLE_INVALID;
     if (space->owner != base_space->owner) return XR_ERROR_HANDLE_INVALID;
-    if (!location || location->type != XR_TYPE_SPACE_LOCATION || location->next) return XR_ERROR_VALIDATION_FAILURE;
+    if (!location || location->type != XR_TYPE_SPACE_LOCATION) return XR_ERROR_VALIDATION_FAILURE;
+    XrSpaceVelocity *velocity = location->next;
+    if (velocity && (velocity->type != XR_TYPE_SPACE_VELOCITY || velocity->next)) return XR_ERROR_VALIDATION_FAILURE;
     XrSession session = space->owner;
     if (!session->frame_ticket || session->frame_poison || time != session->sample.predicted_display_time) return XR_ERROR_TIME_INVALID;
+    /* No measured velocity in the frame host contract. Never infer it from
+     * neighboring snapshots or claim a valid zero-velocity observation. */
+    if (velocity) {
+        velocity->velocityFlags = 0;
+        velocity->linearVelocity = (XrVector3f){0};
+        velocity->angularVelocity = (XrVector3f){0};
+    }
     XrPosef a, b; XrSpaceLocationFlags fa, fb;
     if (!local_from_space(space, &session->sample, &a, &fa) || !local_from_space(base_space, &session->sample, &b, &fb)) { location->locationFlags = 0; return XR_SUCCESS; }
     location->pose = kl_native_pose_relative(b, a);

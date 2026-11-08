@@ -166,6 +166,14 @@ int main(void) {
     next_sample.local_from_stage.position.y = -1;
     assert(wait_frame(session, NULL, &fs) == XR_SUCCESS);
     assert(locate_space(view, stage, 110, &location) == XR_SUCCESS && location.locationFlags && location.pose.position.y == 2.5f);
+    XrSpaceVelocity velocity = { .type = XR_TYPE_SPACE_VELOCITY, .velocityFlags = UINT64_MAX,
+        .linearVelocity = {1, 2, 3}, .angularVelocity = {4, 5, 6} };
+    location.next = &velocity;
+    assert(locate_space(view, stage, 110, &location) == XR_SUCCESS && location.locationFlags && location.pose.position.y == 2.5f);
+    assert(velocity.velocityFlags == 0 && velocity.linearVelocity.x == 0 && velocity.angularVelocity.z == 0);
+    velocity.next = &velocity;
+    assert(locate_space(view, stage, 110, &location) == XR_ERROR_VALIDATION_FAILURE);
+    velocity.next = NULL; location.next = NULL;
     assert(begin_frame(session, NULL) == XR_SUCCESS);
     fi.displayTime = 110; assert(end_frame(session, &fi) == XR_SUCCESS);
     next_sample.frame_id = 103; next_sample.pose_id = 203; next_sample.predicted_display_time = 120;

@@ -834,7 +834,9 @@ impl vr::IVRCompositor029_Interface for Compositor {
             return vr::EVRCompositorError::RequestFailed;
         }
 
-        let input = self.input.force(|_| Input::new(self.openxr.clone()));
+        let Ok(input) = self.input.try_force(|_| Input::try_new(self.openxr.clone())) else {
+            return vr::EVRCompositorError::RequestFailed;
+        };
 
         let Some(pose) = input.get_device_pose(device_index, None) else {
             return vr::EVRCompositorError::RequestFailed;
@@ -868,9 +870,10 @@ impl vr::IVRCompositor029_Interface for Compositor {
         let render_poses = unsafe {
             std::slice::from_raw_parts_mut(render_pose_array, render_pose_count as usize)
         };
-        self.input
-            .force(|_| Input::new(self.openxr.clone()))
-            .get_poses(render_poses, None);
+        let Ok(input) = self.input.try_force(|_| Input::try_new(self.openxr.clone())) else {
+            return vr::EVRCompositorError::RequestFailed;
+        };
+        input.get_poses(render_poses, None);
 
         // Not entirely sure how the game poses are supposed to differ from the render poses,
         // but a lot of games use the game pose array for controller positions.
@@ -945,7 +948,7 @@ impl vr::IVRCompositor029_Interface for Compositor {
             system.reset_views();
         }
         if let Some(input) = self.input.get() {
-            input.frame_start_update();
+            if input.frame_start_update().is_err() { return vr::EVRCompositorError::RequestFailed; }
         }
 
         self.GetLastPoses(

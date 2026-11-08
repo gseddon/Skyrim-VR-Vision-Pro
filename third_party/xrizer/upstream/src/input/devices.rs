@@ -334,15 +334,8 @@ pub struct SubactionPaths {
 }
 
 impl SubactionPaths {
-    pub fn new(instance: &xr::Instance) -> Self {
-        let left = instance
-            .string_to_path("/user/hand/left")
-            .expect("Failed to convert string to path");
-        let right = instance
-            .string_to_path("/user/hand/right")
-            .expect("Failed to convert string to path");
-
-        Self { left, right }
+    pub fn try_new(instance: &xr::Instance) -> xr::Result<Self> {
+        Ok(Self { left: instance.string_to_path("/user/hand/left")?, right: instance.string_to_path("/user/hand/right")? })
     }
 }
 

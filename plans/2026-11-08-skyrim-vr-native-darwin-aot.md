@@ -410,3 +410,17 @@ The xrizer Metal binding and typed host bridge are verified only through mocks/l
 ### Confirmed Klepton integration and controller target
 
 The user selected the existing Apple host with a selectively adapted Klepton OpenXR core, and Sony PS VR2 Sense controllers for the first physical input proof. The supervised Terra boot increment is in `third_party/klepton_openxr/`: native dispatch/instance/system tests and visionOS cross-builds pass, including parent platform/hash review. UBSan-only passes; ASan also stalls on an independent minimal control and remains unresolved. The boot core has no sessions/spaces/actions/Metal, complete Rust Instance loading or xrizer frame integration. The linked XR subplan and extraction report retain these unchecked gates; no physical tracking or game capability is credited.
+
+
+### Planning checkpoint: real guest/provider join
+
+The owned MSVC guest → static AOT wrappers → real xrizer → native provider
+Stage1 fixture now passes: actual initialization, System019 member/FnTable
+matrices, honest nonzero-pose/input refusals, empty-frame cancellation and
+cleanup, with 33 AOT entries and zero fallback. It performs no source texture
+submission or drawing. See `research/2026-11-08-xrizer-guest-abi.md` and the
+source checkpoint provenance. The next joined proof is actual guest-created
+D3D11 textures, real producer completion and verified stereo pixels. Nonzero
+poses/controllers, visionOS integration, broad runtime failures and actual
+Skyrim remain open. Agents paused safely for the user's planning session;
+new implementation work should prioritize Terra for cost.

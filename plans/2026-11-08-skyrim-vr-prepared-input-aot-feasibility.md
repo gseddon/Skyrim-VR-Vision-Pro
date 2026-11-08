@@ -213,3 +213,17 @@ This is basic structural validation, not a claim that every instruction can
 execute, that imports close, or that the prepared image's provenance has been
 independently established. Compiler-binary-to-source build provenance remains
 an explicit follow-up.
+
+
+### Planning checkpoint: real guest/provider join
+
+The owned MSVC guest → static AOT wrappers → real xrizer → native provider
+Stage1 fixture now passes: actual initialization, System019 member/FnTable
+matrices, honest nonzero-pose/input refusals, empty-frame cancellation and
+cleanup, with 33 AOT entries and zero fallback. It performs no source texture
+submission or drawing. See `research/2026-11-08-xrizer-guest-abi.md` and the
+source checkpoint provenance. The next joined proof is actual guest-created
+D3D11 textures, real producer completion and verified stereo pixels. Nonzero
+poses/controllers, visionOS integration, broad runtime failures and actual
+Skyrim remain open. Agents paused safely for the user's planning session;
+new implementation work should prioritize Terra for cost.

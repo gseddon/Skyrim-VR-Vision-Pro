@@ -38,7 +38,7 @@ macro_rules! button_mask_from_ids {
 }
 
 impl<C: openxr_data::Compositor> Input<C> {
-    pub fn setup_legacy_actions(&self) {
+    pub fn setup_legacy_actions(&self) -> xr::Result<()> {
         debug!("setting up legacy actions");
 
         let session_data = self.openxr.session_data.get();
@@ -47,7 +47,7 @@ impl<C: openxr_data::Compositor> Input<C> {
             &self.openxr.instance,
             self.subaction_paths.left,
             self.subaction_paths.right,
-        );
+        )?;
         let input_data = &session_data.input_data;
 
         profiles::run_for_all_profiles(&mut Runner {
@@ -104,6 +104,7 @@ impl<C: openxr_data::Compositor> Input<C> {
             .actions
             .set(LoadedActions::Legacy(legacy))
             .unwrap_or_else(|_| panic!("Actions unexpectedly set up"));
+        Ok(())
     }
 
     pub fn legacy_haptic(
@@ -388,41 +389,41 @@ pub(super) struct LegacyActionData {
 }
 
 impl LegacyActionData {
-    pub fn new(instance: &xr::Instance, left_hand: xr::Path, right_hand: xr::Path) -> Self {
+    pub fn new(instance: &xr::Instance, left_hand: xr::Path, right_hand: xr::Path) -> xr::Result<Self> {
         debug!("creating legacy actions");
         let leftright = [left_hand, right_hand];
 
         let set = instance
             .create_action_set("xrizer-legacy-set", "XRizer Legacy Set", 0)
-            .unwrap();
+            ?;
 
         let actions = LegacyActions {
             trigger_click: set
                 .create_action("trigger-click", "Trigger Click", &leftright)
-                .unwrap(),
-            trigger: set.create_action("trigger", "Trigger", &leftright).unwrap(),
-            squeeze: set.create_action("squeeze", "Squeeze", &leftright).unwrap(),
+                ?,
+            trigger: set.create_action("trigger", "Trigger", &leftright)?,
+            squeeze: set.create_action("squeeze", "Squeeze", &leftright)?,
             app_menu: set
                 .create_action("app-menu", "Application Menu", &leftright)
-                .unwrap(),
-            a: set.create_action("a", "A Button", &leftright).unwrap(),
+                ?,
+            a: set.create_action("a", "A Button", &leftright)?,
             squeeze_click: set
                 .create_action("grip-click", "Grip Click", &leftright)
-                .unwrap(),
+                ?,
             main_xy: set
                 .create_action("main-joystick", "Main Joystick/Trackpad", &leftright)
-                .unwrap(),
+                ?,
             main_xy_click: set
                 .create_action("main-joystick-click", "Main Joystick Click", &leftright)
-                .unwrap(),
+                ?,
             main_xy_touch: set
                 .create_action("main-joystick-touch", "Main Joystick Touch", &leftright)
-                .unwrap(),
-            haptic: set.create_action("haptic", "Haptic", &leftright).unwrap(),
+                ?,
+            haptic: set.create_action("haptic", "Haptic", &leftright)?,
             extra: Actions,
         };
 
-        Self { set, actions }
+        Ok(Self { set, actions })
     }
 }
 

@@ -216,3 +216,61 @@ Selected snapshotted production sources:
 - `third_party/xrizer/upstream/src/graphics_backends/metal.rs`: `8bcc4587e27e44b31c26b6dd19933aa73db2ba792583d9d03f93e0662a839a04`
 - `third_party/klepton_openxr/src/core.c`: `4473056b06bc510f058105a63d8eef4cdc446f5b06cc00ef5827ff292342ba25`
 - `third_party/klepton_openxr/src/metal_host.m`: `7cfe011c5db866da56fdc4f8d348c364169916444e5c8ce778d4f5a28755d161`
+
+## Isolated diagnostic after POSE_INPUT identity implementation
+
+Snapshot `xrizer-frontend-X12jyH` is diagnostic only. Its live sources were not edited. Inside the isolated source snapshot, exactly the two nonzero-count guards in `WaitGetPoses` and `GetLastPoses` were removed; the direct tracked-device guard stayed. The fixture was changed only to trace real typed `xrCreateAction` results and perform at most two one-HMD-pose calls with empty-layer handoff between them. `diagnostic-source-changes.json` preserves the exact unified diff and before/after hashes for both files; the base and actual compiled source manifests are separate. This deliberate guard bypass is not production acceptance.
+
+First call: actual grip-pose `xrCreateAction` type4 succeeds; `WaitGetPoses(&pose,1,nullptr,0)` returns0 with connected/valid1, and actual empty-layer PostPresentHandoff cancels the acquired ticket (wait1/cancel1/publish0). Second call: sample102/202 is acquired, then real legacy input setup requests `xrCreateAction` named `trigger-click`, BOOLEAN type1. The provider returns -8 (`XR_ERROR_FEATURE_UNSUPPORTED`). An unwrap at `input/legacy.rs:402` aborts through `setup_legacy_actions` line46, `Input::frame_start_update` line1535 and Compositor022 WaitGetPoses. The isolated child returns SIGABRT (-6), runner returns1. Full source-matched backtrace is retained. This is an unsafe unsupported path, not a normal refusal; the unmodified production guards remain necessary.
+
+No source GPU commands, Submit calls, Windows guest ABI, controller/tracking support, physical device or game behavior is credited. One head-only result does not establish repeated pose-array support. The runner explicitly confines XDG state/config and captures its execution environment; no external log cleanup was performed. Stop this diagnostic loop at the observed required BOOLEAN action refusal, and resolve error propagation before broader input work.
+
+| X12jyH artifact | SHA-256 |
+| --- | --- |
+| `base-source-manifest.json` | `cf6e4c61f9b3ebf5b25add1c323821bfd80bd7f7442731fb8c196bf26d4d11bd` |
+| `source-manifest.json` | `bf7d16669ac42706f07b326817a51163f3f0739078e7c511c7ed4e4297aadc22` |
+| `diagnostic-source-changes.json` | `e8f0ff9deb75b0107ba57801739d63aa53c8b429dc6cd7bbd00a6442605c0d63` |
+| `diagnostic-runner.sh` | `6c6f4ab9808b2243e525cef47472407e121132b21995e88fc55ae1df1fe9df3a` |
+| `xrizer-frontend` | `9bc3bc6a395490c0401fbedd5cc81b2771232d9a3a04edf981891f0695b5eba7` |
+| `libxrizer.dylib` | `1f13877832a5a8a142a6c280e786e630cde07e83d1364b1adc7142f15927e31b` |
+| `run.log` | `2a335519c3b937ff62c351897ff861aab69673de9ddcb3168cfc23a69e9d0183` |
+| `run.status` | `d7b906a85360766ca93a7f2a3391ddc205bb248d2ec6e045769e67889fc1ebd5` |
+| `runner.status` | `4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865` |
+| `execution-environment.json` | `624945c86e14ca0f3ed7eb4ab9510adc58f18e674ad6af3c39e46921cda27b53` |
+| `state/xrizer/xrizer.txt` | `93fdaaf192a64e647c375f0def63019547f8333b4c2f74ac16f39fa1844faf1c` |
+
+Compiled diagnostic source identities:
+
+- `third_party/xrizer/upstream/src/compositor.rs`: `8f8b976b11e1b6d86ac8493167a8de1b4787f39132678c1982052894770b803f`
+- `third_party/xrizer/upstream/src/input.rs`: `989d4663b875294ed7ef55111f2316d797c78ea86ae93365f2906377cd9dc1fb`
+- `third_party/xrizer/upstream/src/input/legacy.rs`: `085199ef28b8209fc40f584917b66860c435d26723131f73ce86c11740888897`
+- `third_party/klepton_openxr/src/core.c`: `bd7398a099807149bcbf8086df266318d096626d1fc2f94d84799677dd6eb832`
+- `third_party/klepton_openxr/tests/xrizer_stereo.m`: `211bff7f42a3d9ad7968626583bb57e7573019cbc861ae53e070bb991cd09bbf`
+
+## Diagnostic error propagation and empty-frame ownership after the fix
+
+Snapshot `xrizer-frontend-Aro9iT` repeats the same isolated two-guard diagnostic after xrizer made legacy action construction and `frame_start_update` fallible. The diagnostic fixture additionally asserts resource teardown. No live source guard was removed. The actual first head-only call returns0 with connected/valid1 after POSE_INPUT action creation. The second actual `trigger-click` BOOLEAN action still truthfully returns -8; it now propagates as WaitGetPoses RequestFailed (1), with invalid/disconnected output and no panic. Actual empty-layer PostPresentHandoff cancels each ticket: waits2/cancels2/publishes0/outstanding0. Actual Cleanup gives begin/request-exit/end1/1/1, then provider host tables and the Apple Metal resource host are unregistered/destroyed successfully. Child and runner exit0.
+
+This accepts error propagation and ticket cleanup under a diagnostic guard bypass. The production guards stay enabled. BOOLEAN input is still unavailable, and this does not accept repeated pose-array support, controller state, GPU rendering, a Windows caller, headset presentation or game behavior. The earlier X12jyH abort remains the pre-fix failure evidence.
+
+| Aro9iT artifact | SHA-256 |
+| --- | --- |
+| `base-source-manifest.json` | `12a383707ae5a5738f0841a6b6eadd5a73858c1d3a0677dc4493cb5b49b2d208` |
+| `source-manifest.json` | `39f317d0161bbeb2d223f8d01871f0bcd8ce9a696351f625a6c2ae66acd85642` |
+| `diagnostic-source-changes.json` | `e6f30fd7b24eac047d96fe09d6acad84aee24286677bfda720e94124874d963a` |
+| `diagnostic-runner.sh` | `98e4241708de74e0c328aec8af831eb48386b2e66ac022eb2e9c436341f792b6` |
+| `xrizer-frontend` | `a4bf980e9dd46fea309289cf61206e3e5427c1e25d1e2f166786a5b1651b9b65` |
+| `libxrizer.dylib` | `37f402be0e166db5a1a36c0aaeac4a4374a94208126bb359a15250b87e960f1a` |
+| `run.log` | `9d6104ff8cb1a6ecbc41b15bb3625cb3ec75064270d6a4434af5c6512f775f54` |
+| `run.status` | `9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa` |
+| `runner.status` | `9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa` |
+| `execution-environment.json` | `bb75b6139ededbaeccaa95aa354ecea95fcf6bed0e9ac495aa69808ba9574199` |
+| `state/xrizer/xrizer.txt` | `2a3a7f03ea7c3e74767cbcb9afd2e287b745ccc616e4da24cd3130c91b08e6bf` |
+
+Compiled diagnostic source identities:
+
+- `third_party/xrizer/upstream/src/compositor.rs`: `886d0432add38b57007193bb46d0c39969a1af2fc1237c3b13990421d77672d2`
+- `third_party/xrizer/upstream/src/input.rs`: `62183d5f1252d84584da430f2673654adc0580faf653292213aea7723ff98386`
+- `third_party/xrizer/upstream/src/input/legacy.rs`: `025bc22c4fc4d76b6fefe67922f208e7aee012d13ad2ecb22cdc88cc3c108fe2`
+- `third_party/klepton_openxr/src/core.c`: `bd7398a099807149bcbf8086df266318d096626d1fc2f94d84799677dd6eb832`
+- `third_party/klepton_openxr/tests/xrizer_stereo.m`: `b21457ea5413140e2e7701c4fb52d01a57d2bb934b363a652b9f987b6524292b`

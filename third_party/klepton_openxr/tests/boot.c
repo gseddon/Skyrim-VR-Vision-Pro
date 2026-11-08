@@ -103,6 +103,9 @@ int main(void) {
     ai.countSubactionPaths = 1;
     ai.subactionPaths = &left; ai.actionType = XR_ACTION_TYPE_FLOAT_INPUT;
     assert(create_action(set2, &ai, &other) == XR_ERROR_FEATURE_UNSUPPORTED);
+    ai.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
+    assert(create_action(set2, &ai, &other) == XR_SUCCESS && other != action);
+    assert(destroy_action(other) == XR_SUCCESS);
     ai.actionType = XR_ACTION_TYPE_POSE_INPUT;
     assert(create_action(set2, &ai, &other) == XR_SUCCESS && other != action);
     assert(destroy_set(set2) == XR_SUCCESS);
