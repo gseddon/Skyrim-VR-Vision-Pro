@@ -1172,7 +1172,7 @@ index 77ab6ed..94702c9 100644
      fn reset_spaces(&self) {
          self.left_space.reset_raw();
 diff --git a/src/input/devices.rs b/src/input/devices.rs
-index bdd9e70..d9d8989 100644
+index bdd9e70..43a857e 100644
 --- a/src/input/devices.rs
 +++ b/src/input/devices.rs
 @@ -334,15 +334,8 @@ pub struct SubactionPaths {
@@ -1192,6 +1192,28 @@ index bdd9e70..d9d8989 100644
 +        Ok(Self { left: instance.string_to_path("/user/hand/left")?, right: instance.string_to_path("/user/hand/right")? })
      }
  }
+ 
+@@ -481,15 +474,17 @@ impl<C: openxr_data::Compositor> Input<C> {
+         for (i, pose) in poses.iter_mut().enumerate() {
+             let device = devices.get_device(i as u32);
+ 
+-            if let Some(device) = device {
+-                *pose = device
++            *pose = if let Some(device) = device {
++                device
+                     .get_pose(
+                         &self.openxr,
+                         &session_data,
+                         origin.unwrap_or(session_data.current_origin),
+                     )
+-                    .unwrap_or_default();
+-            }
++                    .unwrap_or_default()
++            } else {
++                vr::TrackedDevicePose_t::default()
++            };
+         }
+     }
  
 diff --git a/src/input/legacy.rs b/src/input/legacy.rs
 index 3099735..6990866 100644

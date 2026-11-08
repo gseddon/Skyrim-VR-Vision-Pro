@@ -107,6 +107,13 @@ int main(void) {
     GET(PFN_xrCreateActionSet, create_set, instance, "xrCreateActionSet");
     GET(PFN_xrAttachSessionActionSets, attach_sets, instance, "xrAttachSessionActionSets");
     GET(PFN_xrSyncActions, sync_actions, instance, "xrSyncActions");
+    GET(PFN_xrCreateAction, create_action, instance, "xrCreateAction");
+    GET(PFN_xrStringToPath, to_path, instance, "xrStringToPath");
+    GET(PFN_xrGetActionStateBoolean, bool_state, instance, "xrGetActionStateBoolean");
+    GET(PFN_xrGetActionStateFloat, float_state, instance, "xrGetActionStateFloat");
+    GET(PFN_xrGetActionStateVector2f, vector_state, instance, "xrGetActionStateVector2f");
+    GET(PFN_xrGetActionStatePose, pose_state, instance, "xrGetActionStatePose");
+    GET(PFN_xrGetCurrentInteractionProfile, current_profile, instance, "xrGetCurrentInteractionProfile");
     XrGraphicsBindingMetalKHR binding = { .type = XR_TYPE_GRAPHICS_BINDING_METAL_KHR, .commandQueue = &queue };
     XrSessionCreateInfo si = { .type = XR_TYPE_SESSION_CREATE_INFO, .next = &binding, .systemId = 1 };
     XrSession session;
@@ -121,6 +128,21 @@ int main(void) {
     XrActionSetCreateInfo asi = { .type = XR_TYPE_ACTION_SET_CREATE_INFO };
     strcpy(asi.actionSetName, "input"); strcpy(asi.localizedActionSetName, "Input");
     XrActionSet set; assert(create_set(instance, &asi, &set) == XR_SUCCESS);
+    XrPath hand; assert(to_path(instance, "/user/hand/left", &hand) == XR_SUCCESS);
+    XrAction action[4];
+    XrActionType types[4] = { XR_ACTION_TYPE_BOOLEAN_INPUT, XR_ACTION_TYPE_FLOAT_INPUT, XR_ACTION_TYPE_VECTOR2F_INPUT, XR_ACTION_TYPE_POSE_INPUT };
+    for (unsigned i = 0; i < 4; ++i) {
+        XrActionCreateInfo ai = { .type = XR_TYPE_ACTION_CREATE_INFO, .actionType = types[i], .countSubactionPaths = 1, .subactionPaths = &hand };
+        snprintf(ai.actionName, sizeof ai.actionName, "action%u", i);
+        snprintf(ai.localizedActionName, sizeof ai.localizedActionName, "Action %u", i);
+        assert(create_action(set, &ai, &action[i]) == XR_SUCCESS);
+    }
+    XrActionStateGetInfo gi = { .type = XR_TYPE_ACTION_STATE_GET_INFO, .action = action[0], .subactionPath = hand };
+    XrActionStateBoolean bs = { .type = XR_TYPE_ACTION_STATE_BOOLEAN, .currentState = XR_TRUE, .changedSinceLastSync = XR_TRUE, .lastChangeTime = 1, .isActive = XR_TRUE };
+    XrActionStateFloat fl = { .type = XR_TYPE_ACTION_STATE_FLOAT, .currentState = 1, .isActive = XR_TRUE };
+    XrActionStateVector2f vec = { .type = XR_TYPE_ACTION_STATE_VECTOR2F, .currentState = {1,1}, .isActive = XR_TRUE };
+    XrActionStatePose pose = { .type = XR_TYPE_ACTION_STATE_POSE, .isActive = XR_TRUE };
+    XrInteractionProfileState profile = { .type = XR_TYPE_INTERACTION_PROFILE_STATE, .interactionProfile = hand };
     XrSessionActionSetsAttachInfo attach = { .type = XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO, .countActionSets = 1, .actionSets = &set };
     XrActiveActionSet active = { .actionSet = set };
     XrActionsSyncInfo action_sync = { .type = XR_TYPE_ACTIONS_SYNC_INFO, .countActiveActionSets = 1, .activeActionSets = &active };
@@ -128,6 +150,7 @@ int main(void) {
     assert(attach_sets(session, &attach) == XR_SUCCESS);
     assert(attach_sets(session, &attach) == XR_ERROR_ACTIONSETS_ALREADY_ATTACHED);
     assert(sync_actions(session, &action_sync) == XR_ERROR_SESSION_NOT_RUNNING);
+    assert(bool_state(session, &gi, &bs) == XR_ERROR_CALL_ORDER_INVALID);
     XrSessionBeginInfo bi = { .type = XR_TYPE_SESSION_BEGIN_INFO, .primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO };
     XrEventDataBuffer b = { .type = XR_TYPE_EVENT_DATA_BUFFER };
     assert(poll_event(instance, &b) == XR_EVENT_UNAVAILABLE);
@@ -151,12 +174,21 @@ int main(void) {
     input_sample = (KlNativeInputSample){ .sample_id = 1, .sample_time = 23 };
     assert(sync_actions(session, &action_sync) == XR_SUCCESS);
     assert(sync_actions(session, &action_sync) == XR_SUCCESS); /* unchanged observation */
+    assert(bool_state(session, &gi, &bs) == XR_SUCCESS && !bs.currentState && !bs.changedSinceLastSync && !bs.lastChangeTime && !bs.isActive);
+    assert(current_profile(session, hand, &profile) == XR_SUCCESS && profile.interactionProfile == XR_NULL_PATH);
+    gi.action = action[1]; assert(float_state(session, &gi, &fl) == XR_SUCCESS && fl.currentState == 0 && !fl.isActive);
+    gi.action = action[2]; assert(vector_state(session, &gi, &vec) == XR_SUCCESS && vec.currentState.x == 0 && vec.currentState.y == 0 && !vec.isActive);
+    gi.action = action[3]; assert(pose_state(session, &gi, &pose) == XR_SUCCESS && !pose.isActive);
+    assert(bool_state(session, &gi, &bs) == XR_ERROR_ACTION_TYPE_MISMATCH);
+    gi.action = action[0];
     input_sample.sample_time = 24;
     assert(sync_actions(session, &action_sync) == XR_ERROR_VALIDATION_FAILURE); /* same ID, conflicting time */
     input_sample.sample_id = 2; input_sample.sample_time = 22;
     assert(sync_actions(session, &action_sync) == XR_ERROR_VALIDATION_FAILURE);
     input_sample.sample_time = 24; input_sample.hand_connected[0] = XR_TRUE;
     assert(sync_actions(session, &action_sync) == XR_ERROR_FEATURE_UNSUPPORTED);
+    assert(bool_state(session, &gi, &bs) == XR_ERROR_CALL_ORDER_INVALID);
+    assert(current_profile(session, hand, &profile) == XR_ERROR_CALL_ORDER_INVALID);
     input_sample.hand_connected[0] = XR_FALSE;
     input_result = XR_ERROR_RUNTIME_FAILURE;
     assert(sync_actions(session, &action_sync) == XR_ERROR_RUNTIME_FAILURE);

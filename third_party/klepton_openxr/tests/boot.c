@@ -112,10 +112,31 @@ int main(void) {
     }
     ai.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
     assert(create_action(set2, &ai, &other) == XR_SUCCESS && other != action);
+    GET(PFN_xrSuggestInteractionProfileBindings, suggest, instance, "xrSuggestInteractionProfileBindings");
+    XrPath profile, component, bad_component, unknown_profile;
+    assert(to_path(instance, "/interaction_profiles/khr/simple_controller", &profile) == XR_SUCCESS);
+    assert(to_path(instance, "/user/hand/left/input/select/click", &component) == XR_SUCCESS);
+    assert(to_path(instance, "/user/hand/left/input/select/value", &bad_component) == XR_SUCCESS);
+    assert(to_path(instance, "/interaction_profiles/example/unknown", &unknown_profile) == XR_SUCCESS);
+    XrActionSuggestedBinding suggested = { other, component };
+    XrInteractionProfileSuggestedBinding bi = { .type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING,
+        .interactionProfile = profile, .countSuggestedBindings = 1, .suggestedBindings = &suggested };
+    assert(suggest(instance, &bi) == XR_SUCCESS);
+    suggested.binding = bad_component;
+    assert(suggest(instance, &bi) == XR_ERROR_PATH_UNSUPPORTED);
+    suggested.binding = component; suggested.action = (XrAction)(uintptr_t)7;
+    assert(suggest(instance, &bi) == XR_ERROR_HANDLE_INVALID);
+    suggested.action = other; bi.interactionProfile = unknown_profile;
+    assert(suggest(instance, &bi) == XR_ERROR_PATH_UNSUPPORTED);
+    bi.interactionProfile = profile;
+    assert(suggest(instance, &bi) == XR_SUCCESS);
     assert(destroy_action(other) == XR_SUCCESS);
     ai.actionType = XR_ACTION_TYPE_POSE_INPUT;
     assert(create_action(set2, &ai, &other) == XR_SUCCESS && other != action);
+    suggested.action = other;
+    assert(suggest(instance, &bi) == XR_ERROR_ACTION_TYPE_MISMATCH);
     assert(destroy_set(set2) == XR_SUCCESS);
+    assert(suggest(instance, &bi) == XR_ERROR_HANDLE_INVALID);
     assert(destroy_action(other) == XR_ERROR_HANDLE_INVALID);
     assert(to_path(instance, "/user//left", &repeated) == XR_ERROR_PATH_FORMAT_INVALID);
     assert(to_path(instance, "/user/../left", &repeated) == XR_ERROR_PATH_FORMAT_INVALID);

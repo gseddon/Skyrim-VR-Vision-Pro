@@ -474,15 +474,17 @@ impl<C: openxr_data::Compositor> Input<C> {
         for (i, pose) in poses.iter_mut().enumerate() {
             let device = devices.get_device(i as u32);
 
-            if let Some(device) = device {
-                *pose = device
+            *pose = if let Some(device) = device {
+                device
                     .get_pose(
                         &self.openxr,
                         &session_data,
                         origin.unwrap_or(session_data.current_origin),
                     )
-                    .unwrap_or_default();
-            }
+                    .unwrap_or_default()
+            } else {
+                vr::TrackedDevicePose_t::default()
+            };
         }
     }
 

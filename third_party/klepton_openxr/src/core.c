@@ -65,6 +65,9 @@ struct XrAction_T {
     char localized[XR_MAX_LOCALIZED_ACTION_NAME_SIZE];
 };
 static struct XrAction_T actions[ACTION_LIMIT];
+#define BINDING_LIMIT 2048
+struct native_binding { XrInstance owner; XrPath profile, path; XrAction action; };
+static struct native_binding bindings[BINDING_LIMIT];
 #define SESSION_LIMIT 32
 #define SWAPCHAIN_LIMIT 64
 #define SWAPCHAIN_IMAGES 3
@@ -246,6 +249,7 @@ static XrResult XRAPI_CALL klxr_DestroyInstance(XrInstance instance) {
     if (instance_has_acquired_images(instance)) return XR_ERROR_CALL_ORDER_INVALID;
     destroy_instance_sessions(instance);
     instance->live = 0;
+    for (unsigned i = 0; i < BINDING_LIMIT; ++i) if (bindings[i].owner == instance) bindings[i].owner = XR_NULL_HANDLE;
     for (unsigned i = 0; i < ACTION_SET_LIMIT; ++i)
         if (action_sets[i].owner == instance) {
             for (unsigned j = 0; j < ACTION_LIMIT; ++j)
@@ -384,7 +388,10 @@ static XrResult XRAPI_CALL klxr_CreateActionSet(XrInstance instance, const XrAct
 static XrResult XRAPI_CALL klxr_DestroyActionSet(XrActionSet set) {
     for (unsigned i = 0; i < ACTION_SET_LIMIT; ++i) {
         if (set == &action_sets[i] && action_sets[i].live && valid_instance(action_sets[i].owner)) {
-            for (unsigned j = 0; j < ACTION_LIMIT; ++j) if (actions[j].live && actions[j].owner == set) actions[j].live = 0;
+            for (unsigned j = 0; j < ACTION_LIMIT; ++j) if (actions[j].live && actions[j].owner == set) {
+                for (unsigned k = 0; k < BINDING_LIMIT; ++k) if (bindings[k].action == &actions[j]) bindings[k].owner = XR_NULL_HANDLE;
+                actions[j].live = 0;
+            }
             action_sets[i].live = 0;
             return XR_SUCCESS;
         }
@@ -438,10 +445,95 @@ static XrResult XRAPI_CALL klxr_DestroyAction(XrAction action) {
     for (unsigned i = 0; i < ACTION_LIMIT; ++i) if (action == &actions[i] && actions[i].live) {
         XrActionSet owner = actions[i].owner;
         for (unsigned j = 0; j < ACTION_SET_LIMIT; ++j) if (owner == &action_sets[j] && action_sets[j].live && valid_instance(action_sets[j].owner)) {
+            for (unsigned k = 0; k < BINDING_LIMIT; ++k) if (bindings[k].action == action) bindings[k].owner = XR_NULL_HANDLE;
             actions[i].live = 0; return XR_SUCCESS;
         }
     }
     return XR_ERROR_HANDLE_INVALID;
+}
+static const char *owned_path(XrInstance owner, XrPath path) {
+    if (!path) return NULL;
+    for (unsigned i = 0; i < PATH_LIMIT; ++i)
+        if (paths[i].owner == owner && paths[i].id == path) return paths[i].name;
+    return NULL;
+}
+static XrAction valid_action_for(XrInstance owner, XrAction action) {
+    for (unsigned i = 0; i < ACTION_LIMIT; ++i) if (action == &actions[i] && actions[i].live) {
+        for (unsigned j = 0; j < ACTION_SET_LIMIT; ++j)
+            if (actions[i].owner == &action_sets[j] && action_sets[j].live && action_sets[j].owner == owner) return action;
+    }
+    return XR_NULL_HANDLE;
+}
+static int member(const char *const *list, size_t count, const char *value) {
+    for (size_t i = 0; i < count; ++i) if (!strcmp(list[i], value)) return 1;
+    return 0;
+}
+/* Supported legacy profile component paths, including only the paths this
+ * provider actually recognizes. Suggestions are stored; no profile becomes
+ * active without a host reporting a supported connected device. */
+static int binding_kind(const char *profile, const char *path) {
+    static const char *const vive[] = { "squeeze/click", "menu/click", "trigger/click", "trigger/value", "trackpad/click", "trackpad/touch", "trackpad", "trackpad/x", "trackpad/y" };
+    static const char *const index[] = { "a/click", "a/touch", "b/click", "b/touch", "trigger/click", "trigger/touch", "trigger/value", "squeeze/value", "squeeze/force", "thumbstick/click", "thumbstick/touch", "thumbstick", "trackpad/force", "trackpad/touch", "trackpad" };
+    static const char *const touch[] = { "squeeze/value", "trigger/value", "trigger/touch", "thumbstick", "thumbstick/click", "thumbstick/touch", "thumbrest/touch" };
+    static const char *const simple[] = { "select/click", "menu/click" };
+    int left;
+    if (!strncmp(path, "/user/hand/left/", 16)) { left = 1; path += 16; }
+    else if (!strncmp(path, "/user/hand/right/", 17)) { left = 0; path += 17; }
+    else return 0;
+    int supported = !strcmp(profile, "/interaction_profiles/htc/vive_controller") || !strcmp(profile, "/interaction_profiles/valve/index_controller") || !strcmp(profile, "/interaction_profiles/oculus/touch_controller") || !strcmp(profile, "/interaction_profiles/khr/simple_controller");
+    if (!supported) return 0;
+    if (!strcmp(path, "output/haptic")) return 4;
+    if (!strcmp(path, "input/grip/pose") || !strcmp(path, "input/aim/pose")) return 3;
+    if (strncmp(path, "input/", 6)) return 0;
+    path += 6;
+    int legal = 0;
+    if (!strcmp(profile, "/interaction_profiles/htc/vive_controller")) legal = member(vive, sizeof vive / sizeof vive[0], path);
+    else if (!strcmp(profile, "/interaction_profiles/valve/index_controller")) legal = member(index, sizeof index / sizeof index[0], path);
+    else if (!strcmp(profile, "/interaction_profiles/khr/simple_controller")) legal = member(simple, sizeof simple / sizeof simple[0], path);
+    else {
+        legal = member(touch, sizeof touch / sizeof touch[0], path);
+        if (left) legal |= !strcmp(path, "x/click") || !strcmp(path, "x/touch") || !strcmp(path, "y/click") || !strcmp(path, "y/touch") || !strcmp(path, "menu/click");
+        else legal |= !strcmp(path, "a/click") || !strcmp(path, "a/touch") || !strcmp(path, "b/click") || !strcmp(path, "b/touch");
+    }
+    if (!legal) return 0;
+    return !strcmp(path, "trackpad") || !strcmp(path, "thumbstick") ? 2 : 1;
+}
+static XrResult XRAPI_CALL klxr_SuggestInteractionProfileBindings(XrInstance instance, const XrInteractionProfileSuggestedBinding *info) {
+    if (!valid_instance(instance)) return XR_ERROR_HANDLE_INVALID;
+    if (!info || info->type != XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING || info->next || (info->countSuggestedBindings && !info->suggestedBindings)) return XR_ERROR_VALIDATION_FAILURE;
+    const char *profile = owned_path(instance, info->interactionProfile);
+    if (!profile) return XR_ERROR_PATH_INVALID;
+    for (unsigned i = 0; i < SESSION_LIMIT; ++i)
+        if (sessions[i].live && sessions[i].owner == instance && sessions[i].attached_count) return XR_ERROR_ACTIONSETS_ALREADY_ATTACHED;
+    /* Do not accept an unknown profile even for an empty suggestion. */
+    if (!binding_kind(profile, "/user/hand/left/output/haptic")) return XR_ERROR_PATH_UNSUPPORTED;
+    uint32_t retained = 0;
+    for (unsigned i = 0; i < BINDING_LIMIT; ++i) if (bindings[i].owner && !(bindings[i].owner == instance && bindings[i].profile == info->interactionProfile)) ++retained;
+    if (info->countSuggestedBindings > BINDING_LIMIT - retained) return XR_ERROR_LIMIT_REACHED;
+    for (uint32_t i = 0; i < info->countSuggestedBindings; ++i) {
+        XrAction action = valid_action_for(instance, info->suggestedBindings[i].action);
+        if (!action) return XR_ERROR_HANDLE_INVALID;
+        const char *path = owned_path(instance, info->suggestedBindings[i].binding);
+        if (!path) return XR_ERROR_PATH_INVALID;
+        int kind = binding_kind(profile, path);
+        if (!kind) return XR_ERROR_PATH_UNSUPPORTED;
+        if (action->subpath_count) {
+            const char *hand = !strncmp(path, "/user/hand/left/", 16) ? "/user/hand/left" : "/user/hand/right";
+            int matched = 0;
+            for (uint32_t j = 0; j < action->subpath_count; ++j) {
+                const char *subpath = owned_path(instance, action->subpaths[j]);
+                if (subpath && !strcmp(subpath, hand)) matched = 1;
+            }
+            if (!matched) return XR_ERROR_PATH_UNSUPPORTED;
+        }
+        if ((kind == 1 && action->type != XR_ACTION_TYPE_BOOLEAN_INPUT && action->type != XR_ACTION_TYPE_FLOAT_INPUT) || (kind == 2 && action->type != XR_ACTION_TYPE_VECTOR2F_INPUT) || (kind == 3 && action->type != XR_ACTION_TYPE_POSE_INPUT) || (kind == 4 && action->type != XR_ACTION_TYPE_VIBRATION_OUTPUT)) return XR_ERROR_ACTION_TYPE_MISMATCH;
+    }
+    for (unsigned i = 0; i < BINDING_LIMIT; ++i) if (bindings[i].owner == instance && bindings[i].profile == info->interactionProfile) bindings[i].owner = XR_NULL_HANDLE;
+    for (uint32_t i = 0, slot = 0; i < info->countSuggestedBindings; ++i) {
+        while (bindings[slot].owner) ++slot;
+        bindings[slot++] = (struct native_binding){ instance, info->interactionProfile, info->suggestedBindings[i].binding, info->suggestedBindings[i].action };
+    }
+    return XR_SUCCESS;
 }
 /* View configuration is supplied by the real host before any frame ticket.
  * Adapted from Klepton's enumeration functions, without assumed sizes/FOV. */
@@ -559,6 +651,58 @@ static XrResult XRAPI_CALL klxr_SyncActions(XrSession session, const XrActionsSy
     if (sample.hand_connected[0] || sample.hand_connected[1]) return XR_ERROR_FEATURE_UNSUPPORTED;
     session->last_input_id = sample.sample_id; session->last_input_time = sample.sample_time; session->input_valid = 1;
     return XR_SUCCESS;
+}
+static XrResult inactive_state_action(XrSession session, const XrActionStateGetInfo *info, XrActionType type) {
+    if (!valid_session(session)) return XR_ERROR_HANDLE_INVALID;
+    if (!info || info->type != XR_TYPE_ACTION_STATE_GET_INFO || info->next) return XR_ERROR_VALIDATION_FAILURE;
+    XrAction action = valid_action_for(session->owner, info->action);
+    if (!action) return XR_ERROR_HANDLE_INVALID;
+    if (action->type != type) return XR_ERROR_ACTION_TYPE_MISMATCH;
+    if (!attached_action_set(session, action->owner)) return XR_ERROR_ACTIONSET_NOT_ATTACHED;
+    if (info->subactionPath) {
+        if (!owned_path(session->owner, info->subactionPath)) return XR_ERROR_PATH_INVALID;
+        int found = 0;
+        for (uint32_t i = 0; i < action->subpath_count; ++i) if (action->subpaths[i] == info->subactionPath) found = 1;
+        if (!found) return XR_ERROR_PATH_UNSUPPORTED;
+    }
+    if (!session->input_valid) return XR_ERROR_CALL_ORDER_INVALID;
+    return XR_SUCCESS;
+}
+static XrResult XRAPI_CALL klxr_GetActionStateBoolean(XrSession session, const XrActionStateGetInfo *info, XrActionStateBoolean *state) {
+    if (!state || state->type != XR_TYPE_ACTION_STATE_BOOLEAN || state->next) return XR_ERROR_VALIDATION_FAILURE;
+    XrResult result = inactive_state_action(session, info, XR_ACTION_TYPE_BOOLEAN_INPUT);
+    if (result != XR_SUCCESS) return result;
+    state->currentState = state->changedSinceLastSync = state->isActive = XR_FALSE; state->lastChangeTime = 0;
+    return XR_SUCCESS;
+}
+static XrResult XRAPI_CALL klxr_GetActionStateFloat(XrSession session, const XrActionStateGetInfo *info, XrActionStateFloat *state) {
+    if (!state || state->type != XR_TYPE_ACTION_STATE_FLOAT || state->next) return XR_ERROR_VALIDATION_FAILURE;
+    XrResult result = inactive_state_action(session, info, XR_ACTION_TYPE_FLOAT_INPUT);
+    if (result != XR_SUCCESS) return result;
+    state->currentState = 0; state->changedSinceLastSync = state->isActive = XR_FALSE; state->lastChangeTime = 0;
+    return XR_SUCCESS;
+}
+static XrResult XRAPI_CALL klxr_GetActionStateVector2f(XrSession session, const XrActionStateGetInfo *info, XrActionStateVector2f *state) {
+    if (!state || state->type != XR_TYPE_ACTION_STATE_VECTOR2F || state->next) return XR_ERROR_VALIDATION_FAILURE;
+    XrResult result = inactive_state_action(session, info, XR_ACTION_TYPE_VECTOR2F_INPUT);
+    if (result != XR_SUCCESS) return result;
+    state->currentState = (XrVector2f){0}; state->changedSinceLastSync = state->isActive = XR_FALSE; state->lastChangeTime = 0;
+    return XR_SUCCESS;
+}
+static XrResult XRAPI_CALL klxr_GetActionStatePose(XrSession session, const XrActionStateGetInfo *info, XrActionStatePose *state) {
+    if (!state || state->type != XR_TYPE_ACTION_STATE_POSE || state->next) return XR_ERROR_VALIDATION_FAILURE;
+    XrResult result = inactive_state_action(session, info, XR_ACTION_TYPE_POSE_INPUT);
+    if (result != XR_SUCCESS) return result;
+    state->isActive = XR_FALSE; return XR_SUCCESS;
+}
+static XrResult XRAPI_CALL klxr_GetCurrentInteractionProfile(XrSession session, XrPath hand, XrInteractionProfileState *state) {
+    if (!valid_session(session)) return XR_ERROR_HANDLE_INVALID;
+    if (!state || state->type != XR_TYPE_INTERACTION_PROFILE_STATE || state->next) return XR_ERROR_VALIDATION_FAILURE;
+    const char *path = owned_path(session->owner, hand);
+    if (!path) return XR_ERROR_PATH_INVALID;
+    if (strcmp(path, "/user/hand/left") && strcmp(path, "/user/hand/right")) return XR_ERROR_PATH_UNSUPPORTED;
+    if (!session->input_valid) return XR_ERROR_CALL_ORDER_INVALID;
+    state->interactionProfile = XR_NULL_PATH; return XR_SUCCESS;
 }
 static int valid_swapchain(XrSwapchain swapchain) {
     for (unsigned i = 0; i < SWAPCHAIN_LIMIT; ++i)
@@ -1070,6 +1214,7 @@ XRAPI_ATTR XrResult XRAPI_CALL kl_native_get_instance_proc_addr(XrInstance insta
     INSTANCE("xrDestroyActionSet", klxr_DestroyActionSet)
     INSTANCE("xrCreateAction", klxr_CreateAction)
     INSTANCE("xrDestroyAction", klxr_DestroyAction)
+    INSTANCE("xrSuggestInteractionProfileBindings", klxr_SuggestInteractionProfileBindings)
     INSTANCE("xrEnumerateViewConfigurations", klxr_EnumerateViewConfigurations)
     INSTANCE("xrGetViewConfigurationProperties", klxr_GetViewConfigurationProperties)
     INSTANCE("xrEnumerateViewConfigurationViews", klxr_EnumerateViewConfigurationViews)
@@ -1090,6 +1235,11 @@ XRAPI_ATTR XrResult XRAPI_CALL kl_native_get_instance_proc_addr(XrInstance insta
     INSTANCE("xrDestroySession", klxr_DestroySession)
     INSTANCE("xrAttachSessionActionSets", klxr_AttachSessionActionSets)
     INSTANCE("xrSyncActions", klxr_SyncActions)
+    INSTANCE("xrGetCurrentInteractionProfile", klxr_GetCurrentInteractionProfile)
+    INSTANCE("xrGetActionStateBoolean", klxr_GetActionStateBoolean)
+    INSTANCE("xrGetActionStateFloat", klxr_GetActionStateFloat)
+    INSTANCE("xrGetActionStateVector2f", klxr_GetActionStateVector2f)
+    INSTANCE("xrGetActionStatePose", klxr_GetActionStatePose)
     INSTANCE("xrEnumerateSwapchainFormats", klxr_EnumerateSwapchainFormats)
     INSTANCE("xrCreateSwapchain", klxr_CreateSwapchain)
     INSTANCE("xrDestroySwapchain", klxr_DestroySwapchain)
