@@ -344,6 +344,8 @@ int xa_run(xe *e, x86_ctx *c, uint64_t stop, void (*(*native)(uint64_t))(x86_ctx
         if (c->fault) return (int)c->fault;
         uint64_t rip = c->rip;
         if (rip == stop) return 0;
+        // NULL is a guest instruction-fetch fault, not a hit in the initially empty thunk cache.
+        if (!rip) { c->fault = X86_FAULT_PF; c->fault_info = 0; return X86_FAULT_PF; }
         // (a thread's cache of the last addresses: a module's block, or a native function's thunk; most exits are
         // native calls and the returns from them, and the searches below cost more than the call)
         xa_cached *k = &t_cache[(rip ^ rip >> 12) & (NCACHE - 1)];
