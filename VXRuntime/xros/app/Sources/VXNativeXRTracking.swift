@@ -20,7 +20,7 @@ struct VXSpatialObservation {
     let inputCaptureBefore: UInt64
     let inputCaptureAfter: UInt64
     let inputEventTime: TimeInterval
-    let inputSnapshot: GCController
+    let canonical: VXSpatialCanonicalSnapshot
 }
 
 // ARKit's world query is documented not thread safe. Reconfiguring the shared
@@ -130,12 +130,33 @@ actor VXNativeXRTracking {
             }
             let grip = originFrom(.grip), aim = originFrom(.aim)
             let before = mach_absolute_time()
-            let input = controller.capture()
+            let input = controller.input.capture()
             let after = mach_absolute_time()
+            func button(_ name: GCButtonElementName) -> VXSpatialButton? {
+                guard let button = input.buttons[name] else { return nil }
+                return VXSpatialButton(value: button.pressedInput.value, pressed: button.pressedInput.isPressed,
+                    touched: button.touchedInput?.isTouched, analog: button.pressedInput.isAnalog)
+            }
+            let rawStick = input.dpads[.thumbstick].map { VXSpatialStick(x: $0.xAxis.value, y: $0.yAxis.value) }
+            let raw = VXSpatialRawControls(a: button(.a), b: button(.b), grip: button(.grip), trigger: button(.trigger),
+                stickPress: button(.thumbstickButton), menu: button(.menu), stick: rawStick)
+            let state: VXSpatialTracking
+            switch predicted.trackingState {
+            case .untracked: state = .unavailable
+            case .orientationTracked: state = .orientation
+            case .positionOrientationTracked: state = .positionOrientation
+            case .positionOrientationTrackedLowAccuracy: state = .positionOrientationLowAccuracy
+            @unknown default: state = .unavailable
+            }
+            guard let canonical = vxSpatialCanonical(id: predicted.accessory.id, generation: generation,
+                hand: hand == .left ? 0 : 1, connected: true, anchorTime: predicted.timestamp,
+                predictionTime: presentation, inputEventTimeOpaque: input.lastEventTimestamp,
+                captureBeforeTicks: before, captureAfterTicks: after, tracking: state,
+                originFromGrip: grip, originFromAim: aim, raw: raw) else { continue }
             output.append(VXSpatialObservation(connectionGeneration: generation, accessoryID: predicted.accessory.id, chirality: hand,
                 anchorTime: predicted.timestamp, predictedTime: presentation, trackingState: predicted.trackingState,
                 originFromGrip: grip, originFromAim: aim, inputCaptureBefore: before, inputCaptureAfter: after,
-                inputEventTime: input.physicalInputProfile.lastEventTimestamp, inputSnapshot: input))
+                inputEventTime: input.lastEventTimestamp, canonical: canonical))
         }
         let candidates = output.map { observation in
             VXSpatialCandidate(id: observation.accessoryID, hand: observation.chirality == .left ? 0 : 1,
