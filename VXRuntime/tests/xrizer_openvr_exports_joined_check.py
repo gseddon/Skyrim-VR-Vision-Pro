@@ -48,6 +48,7 @@ def main():
         'preframe_geometry':log.count('xrizer dev audit: pre-frame geometry with zero waits/publishes/cancels') == 1 and
             0 <= log.find('xrizer dev audit: pre-frame geometry with zero waits/publishes/cancels') < log.find('xrizer dev host: synthetic sample frame 1 pose 1'),
         'standing_cancel': log.count('xrizer dev host: cancelled frame 1 pose 1') == 1,
+        'hidden_mesh': all(f'xrizer_guest_bridge: System019 slot33 eye {eye} type {kind} native vertices 0x0 triangles 0' in log for eye in (0,1) for kind in (0,1,2,3)),
         'dxgi_no_preference': log.count('xrizer_guest_bridge: System019 slot7 output -1') == 2,
         'actual_game_query': 'xrizer_guest_bridge: System019 slot28 device 0 property 1000 capacity 256 result 0 error 4' in log,
         'property_controls': all(x in log for x in ('device 0 property 1002 capacity 0 result 10 error 3', 'device 0 property 1002 capacity 9 result 10 error 3', 'device 0 property 1002 capacity 10 result 10 error 0', 'device 0 property 1002 capacity 10 result 10 error -1', 'device 17 property 1002 capacity 10 result 0 error 5')),
