@@ -74,8 +74,35 @@ slot; B/C source and isolated CPU work proceed in parallel.
   being investigated separately, retaining the existing Apple host.
 - Required regression batch is active on frozen default-off Rosetta/ARM64
   candidates. Previously recorded broad failures remain unresolved until this
-  batch is examined. The actual game is still at probe009/error110; do not
-  advance its claimed checkpoint from these fixture successes.
+  batch is examined. The actual game has since advanced in two bounded native-backend probes (below);
+  keep those observations separate from fixture successes.
+
+### Actual game follow-up in this round
+
+The first private native-xrizer probe reached original Skyrim code and observed
+real InitInternal2 token1/error0 and a successful System019 guest wrapper. It
+stopped at unimplemented System019 slot28. The typed six-argument string
+property wrapper then passed a real MSVC guest test, including the exact game
+query (device0, TrackingSystemName1000, capacity256). Native xrizer returns
+length0/UnknownProperty4; this error is preserved, not replaced with a value.
+
+The second actual probe progressed through that call and reached original
+GetEyeToHeadTransform(left) before any WaitGetPoses. xrizer then panicked in
+ViewCache because the provider correctly refuses timed views without a frame
+ticket. Both actual probes lack an AOT summary; execution/fallback totals are
+unknown, and neither reached compositor submission/menu/scene. Their sealed
+results, inputs and ledgers validate. See the round-two bootstrap report.
+
+The next measured fix is a separate static eye/FOV metadata query with startup
+availability checks, no head/tracking/time/frame/floor fiction, unchanged timed
+OpenXR validation and an owned reproduction of the real pre-Wait call order.
+Terra B owns Rust/provider, C the synthetic development-host callback, and A
+the guarded MSVC transform/projection goldens. No new game probe until that
+coherent candidate passes its owned control.
+
+The no-JIT requirement concerns CPU/game code. The existing selected
+D3D11-to-Metal renderer retains supported Metal GPU shader compilation; no
+new offline-shader packaging prerequisite is introduced here.
 
 ### Outcome
 
@@ -185,7 +212,7 @@ Updated after the xrizer decision and Apple cross-builds on 8 November 2026. The
 | AOT / Windows compatibility | Owned CPU/D3D11 suite passes strict AOT on Mac and in visionOS simulator; actual MSVC guest scalar/float/matrix static-wrapper tests pass with zero fallback | Complete observed interface coverage, guest/provider stereo and clean broad runtime baseline |
 | D3D11 / Metal / native frame exchange | Owned Windows guest D3D11 → xrizer/provider stereo passes real pixels, poses, identity, ownership and failure controls | Normal development-host configuration, physical presentation/input and unsupported formats/origins |
 | xrizer Apple port | Owned guest path initializes, queries nonzero poses and submits stereo through the provider; ordinary initialization remains disabled | Real Apple-host integration, connected input, broader interface coverage and recoverable session replacement |
-| Skyrim VR | Private prepared code and guest modules built; actual native AOT probes reach genuine OpenVR error110 | Connect the proven native XR path; no menu, stereo frame, scene, controller or performance result |
+| Skyrim VR | Private prepared code and guest modules built; actual native AOT probes reach genuine OpenVR error110 | Fix the observed pre-frame geometry/time gap; no game stereo frame, menu, scene, controller or performance result |
 | Physical Vision Pro | Unsigned device/simulator apps and raw spatial-controller collector compile | Integrated xrizer execution, signing/install/launch, resource budgets, local stereo/tracking/input/audio and sustained operation |
 
 Do not report a completion percentage: these are risk-reduction milestones, and the largest game-specific uncertainty is still untested.
