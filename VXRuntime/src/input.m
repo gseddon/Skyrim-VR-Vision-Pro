@@ -110,6 +110,7 @@ static const vx_export xinput[] = {
 };
 // Ordinals belong to a particular DLL version, unlike the shared name table.
 static const vx_export xinput13_ordinals[] = {
+    { "#2", (void *)XInputGetState },
     { "#3", (void *)XInputSetState },
     { "#4", (void *)XInputGetCapabilities },
 };

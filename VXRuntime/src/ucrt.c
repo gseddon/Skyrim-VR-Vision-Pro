@@ -871,10 +871,13 @@ static WINAPI int *vx_gmtime64(const int64_t *t) { time_t v = (time_t)*t; struct
 static WINAPI int *vx_localtime64(const int64_t *t) { time_t v = (time_t)*t; struct tm r; return localtime_r(&v, &r) ? windows_tm(&r) : NULL; }
 static WINAPI int vx_gmtime64_s(int *out, const int64_t *t) { time_t v = (time_t)*t; struct tm r; if (!gmtime_r(&v, &r)) return 22; memcpy(out, &r, 36); return 0; }
 static WINAPI int vx_localtime64_s(int *out, const int64_t *t) { time_t v = (time_t)*t; struct tm r; if (!localtime_r(&v, &r)) return 22; memcpy(out, &r, 36); return 0; }
-// sscanf with a Windows va_list: the format's size modifiers turned into the Mac's, its pointers passed on.
-static WINAPI int __stdio_common_vsscanf(uint64_t options, const char *buf, size_t count, const char *fmt, void *locale, const char *ap) {
-    (void)options; (void)locale; (void)count;
+// sscanf/fscanf with a Windows va_list. Size modifiers become the Mac's. Pointer slots are guest addresses, so they
+// go through vx_low. widen: %s, %c and %[] destinations are wchar (wide scanf) and are filled from a narrow scan.
+static int do_scan(FILE *fp, const char *buf, const char *fmt, const char *ap, int widen) {
+    if (!fmt || !ap || (!fp && !buf)) return -1;
     char nf[1024]; size_t k = 0; int nargs = 0;
+    char kind[16];
+    memset(kind, 0, sizeof kind);
     for (const char *p = fmt; *p && k < sizeof nf - 8; p++) {
         nf[k++] = *p;
         if (*p != '%') continue;
@@ -886,14 +889,40 @@ static WINAPI int __stdio_common_vsscanf(uint64_t options, const char *buf, size
         else if (p[1] == 'l' && strchr("efg", p[2])) nf[k++] = *++p;  // double
         else if (p[1] == 'z' || p[1] == 'I') { nf[k++] = 'l'; p++; }
         else if (p[1] == 'h' || (p[1] == 'l' && p[2] == 'l')) { nf[k++] = *++p; if (*p == 'l') nf[k++] = *++p; }
-        if (p[1] == '[') { while (p[1] && p[1] != ']') nf[k++] = *++p; }
-        if (p[1]) nf[k++] = *++p;
-        if (!skip) nargs++;
+        char conv = 0;
+        if (p[1] == '[') { conv = '['; while (p[1] && p[1] != ']') nf[k++] = *++p; }
+        if (p[1]) { if (!conv) conv = p[1]; nf[k++] = *++p; }
+        if (!skip && nargs < 16) {
+            if (widen && (conv == 's' || conv == 'c' || conv == '[')) kind[nargs] = conv;
+            nargs++;
+        }
     }
     nf[k] = 0;
-    void *a[16] = { 0 };
-    for (int i = 0; i < nargs && i < 16; i++) memcpy(&a[i], ap + 8 * i, 8);
-    return sscanf(buf, nf, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15]);
+    void *a[16] = { 0 }, *dest[16] = { 0 };
+    char *temps[16] = { 0 };
+    for (int i = 0; i < nargs && i < 16; i++) {
+        uint64_t raw = 0;
+        memcpy(&raw, ap + 8 * (size_t)i, 8);
+        dest[i] = (void *)(uintptr_t)vx_low(raw);
+        if (kind[i]) { temps[i] = calloc(4096, 1); a[i] = temps[i]; }
+        else a[i] = dest[i];
+    }
+    int r = fp ? fscanf(fp, nf, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15])
+               : sscanf(buf, nf, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15]);
+    for (int i = 0; i < 16; i++) if (temps[i]) {
+        WCHAR *w = dest[i];
+        if (w && kind[i] == 'c') w[0] = (unsigned char)temps[i][0];
+        else if (w) {
+            size_t n = vx_utf8_to_utf16(temps[i], strlen(temps[i]), w, 4095);
+            w[n] = 0;
+        }
+        free(temps[i]);
+    }
+    return r;
+}
+static WINAPI int __stdio_common_vsscanf(uint64_t options, const char *buf, size_t count, const char *fmt, void *locale, const char *ap) {
+    (void)options; (void)locale; (void)count;
+    return do_scan(NULL, buf, fmt, ap, 0);
 }
 static WINAPI int vx_wcsicmp(const WCHAR *a, const WCHAR *b) {
     for (;; a++, b++) { WCHAR x = *a >= 'A' && *a <= 'Z' ? *a + 32 : *a, y = *b >= 'A' && *b <= 'Z' ? *b + 32 : *b; if (x != y || !x) return x - y; }
@@ -1594,6 +1623,166 @@ static WINAPI int vx_crt_at_quick_exit(vfn f) { if (g_quick_exit_n >= 64) return
 static WINAPI int __stdio_common_vfprintf_s(uint64_t options, vx_file *f, const char *fmt, void *locale, const char *ap) {
     return __stdio_common_vfprintf(options, f, fmt, locale, ap);
 }
+// The _p forms use the same formatter. A positional %1$ specification is copied through and is not reordered.
+static WINAPI int __stdio_common_vfprintf_p(uint64_t options, vx_file *f, const char *fmt, void *locale, const char *ap) {
+    return __stdio_common_vfprintf(options, f, fmt, locale, ap);
+}
+static WINAPI int __stdio_common_vfwprintf_p(uint64_t options, vx_file *f, const WCHAR *fmt, void *locale, const char *ap) {
+    return __stdio_common_vfwprintf(options, f, fmt, locale, ap);
+}
+static WINAPI int __stdio_common_vfwprintf_s(uint64_t options, vx_file *f, const WCHAR *fmt, void *locale, const char *ap) {
+    return __stdio_common_vfwprintf(options, f, fmt, locale, ap);
+}
+static WINAPI int __stdio_common_vswprintf_p(uint64_t options, WCHAR *buf, size_t count, const WCHAR *fmt, void *locale, const char *ap) {
+    return __stdio_common_vswprintf(options, buf, count, fmt, locale, ap);
+}
+static int narrow_wfmt(const WCHAR *fmt, char *out, size_t cap) {
+    size_t i = 0;
+    if (!fmt) return -1;
+    for (; fmt[i] && i + 1 < cap; i++) {
+        if (fmt[i] > 127) return -1;
+        out[i] = (char)fmt[i];
+    }
+    if (fmt[i]) return -1;
+    out[i] = 0;
+    return 0;
+}
+static WINAPI int __stdio_common_vfscanf(uint64_t options, vx_file *f, const char *fmt, void *locale, const char *ap) {
+    (void)options; (void)locale;
+    FILE *s = read_stream(f);
+    return s ? do_scan(s, NULL, fmt, ap, 0) : -1;
+}
+static WINAPI int __stdio_common_vfwscanf(uint64_t options, vx_file *f, const WCHAR *fmt, void *locale, const char *ap) {
+    (void)options; (void)locale;
+    char nf[1024];
+    FILE *s = read_stream(f);
+    if (!s || narrow_wfmt(fmt, nf, sizeof nf)) return -1;
+    return do_scan(s, NULL, nf, ap, 1);
+}
+static WINAPI int __stdio_common_vswscanf(uint64_t options, const WCHAR *buf, size_t count, const WCHAR *fmt, void *locale, const char *ap) {
+    (void)options; (void)locale; (void)count;
+    char nf[1024];
+    if (narrow_wfmt(fmt, nf, sizeof nf)) return -1;
+    char *text = vx_utf8_dup(buf);
+    int r = text ? do_scan(NULL, text, nf, ap, 1) : -1;
+    free(text);
+    return r;
+}
+// Locales here are "C", so a case-insensitive compare is the collation.
+static WINAPI int _wcsicoll(const WCHAR *a, const WCHAR *b) {
+    if (!a || !b) return 0;
+    return vx_wcsicmp(a, b);
+}
+static int case_s(char *s, size_t n, int upper) {
+    if (!s || !n) { set_errno(22); return 22; }
+    size_t i = 0;
+    for (; i < n && s[i]; i++) ;
+    if (i == n) { s[0] = 0; set_errno(22); return 22; }
+    for (size_t k = 0; k < i; k++) s[k] = (char)(upper ? toupper((unsigned char)s[k]) : tolower((unsigned char)s[k]));
+    return 0;
+}
+static WINAPI int _strlwr_s(char *s, size_t n) { return case_s(s, n, 0); }
+static WINAPI int _strupr_s(char *s, size_t n) { return case_s(s, n, 1); }
+static int utf8_cut(const char *s, size_t n) {
+    size_t i = 0;
+    while (i < n) {
+        uint8_t c = (uint8_t)s[i];
+        size_t need = c < 0x80 ? 1 : c >= 0xf0 && c < 0xf8 ? 4 : c >= 0xe0 ? 3 : c >= 0xc0 ? 2 : 0;
+        if (!need || i + need > n) return 1;
+        i += need;
+    }
+    return 0;
+}
+static int mb_to_wc(size_t *ret, WCHAR *dst, size_t dstmax, const char *src, size_t count, const char **advance) {
+    if (ret) *ret = 0;
+    if (!src || (dst && !dstmax) || (!dst && dstmax)) { set_errno(22); if (dst && dstmax) dst[0] = 0; return 22; }
+    size_t nbytes = 0;
+    while (nbytes < count && src[nbytes]) nbytes++;
+    if (utf8_cut(src, nbytes)) { set_errno(42); if (dst && dstmax) dst[0] = 0; return 42; }
+    int reached = nbytes < count;
+    size_t need = vx_utf8_to_utf16(src, nbytes, NULL, 0);
+    size_t words = need + 1;
+    if (!dst) { if (ret) *ret = words; if (advance) *advance = reached ? NULL : src + nbytes; return 0; }
+    if (words > dstmax) { dst[0] = 0; set_errno(34); return 34; }
+    size_t w = vx_utf8_to_utf16(src, nbytes, dst, dstmax);
+    dst[w] = 0;
+    if (ret) *ret = w + 1;
+    if (advance) *advance = reached ? NULL : src + nbytes;
+    return 0;
+}
+static int wc_to_mb(size_t *ret, char *dst, size_t dstmax, const WCHAR *src, size_t count, const WCHAR **advance) {
+    if (ret) *ret = 0;
+    if (!src || (dst && !dstmax) || (!dst && dstmax)) { set_errno(22); if (dst && dstmax) dst[0] = 0; return 22; }
+    size_t nchars = 0;
+    while (nchars < count && src[nchars]) nchars++;
+    int reached = nchars < count;
+    size_t need = vx_utf16_to_utf8(src, nchars, NULL, 0);
+    size_t bytes = need + 1;
+    if (!dst) { if (ret) *ret = bytes; if (advance) *advance = reached ? NULL : src + nchars; return 0; }
+    if (bytes > dstmax) { dst[0] = 0; set_errno(34); return 34; }
+    size_t w = vx_utf16_to_utf8(src, nchars, dst, dstmax);
+    dst[w] = 0;
+    if (ret) *ret = w + 1;
+    if (advance) *advance = reached ? NULL : src + nchars;
+    return 0;
+}
+static WINAPI int mbstowcs_s(size_t *ret, WCHAR *dst, size_t dstmax, const char *src, size_t count) {
+    return mb_to_wc(ret, dst, dstmax, src, count, NULL);
+}
+static WINAPI int wcstombs_s(size_t *ret, char *dst, size_t dstmax, const WCHAR *src, size_t count) {
+    return wc_to_mb(ret, dst, dstmax, src, count, NULL);
+}
+static WINAPI int mbsrtowcs_s(size_t *ret, WCHAR *dst, size_t dstmax, const char **src, size_t count, void *state) {
+    (void)state;
+    if (!src || !*src) { set_errno(22); if (ret) *ret = 0; return 22; }
+    const char *host = (const char *)(uintptr_t)vx_low((uint64_t)(uintptr_t)*src);
+    const char *next = NULL;
+    int e = mb_to_wc(ret, dst, dstmax, host, count, &next);
+    if (!e) *src = next ? (const char *)(uintptr_t)vx_unlow((uint64_t)(uintptr_t)next) : NULL;
+    return e;
+}
+static WINAPI int wcsrtombs_s(size_t *ret, char *dst, size_t dstmax, const WCHAR **src, size_t count, void *state) {
+    (void)state;
+    if (!src || !*src) { set_errno(22); if (ret) *ret = 0; return 22; }
+    const WCHAR *host = (const WCHAR *)(uintptr_t)vx_low((uint64_t)(uintptr_t)*src);
+    const WCHAR *next = NULL;
+    int e = wc_to_mb(ret, dst, dstmax, host, count, &next);
+    if (!e) *src = next ? (const WCHAR *)(uintptr_t)vx_unlow((uint64_t)(uintptr_t)next) : NULL;
+    return e;
+}
+static WINAPI int _itow_s(int value, WCHAR *buf, size_t size, int radix) {
+    char tmp[72];
+    int e = radix == 10 && value < 0 ? radix_s((uint64_t)-(int64_t)value, 1, tmp, sizeof tmp, radix) : radix_s((uint32_t)value, 0, tmp, sizeof tmp, radix);
+    if (e) { set_errno(e); if (buf && size) buf[0] = 0; return e; }
+    size_t n = strlen(tmp);
+    if (!buf || !size || n + 1 > size) { int r = !buf || !size ? 22 : 34; set_errno(r); if (buf && size) buf[0] = 0; return r; }
+    for (size_t i = 0; i <= n; i++) buf[i] = (WCHAR)(unsigned char)tmp[i];
+    return 0;
+}
+static WINAPI int _makepath_s(char *path, size_t size, const char *drive, const char *dir, const char *name, const char *ext) {
+    if (!path || !size) { set_errno(22); return 22; }
+    path[0] = 0;
+    const char *d = drive ? drive : "", *di = dir ? dir : "", *n = name ? name : "", *x = ext ? ext : "";
+    size_t ld = strlen(d), ldi = strlen(di), ln = strlen(n), lx = strlen(x);
+    int slash = ldi && ln && di[ldi - 1] != '\\' && di[ldi - 1] != '/';
+    int dot = lx && x[0] != '.';
+    if (ld + ldi + (size_t)slash + ln + (size_t)dot + lx + 1 > size) { set_errno(34); return 34; }
+    char *p = path;
+    memcpy(p, d, ld); p += ld;
+    memcpy(p, di, ldi); p += ldi;
+    if (slash) *p++ = '\\';
+    memcpy(p, n, ln); p += ln;
+    if (dot) *p++ = '.';
+    memcpy(p, x, lx + 1);
+    return 0;
+}
+static const vx_export ucrt_loaded[] = {
+    VX_EXPORT(_wcsicoll), VX_EXPORT(_strlwr_s), VX_EXPORT(_strupr_s), VX_EXPORT(_itow_s), VX_EXPORT(_makepath_s),
+    VX_EXPORT(mbstowcs_s), VX_EXPORT(wcstombs_s), VX_EXPORT(mbsrtowcs_s), VX_EXPORT(wcsrtombs_s),
+    VX_EXPORT(__stdio_common_vfprintf_p), VX_EXPORT(__stdio_common_vfscanf),
+    VX_EXPORT(__stdio_common_vfwprintf_p), VX_EXPORT(__stdio_common_vfwprintf_s), VX_EXPORT(__stdio_common_vfwscanf),
+    VX_EXPORT(__stdio_common_vswprintf_p), VX_EXPORT(__stdio_common_vswscanf),
+};
 static const vx_export ucrt_nms[] = {
     { "_create_locale", (void *)vx_create_locale }, { "_wcreate_locale", (void *)vx_wcreate_locale },
     { "_get_current_locale", (void *)vx_get_current_locale }, { "_free_locale", (void *)vx_free_locale },
@@ -1609,6 +1798,8 @@ static const vx_export ucrt_nms[] = {
 };
 
 void vx_ucrt_init(void) {
+    vx_register_module("ucrtbase.dll", ucrt_loaded, sizeof ucrt_loaded / sizeof ucrt_loaded[0]);
+    vx_register_module("msvcrt.dll", ucrt_loaded, sizeof ucrt_loaded / sizeof ucrt_loaded[0]);
     vx_register_module("ucrtbase.dll", ucrt_nms, sizeof ucrt_nms / sizeof ucrt_nms[0]);
     vx_register_module("msvcrt.dll", ucrt_nms, sizeof ucrt_nms / sizeof ucrt_nms[0]);
     vx_register_module("ucrtbase.dll", ucrt_eos, sizeof ucrt_eos / sizeof ucrt_eos[0]);

@@ -826,6 +826,18 @@ static WINAPI BOOL WritePrivateProfileStringW(const WCHAR *app, const WCHAR *key
     (void)app; (void)key; (void)value; (void)file;
     return 1;                                                      // (not kept: no .ini files written for programs here)
 }
+static WINAPI BOOL WritePrivateProfileStringA(const char *app, const char *key, const char *value, const char *file) {
+    WCHAR *a = app ? vx_utf16_dup(app) : NULL, *k = key ? vx_utf16_dup(key) : NULL;
+    WCHAR *v = value ? vx_utf16_dup(value) : NULL, *f = file ? vx_utf16_dup(file) : NULL;
+    BOOL r = WritePrivateProfileStringW(a, k, v, f);
+    free(a); free(k); free(v); free(f);
+    return r;
+}
+static WINAPI int CompareFileTime(const uint32_t *a, const uint32_t *b) {
+    if (!a || !b) return 0;
+    uint64_t av = ((uint64_t)a[1] << 32) | a[0], bv = ((uint64_t)b[1] << 32) | b[0];
+    return av < bv ? -1 : av > bv ? 1 : 0;
+}
 // Atoms: one table for the process (global and local alike), strings compared without case, 0xC000 on; integer
 // atoms (#n or MAKEINTATOM below 0xC000) are themselves.
 static pthread_mutex_t atom_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -885,6 +897,7 @@ static WINAPI unsigned GlobalGetAtomNameW(uint16_t atom, WCHAR *out, int cap) {
 static const vx_export kernel32_mfc[] = {
     VX_EXPORT(GlobalHandle), VX_EXPORT(GlobalReAlloc), VX_EXPORT(GlobalFlags), VX_EXPORT(LocalLock), VX_EXPORT(LocalUnlock),
     VX_EXPORT(lstrcpyA), VX_EXPORT(GetSystemDefaultUILanguage), VX_EXPORT(GetStringTypeExW), VX_EXPORT(WritePrivateProfileStringW),
+    VX_EXPORT(WritePrivateProfileStringA), VX_EXPORT(CompareFileTime),
     VX_EXPORT(GlobalAddAtomW), VX_EXPORT(GlobalFindAtomW), VX_EXPORT(GlobalDeleteAtom), VX_EXPORT(GlobalGetAtomNameW),
     { "AddAtomW", (void *)GlobalAddAtomW }, { "FindAtomW", (void *)GlobalFindAtomW }, { "DeleteAtom", (void *)GlobalDeleteAtom },
     { "GetAtomNameW", (void *)GlobalGetAtomNameW },
