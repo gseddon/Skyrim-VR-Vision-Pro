@@ -108,7 +108,10 @@ impl Compositor {
             #[cfg(not(target_vendor = "apple"))]
             return self.frame_state.lock().unwrap().advance_to(FrameState::Waited);
             #[cfg(target_vendor = "apple")]
-            return false;
+            {
+                warn!("maybe_wait_frame: no frame controller on Apple");
+                return false;
+            }
         };
 
         #[macros::any_graphics(DynFrameController)]
@@ -148,7 +151,10 @@ impl Compositor {
             ctrl.begin_frame()
         }
 
-        if !ctrl.with_any_graphics_mut::<begin_frame>(()) { return false; }
+        if !ctrl.with_any_graphics_mut::<begin_frame>(()) {
+            warn!("maybe_begin_frame: begin_frame returned false");
+            return false;
+        }
         self.frame_state.lock().unwrap().advance_to(FrameState::Begun)
     }
 
@@ -671,12 +677,16 @@ impl vr::IVRCompositor029_Interface for Compositor {
         let session_data = self.openxr.session_data.get();
         let mut frame_lock = session_data.comp_data.0.lock().unwrap();
         let Some(ctrl) = frame_lock.as_mut() else {
-            debug!("no frame controller - not presenting frame");
+            warn!("PostPresentHandoff: no frame controller - not presenting frame");
             return;
         };
 
-        if *self.frame_state.lock().unwrap() != FrameState::Begun {
-            return;
+        {
+            let state = *self.frame_state.lock().unwrap();
+            if state != FrameState::Begun {
+                warn!("PostPresentHandoff: frame state is {state:?}, not Begun - nothing presented");
+                return;
+            }
         }
 
         trace!("presenting frame");
@@ -689,7 +699,10 @@ impl vr::IVRCompositor029_Interface for Compositor {
             &system,
             display_time,
             overlays.as_deref(),
-        )) { return; }
+        )) {
+            warn!("PostPresentHandoff: end_frame returned false - frame stays Begun");
+            return;
+        }
 
         self.frame_state
             .lock()
@@ -919,12 +932,21 @@ impl vr::IVRCompositor029_Interface for Compositor {
 
             if *self.frame_state.lock().unwrap() == FrameState::Waited {
                 // discard frame
-                if !self.maybe_begin_frame(&session_data) { return vr::EVRCompositorError::RequestFailed; }
+                if !self.maybe_begin_frame(&session_data) {
+                    warn!("WaitGetPoses: discarding a waited frame failed (state {:?})", *self.frame_state.lock().unwrap());
+                    return vr::EVRCompositorError::RequestFailed;
+                }
             }
-            if !self.maybe_wait_frame(&session_data) { return vr::EVRCompositorError::RequestFailed; }
+            if !self.maybe_wait_frame(&session_data) {
+                warn!("WaitGetPoses: wait frame failed (state {:?})", *self.frame_state.lock().unwrap());
+                return vr::EVRCompositorError::RequestFailed;
+            }
 
             if timing_mode == vr::EVRCompositorTimingMode::Implicit {
-                if !self.maybe_begin_frame(&session_data) { return vr::EVRCompositorError::RequestFailed; }
+                if !self.maybe_begin_frame(&session_data) {
+                    warn!("WaitGetPoses: begin frame failed (state {:?})", *self.frame_state.lock().unwrap());
+                    return vr::EVRCompositorError::RequestFailed;
+                }
             }
         }
         if let Some(system) = self.system.get() {
@@ -1225,7 +1247,13 @@ impl<G: GraphicsBackend> FrameController<G> {
     fn wait_frame(&mut self) -> Option<(xr::Time, i64)> {
         let frame_state = {
             tracy_span!("wait frame");
-            self.waiter.wait().ok()?
+            match self.waiter.wait() {
+                Ok(state) => state,
+                Err(error) => {
+                    warn!("wait_frame: xrWaitFrame failed: {error:?}");
+                    return None;
+                }
+            }
         };
         self.should_render = frame_state.should_render && !self.app_suspend_render;
         Some((
@@ -1257,7 +1285,10 @@ impl<G: GraphicsBackend> FrameController<G> {
 
         {
             tracy_span!("begin frame");
-            if self.stream.begin().is_err() { return false; }
+            if let Err(error) = self.stream.begin() {
+                warn!("begin_frame: xrBeginFrame failed: {error:?}");
+                return false;
+            }
         }
         self.eyes_submitted = [None; 2];
         self.submitting_null = false;
@@ -1363,6 +1394,7 @@ impl<G: GraphicsBackend> FrameController<G> {
                 system.get_views(session_data.current_origin_as_reference_space());
             #[cfg(target_vendor = "apple")]
             if !flags.contains(xr::ViewStateFlags::ORIENTATION_VALID | xr::ViewStateFlags::POSITION_VALID) || views.len() != 2 {
+                warn!("end_frame: views not presentable (flags={flags:?}, views={})", views.len());
                 return false;
             }
             proj_layer_views = views
@@ -1428,7 +1460,10 @@ impl<G: GraphicsBackend> FrameController<G> {
             layers.extend(overlay_layers.iter().map(Deref::deref));
         }
 
-        if self.stream.end(display_time, xr::EnvironmentBlendMode::OPAQUE, &layers).is_err() { return false; }
+        if let Err(error) = self.stream.end(display_time, xr::EnvironmentBlendMode::OPAQUE, &layers) {
+            warn!("end_frame: xrEndFrame failed: {error:?} (layers={})", layers.len());
+            return false;
+        }
 
         trace!("frame submitted");
         true

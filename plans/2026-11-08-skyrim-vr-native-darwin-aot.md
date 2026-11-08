@@ -1,7 +1,7 @@
 # Skyrim VR native Darwin AOT implementation plan
 
 Date: 8 November 2026 (Europe/London)
-Status: probe 022's first `Submit` for both eyes returns 0. The texture is one `R8G8B8A8_UNORM` image, 2422×1211, color space Gamma, split at `u=0.5`. The registry accepts it. The Metal backend now accepts that Gamma/UNORM pairing and copies the texels as stored. `PostPresentHandoff` then runs, the next `WaitGetPoses` returns 1, and the next `Submit` returns 108 (`AlreadySubmitted`). The dev host does not log a fresh pair. The process still exits 5 at `SkyrimVR.exe+0x27c743`, reading address 0. A published stereo image, a scene, and playability remain unproven.
+Status: probe 032 gets Skyrim's own eye pairs to the dev host: 871 `offscreen fresh pair` lines (two 1211×1211 images each, no display) in about 24 seconds, zero fallback over 83.9M AOT entries. Probe 022's stuck frame was Standing mapping to the STAGE space, which the dev host had never declared valid; `xrLocateViews` returned zero flags, `end_frame` returned false, the frame stayed Begun and the next `Submit` returned 108. The dev host now has an opt-in labelled synthetic floor (`--dev-synthetic-stage`). The process still exits 5 at `SkyrimVR.exe+0x27c743` (a virtual call returns null) about 28 seconds after launch. Pixel content was not read back. A scene, a physical display, tracking and playability remain unproven. Start-up is flaky: 3 of 8 game probes with the new dylib, and 2 of 6 short runs with it, died within 2 seconds (the old dylib: 0 of 6; too few runs to attribute).
 
 ## Current continuation checkpoint
 
