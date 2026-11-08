@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# Runs SteamVR without Wine: vrserver, vrcompositor and the VeRantyx driver
+# under VXRuntime (VXRuntime/), plus the Mac HEVC encoder that streams the
+# driver's frames to the Vision Pro app. Experimental; no game yet (Half-Life:
+# Alyx still needs a Steam client, which does not run on VXRuntime yet).
+#
+#   scripts/launch_vxrt_steamvr.sh            # until Ctrl-C
+#   VXRT_VR_SECONDS=60 scripts/launch_vxrt_steamvr.sh
+#
+# SteamVR comes from ~/Verantyx_VR_Drive/vxrt_steam (tools/vxrt_steam.py) and the
+# VC++ runtime DLLs from ~/Verantyx_VR_Drive/vxrt_redist (tools/vxrt_redist.py):
+# no Wine prefix (scripts/vxrt_paths.sh; the Wine version's is still used, read
+# only, until those exist). The install is used read-only: everything SteamVR
+# writes under the Steam folder goes to $VXRT_VR_OVERLAY instead, and C:\ is
+# $VXRT_VR_ROOT/drive_c (the driver's shared frame file is there).
+#
+# The overlay's copy of steamvr.vrsettings (never the original) sets
+# steamvr/allowDisplayLockedMode: without Windows' DisplayManager (WinRT) the
+# compositor believes the display is locked and covers everything in a green
+# colour otherwise. VXRT_VR_NO_STANDBY=1 (default) also keeps the compositor
+# running when the headset looks idle (SteamVR otherwise drops to a few frames
+# a second after ~5 s).
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/vxrt_paths.sh"                  # STEAM_ROOT, VXRT_DLL_DIRS (no Wine prefix needed)
+STEAMVR_BIN="$STEAM_ROOT/steamapps/common/SteamVR/bin/win64"
+VXRT_VR_ROOT="${VXRT_VR_ROOT:-$VERANTYX_VR_DRIVE/vxrt_root}"
+VXRT_VR_OVERLAY="${VXRT_VR_OVERLAY:-$VERANTYX_VR_DRIVE/vxrt_steam_overlay}"
+VXRT_VR_NO_STANDBY="${VXRT_VR_NO_STANDBY:-1}"
+VXRT="$REPO_ROOT/VXRuntime/build/vxrt"
+[[ "${VXRT_ARM64:-0}" == 1 ]] && VXRT="$VXRT-arm64"   # (the ARM64 runtime, the program translated: experimental)
+ENCODER="$REPO_ROOT/build/HardwareEncoder"
+HELPER="$REPO_ROOT/build/vxrt-helper"             # (the settings, a JSON value, the web UI stand-in: scripts/vxrt_helper.swift)
+LOG_DIR="${VXRT_VR_LOG_DIR:-$REPO_ROOT/logs}"
+
+[[ -d "$STEAMVR_BIN" ]] || { echo "SteamVR not found at $STEAMVR_BIN" >&2; exit 1; }
+# (built here from the repository's sources; the VeRantyx app carries them built and no sources: nothing to build)
+[[ -f "$REPO_ROOT/VXRuntime/Makefile" ]] && make -C "$REPO_ROOT/VXRuntime" "${VXRT#$REPO_ROOT/VXRuntime/}" >/dev/null
+if [[ ! -x "$ENCODER" || "$REPO_ROOT/MacEncoder/HardwareEncoder.swift" -nt "$ENCODER" ]]; then
+    mkdir -p "$(dirname "$ENCODER")"
+    swiftc -O "$REPO_ROOT/MacEncoder/HardwareEncoder.swift" -o "$ENCODER"
+fi
+if [[ ! -x "$HELPER" || "$SCRIPT_DIR/vxrt_helper.swift" -nt "$HELPER" ]]; then
+    mkdir -p "$(dirname "$HELPER")"
+    swiftc -O "$SCRIPT_DIR/vxrt_helper.swift" -o "$HELPER"
+fi
+mkdir -p "$LOG_DIR" "$VXRT_VR_OVERLAY/config"
+# What a game's loading page would show (Half-Life: Alyx's "Press Trigger To Start" after a level loads): the web UI
+# stand-in writes it here, the encoder draws it into the picture (scripts/vxrt_helper.swift, GamePromptOverlay).
+export VERANTYX_GAME_PROMPT_FILE="${VERANTYX_GAME_PROMPT_FILE:-$LOG_DIR/game-prompt.txt}"
+rm -f "$VERANTYX_GAME_PROMPT_FILE"
+# The last start's logs are kept beside the new ones (<name>.prev.log), so two runs can be compared.
+for f in vxrt-steamvr.log hardware-encoder.log webui-standin.log; do
+    [[ -s "$LOG_DIR/$f" ]] && mv -f "$LOG_DIR/$f" "$LOG_DIR/${f%.log}.prev.log"
+done
+
+# SteamVR finds its runtime through openvrpaths.vrpath in the user's local app data (C:\ = the root above).
+to_windows() { printf 'Z:%s' "$1" | tr '/' '\\' | sed 's/\\/\\\\/g'; }
+OPENVR_DIR="$VXRT_VR_ROOT/drive_c/users/vxrt/AppData/Local/openvr"
+mkdir -p "$OPENVR_DIR"
+cat >"$OPENVR_DIR/openvrpaths.vrpath" <<EOF
+{
+	"config" : [ "$(to_windows "$STEAM_ROOT/config")" ],
+	"external_drivers" : null,
+	"jsonid" : "vrpathreg",
+	"log" : [ "$(to_windows "$STEAM_ROOT/logs")" ],
+	"runtime" : [ "$(to_windows "$STEAM_ROOT/steamapps/common/SteamVR")" ],
+	"version" : 1
+}
+EOF
+
+# Picture size. VXRT_VR_QUALITY=3k: 1440x1620 per eye (2880x1620 for both, about 4.7 megapixels) rendered,
+# composited and streamed, at 40 Mbps HEVC and 60 Hz; VXRT_VR_RENDER_SCALE=1.25 instead scales the driver's default
+# 800x900 per eye (the stream keeps its own size, VERANTYX_STREAM_WIDTH/HEIGHT). Either way SteamVR's own
+# resolution scaling is set to 100% (the copied settings may lower it), and the repository's driver, which
+# takes VERANTYX_RENDER_SCALE, is used from the overlay (the Wine prefix keeps its own).
+# VXRT_VR_QUALITY=2.5k: the game renders 2560x2880 per eye (Half-Life: Alyx: 50-55 fps on an M1 Max with 2x
+# multisampling, scripts/launch_vxrt_alyx.sh); SteamVR's compositor and the stream stay at the 3k preset's 2880x1620
+# (one HEVC session encodes about 60 frames a second of that).
+# VXRT_VR_QUALITY=max: the game renders 3200x3600 per eye (as many pixels as a Vision Pro eye's display, about 11.5
+# megapixels) and the stream is 3840x2160 (1920x2160 per eye: what one HEVC session and Wi-Fi can carry at 60 fps);
+# otherwise as 3k. Expect a much lower frame rate than 2.5k (1.6 times its pixels).
+# (a variable: braces inside ${VAR:-default} end it early, and a set VAR came out with one "}" too many)
+NO_THROTTLE='{"steamvr": {"framesToThrottle": 0, "additionalFramesToPredict": 0}}'
+if [[ "${VXRT_VR_QUALITY:-}" == max ]]; then
+    VXRT_VR_RENDER_SCALE="${VXRT_VR_RENDER_SCALE:-4.0}"
+    export VERANTYX_DISPLAY_SCALE="${VERANTYX_DISPLAY_SCALE:-2.4}"
+    export VERANTYX_STREAM_WIDTH="${VERANTYX_STREAM_WIDTH:-3840}" VERANTYX_STREAM_HEIGHT="${VERANTYX_STREAM_HEIGHT:-2160}"
+    VXRT_VR_QUALITY=3k
+fi
+if [[ "${VXRT_VR_QUALITY:-}" == 2.5k ]]; then
+    VXRT_VR_RENDER_SCALE="${VXRT_VR_RENDER_SCALE:-3.2}"
+    export VERANTYX_DISPLAY_SCALE="${VERANTYX_DISPLAY_SCALE:-1.8}"
+    VXRT_VR_QUALITY=3k
+fi
+if [[ "${VXRT_VR_QUALITY:-}" == 3k ]]; then
+    VXRT_VR_RENDER_SCALE="${VXRT_VR_RENDER_SCALE:-1.8}"
+    export VERANTYX_STREAM_WIDTH="${VERANTYX_STREAM_WIDTH:-2880}" VERANTYX_STREAM_HEIGHT="${VERANTYX_STREAM_HEIGHT:-1620}"
+    export VERANTYX_BITRATE_MBPS="${VERANTYX_BITRATE_MBPS:-40}"
+    # 60 Hz: with the game's poses decoupled from SteamVR's compositor (scripts/launch_vxrt_alyx.sh) the game holds
+    # 60 fps at this size on an M1 Max and the encoder streams all 60 (at 72 Hz the game makes 72, but one HEVC
+    # session encodes about 60 of them: frames would be dropped unevenly).
+    export VERANTYX_DISPLAY_HZ="${VERANTYX_DISPLAY_HZ:-60}"
+    # SteamVR does not hold the game back by whole frames when it misses one (it switched into that mode now and
+    # then: 45 fps fell to 30 for the rest of the run).
+    VXRT_VR_SETTINGS="${VXRT_VR_SETTINGS:-$NO_THROTTLE}"
+fi
+[[ -n "${VXRT_VR_RENDER_SCALE:-}" ]] && export VERANTYX_RENDER_SCALE="$VXRT_VR_RENDER_SCALE"
+# VERANTYX_ALVR=1: the stream goes to the ALVR client apps (Quest, Pico, the Vision Pro's "ALVR") through ALVR's own
+# streaming core (ALVRBridge/README.md), built here the first time (Rust); SteamVR's display rate is the one the last
+# ALVR headset asked for (90 Hz before any). VERANTYX_ALVR_WIRED=1 as well: a headset on a USB cable (adb; README.md).
+if [[ "${VERANTYX_ALVR:-0}" == 1 ]]; then
+    ALVR_LIB="$REPO_ROOT/ALVRBridge/target/release/libverantyx_alvr_bridge.dylib"
+    if [[ ! -f "$ALVR_LIB" || -n "$(find "$REPO_ROOT/ALVRBridge/src" -newer "$ALVR_LIB" -name '*.rs' 2>/dev/null)" ]]; then
+        CARGO="$(command -v cargo || echo "$HOME/.cargo/bin/cargo")"
+        [[ -x "$CARGO" ]] || { echo "VERANTYX_ALVR=1 needs Rust (https://rustup.rs) to build ALVRBridge" >&2; exit 1; }
+        (cd "$REPO_ROOT/ALVRBridge" && "$CARGO" build --release --lib) || exit 1
+    fi
+    export VERANTYX_ALVR_LIB="$ALVR_LIB"
+    ALVR_SESSION="$HOME/Library/Application Support/VeRantyx/ALVR/session.json"
+    ALVR_HZ="$("$HELPER" json-get "$ALVR_SESSION" openvr_config.refresh_rate 2>/dev/null || echo 90)"
+    ALVR_HZ="${ALVR_HZ%.*}"
+    export VERANTYX_DISPLAY_HZ="${VERANTYX_DISPLAY_HZ:-$ALVR_HZ}"
+    # SteamVR does not hold the game back by whole frames when it misses the headset's rate (as with the 3k preset):
+    # on a MacBook Air M5, Half-Life: Alyx at ALVR's defaults ran some 31 fps either way, and the user found it
+    # smoother this way although it ran second (fanless, warmer), 2026-10-17. On the M1 Max no difference (60.0/59.0).
+    VXRT_VR_SETTINGS="${VXRT_VR_SETTINGS:-$NO_THROTTLE}"
+    # (ALVR writes its log anew each start: the last one kept, session_log.prev.txt)
+    ALVR_LOG="$HOME/Library/Application Support/VeRantyx/ALVR/session_log.txt"
+    [[ -s "$ALVR_LOG" ]] && mv -f "$ALVR_LOG" "${ALVR_LOG%.txt}.prev.txt"
+    export VERANTYX_AUDIO="${VERANTYX_AUDIO:-0}"   # (the game's sound goes through ALVR instead: VERANTYX_ALVR_AUDIO, the encoder)
+    # (the defaults an Earth VR session with the Vision Pro's ALVR app settled on, 2026-10-17: 90 Hz wants the stream
+    #  within some 3 MP, which one HEVC session encodes at 90 fps on an M1 Max (2736x1096: 0-3 frames dropped, 4.7 MP:
+    #  59 fps); frames rendered at 1.4x and scaled down to it; 40 Mbps at most. A quality preset or these overrides it.)
+    export VERANTYX_STREAM_WIDTH="${VERANTYX_STREAM_WIDTH:-2880}" VERANTYX_STREAM_HEIGHT="${VERANTYX_STREAM_HEIGHT:-1040}"
+    export VERANTYX_BITRATE_MBPS="${VERANTYX_BITRATE_MBPS:-40}"
+    [[ -z "${VERANTYX_RENDER_SCALE:-}" ]] && export VERANTYX_RENDER_SCALE=1.4
+fi
+# The repository's driver, in the overlay's copy of SteamVR's drivers folder (SteamVR as downloaded has no
+# drivers/verantyx; the overlay's entries show in its listing).
+DRIVER_DLL="$REPO_ROOT/VRDriver/driver_verantyx.dll"
+if [[ ! -f "$DRIVER_DLL" || "$REPO_ROOT/VRDriver/src/driver_verantyx.cpp" -nt "$DRIVER_DLL" ]]; then
+    "$SCRIPT_DIR/build_openvr_driver.sh" >/dev/null
+fi
+OVERLAY_DRIVER="$VXRT_VR_OVERLAY/steamapps/common/SteamVR/drivers/verantyx/bin/win64"
+mkdir -p "$OVERLAY_DRIVER"
+cmp -s "$DRIVER_DLL" "$OVERLAY_DRIVER/driver_verantyx.dll" || cp -p "$DRIVER_DLL" "$OVERLAY_DRIVER/driver_verantyx.dll"
+
+# VXRT_VR_SETTINGS='{"steamvr": {"framesToThrottle": 0}}': settings merged in, section by section (experiments).
+# The VeRantyx headset is the only driver, no SteamVR Home, dashboard or safe mode (vxrt_helper.swift: vrsettings).
+"$HELPER" vrsettings "$STEAM_ROOT/config/steamvr.vrsettings" "$VXRT_VR_OVERLAY/config/steamvr.vrsettings" "$VXRT_VR_NO_STANDBY" "${VXRT_VR_RENDER_SCALE:-}" "${VXRT_VR_SETTINGS:-}"
+# A play area (chaperone universe 1, the driver's): without one SteamVR reads none ("Failed to read chaperone file"),
+# marks the head's poses invalid for programs (bPoseIsValid false, though tracking runs) and covers games with its
+# environment; Elite Dangerous then shows nothing and its view does not follow the head. A 3x3 m area with the floor
+# at the headset's floor and the seated origin where it is, as the Wine version's setup wrote (disable_steamvr_home.sh).
+CHAPERONE="$VXRT_VR_OVERLAY/config/chaperone_info.vrchap"
+if [[ ! -f "$CHAPERONE" ]]; then
+    python3 - "$CHAPERONE" <<'PY'
+import json, sys, time
+half, height = 1.5, 2.43
+corners = [(-half, -half), (-half, half), (half, half), (half, -half)]
+bounds = [[[x0, 0, z0], [x0, height, z0], [x1, height, z1], [x1, 0, z1]]
+          for (x0, z0), (x1, z1) in zip(corners, corners[1:] + corners[:1])]
+universe = {"collision_bounds": bounds, "play_area": [2 * half, 2 * half],
+            "seated": {"translation": [0, 0, 0], "yaw": 0}, "standing": {"translation": [0, 0, 0], "yaw": 0},
+            "time": time.strftime("%a %b %d %H:%M:%S %Y"), "universeID": "1"}
+json.dump({"jsonid": "chaperone_info", "universes": [universe], "version": 5}, open(sys.argv[1], "w"), indent=3)
+PY
+fi
+
+# Frames are scaled and converted for the encoder on the GPU: the encoder's own CPU/GPU timing picks the CPU when the
+# Mac is idle, and the CPU then loses to a game running at full rate (60 frames captured, 20 encoded).
+export VERANTYX_GPU_CONVERT="${VERANTYX_GPU_CONVERT:-1}"
+export VXRT_ROOT="$VXRT_VR_ROOT"
+export VXRT_OVERLAY="$STEAM_ROOT:$VXRT_VR_OVERLAY"
+export VXRT_DLL_PATH="$VXRT_DLL_DIRS"
+export VXRT_NO_ACTIVATE=1
+# SteamVR's own watchdog ends vrcompositor when one frame of its rendering takes over ~6 s ("Failed Watchdog timeout in
+# thread Render ... Aborting"): it does when a pipeline waits behind macOS's Metal compiler service, which a game
+# compiling its shaders (the first start after an update: hundreds) keeps busy; SteamVR then falls over with the game.
+# With a debugger present it skips the abort (as on Windows), and VXRT_DEBUGGER=1 says one is.
+export VXRT_DEBUGGER="${VXRT_DEBUGGER:-1}"
+
+VXRT_PATTERN="VXRuntime/build/vxrt(-arm64)? .*[Ss]team[Vv][Rr]/bin/win64/vr"   # (either library's spelling; the path may have "(x86)")
+cleanup() {
+    [[ -n "${ENCODER_PID:-}" ]] && kill -TERM "$ENCODER_PID" 2>/dev/null || true
+    pkill -TERM -f "^$ENCODER\$" 2>/dev/null || true             # (the encoder itself: ENCODER_PID is its restart loop)
+    [[ -n "${WEBUI_PID:-}" ]] && kill -TERM "$WEBUI_PID" 2>/dev/null || true
+    rm -f "$VERANTYX_GAME_PROMPT_FILE"
+    [[ -n "${VR_PID:-}" ]] && kill -TERM "$VR_PID" 2>/dev/null || true
+    pkill -TERM -f "$VXRT_PATTERN" 2>/dev/null || true   # vrserver and vrcompositor outlive vrcmd, as on Windows
+    sleep 1
+    pkill -KILL -f "$VXRT_PATTERN" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# (exit 75: an ALVR headset brought other display settings, stored: the encoder again, which connects with them)
+SHARED_FRAME="$VXRT_VR_ROOT/drive_c/vr_shared_frame.dat"
+TANGENTS="$VXRT_VR_ROOT/drive_c/vr_verantyx_tangents.txt"
+FIRST_WAIT="$LOG_DIR/alvr-first-connection.wait"
+rm -f "$FIRST_WAIT"
+# A first ALVR headset (no eye frustum saved yet): SteamVR reads the frustum once, when it starts, so the encoder starts
+# first and the headset connects before SteamVR does; the encoder saves its frustum and SteamVR starts with it. Without
+# this the first session showed the eyes apart (a symmetric fallback; issue #4). The encoder needs the shared map,
+# which the driver makes: made here first, at the driver's size (sparse). VERANTYX_ALVR_FIRST_WAIT: seconds (180).
+if [[ "${VERANTYX_ALVR:-0}" == 1 && ! -s "$TANGENTS" ]]; then
+    [[ -f "$SHARED_FRAME" ]] || python3 -c "import sys; open(sys.argv[1], 'wb').truncate(64 + 2 * (88 + 4096 * 4096 * 8) + 312 + 1024)" "$SHARED_FRAME"
+    touch "$FIRST_WAIT"
+fi
+(while :; do VERANTYX_SHARED_FRAME="$SHARED_FRAME" "$ENCODER"; [[ $? == 75 ]] || break; done) >"$LOG_DIR/hardware-encoder.log" 2>&1 &
+ENCODER_PID=$!
+if [[ -f "$FIRST_WAIT" ]]; then
+    echo "First start with this ALVR headset: open the ALVR app on the headset and connect now (SteamVR starts once it has; up to ${VERANTYX_ALVR_FIRST_WAIT:-180} s)"
+    for _ in $(seq 1 "${VERANTYX_ALVR_FIRST_WAIT:-180}"); do [[ -s "$TANGENTS" ]] && break; sleep 1; done
+    [[ -s "$TANGENTS" ]] && echo "ALVR headset connected: its eye frustum is saved; starting SteamVR" \
+                         || echo "No ALVR headset connected yet: SteamVR starts with a symmetric eye frustum (restart once the headset has connected)"
+    rm -f "$FIRST_WAIT"
+fi
+
+# vrcmd starts vrserver (which starts vrcompositor) and keeps a client connected.
+(cd "$STEAMVR_BIN" && exec "$VXRT" vrcmd.exe --pollposes) >"$LOG_DIR/vxrt-steamvr.log" 2>&1 &
+VR_PID=$!
+echo "SteamVR on VXRuntime started (log: $LOG_DIR/vxrt-steamvr.log)"
+# Which runtime this is: the app's COMMIT file, or the checkout's commit.
+if [[ -f "$REPO_ROOT/COMMIT" ]]; then echo "VeRantyx commit $(cat "$REPO_ROOT/COMMIT"), macOS $(sw_vers -productVersion)"
+elif commit="$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null)"; then echo "VeRantyx commit $commit (checkout), macOS $(sw_vers -productVersion)"; fi
+
+
+
+# Games' SteamVR web UIs need vrwebhelper (Chromium), which does not run on VXRuntime: this answers for
+# Half-Life: Alyx's (it gives up after a minute without the page's "ready").
+"$HELPER" webui-standin >"$LOG_DIR/webui-standin.log" 2>&1 &
+WEBUI_PID=$!
+if [[ "${VERANTYX_ALVR:-0}" == 1 ]]; then
+    echo "Encoder started with ALVR (log: $LOG_DIR/hardware-encoder.log); open an ALVR client app (20.x) on this network"
+else
+    echo "Encoder started (log: $LOG_DIR/hardware-encoder.log); open the Vision Pro app to connect"
+fi
+
+if [[ -n "${VXRT_VR_SECONDS:-}" ]]; then
+    sleep "$VXRT_VR_SECONDS"
+else
+    wait "$VR_PID"
+fi

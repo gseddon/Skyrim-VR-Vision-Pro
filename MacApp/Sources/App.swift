@@ -1,0 +1,216 @@
+// VeRantyx for Mac: the setup and the launcher of the VeRantyx runtime, for players who would rather not use Terminal.
+//
+// Also, for testing without the window (development):
+//   VeRantyx --collect-redist              gathers the runtime DLLs as the app does (VXRT_REDIST: elsewhere)
+//   VeRantyx --play <app id> [seconds]     starts a game as the Play button does and reports what the app sees
+//                                          (--flat too: on the Mac's screen, as the "On this Mac" button does;
+//                                          --dry-run: prints the script, arguments and settings it would run, runs none)
+//   VeRantyx --get <app id> [--flat] --dry-run
+//                                          the "Get and play" flow, answered yes, with the downloads and the start only
+//                                          printed (VERANTYX_DRY_RUN): what is missing, the size, what would be run
+//   VeRantyx --snapshot <folder>           saves pictures of each page of the window (scrolled: <page>-2.png, ...)
+//                                          (--snapshot-get <app id>: with the "Get and play" question of that game
+//                                          shown, as its button does; nothing is downloaded)
+//   VeRantyx --report                      saves the logs as a report does and prints the form's link (opens nothing)
+//   VeRantyx --missing-functions <log>     prints the missing Windows functions a game log names, as the report sends them
+//   VeRantyx --headset-report <session_log.txt> [Mac fps]
+//                                          prints ALVR's headset reports as the app reads them, and the advice it would
+//                                          show for a Quest over Wi-Fi at Recommended (the Mac's fps: 60)
+import AppKit
+import SwiftUI
+
+@main
+enum Entry {
+    static func main() {
+        let a = CommandLine.arguments
+        if let i = a.firstIndex(of: "--collect-redist") {
+            _ = i
+            Task {
+                do {
+                    let n = try await Redist.collect { print("  \($0)") }
+                    print("\(n) DLLs in \(Paths.redist.path)")
+                    exit(0)
+                } catch { print(error.localizedDescription); exit(1) }
+            }
+            dispatchMain()
+        }
+        if a.contains("--report") {
+            Task { @MainActor in
+                let zip = await Report.saveLogs()
+                print(zip?.path ?? "no logs")
+                print(AppModel().reportURL(logs: zip?.lastPathComponent).absoluteString)
+                exit(0)
+            }
+            dispatchMain()
+        }
+        if let i = a.firstIndex(of: "--missing-functions"), i + 1 < a.count {
+            for name in Play.missingFunctions(in: URL(fileURLWithPath: a[i + 1])) { print(name) }
+            exit(0)
+        }
+        if let i = a.firstIndex(of: "--headset-report"), i + 1 < a.count {
+            let mac = i + 2 < a.count ? Double(a[i + 2]) ?? 60 : 60
+            let text = (try? String(contentsOfFile: a[i + 1], encoding: .utf8)) ?? ""
+            var reports: [HeadsetReport] = []
+            for line in text.split(separator: "\n") {
+                guard let r = HeadsetReport(line) else { continue }
+                reports.append(r)
+                let fps = r.fps.map { String(format: "%.1f fps", $0) } ?? "-"
+                let latency = r.latency.map { String(format: "%.0f ms", $0) } ?? "-", network = r.network.map { String(format: "%.0f ms", $0) } ?? "-"
+                print("\(line.prefix(12)) \(fps), latency \(latency), network \(network), losses \(r.losses)")
+                if let hint = Play.headsetHint(reports.suffix(3), mac: mac, headset: .quest, wired: false, quality: .standard) { print("    advice: \(hint)") }
+            }
+            exit(0)
+        }
+        if let i = a.firstIndex(of: "--get"), i + 1 < a.count {
+            guard a.contains("--dry-run") else { print("--get only with --dry-run (it would download)"); exit(2) }
+            setenv("VERANTYX_DRY_RUN", "1", 1)
+            let id = a[i + 1], flat = a.contains("--flat")
+            Task { @MainActor in await Headless.get(id, flat: flat) }
+            RunLoop.main.run()
+        }
+        if let i = a.firstIndex(of: "--play"), i + 1 < a.count {
+            let id = a[i + 1]
+            let seconds = i + 2 < a.count ? Double(a[i + 2]) ?? 90 : 90
+            let flat = a.contains("--flat")
+            if a.contains("--dry-run") { setenv("VERANTYX_DRY_RUN", "1", 1) }
+            Task { @MainActor in await Headless.play(id, seconds: seconds, flat: flat) }
+            RunLoop.main.run()                            // (the run loop, not dispatchMain: the app's timers need it)
+        }
+        VeRantyxApp.main()
+    }
+}
+
+struct VeRantyxApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @State private var model = AppModel()
+
+    var body: some Scene {
+        Window("VeRantyx", id: "main") {
+            RootView()
+                .environment(model)
+                .frame(minWidth: 900, minHeight: 640)
+                .task { delegate.model = model; await Snapshot.runIfAsked(model) }
+        }
+        .defaultSize(width: 1060, height: 760)
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+            CommandGroup(replacing: .help) {
+                Link(T("VeRantyx on GitHub", "GitHub の VeRantyx"), destination: Paths.repoURL)
+            }
+        }
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    var model: AppModel?
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// Quitting while a game runs stops it (SteamVR, the encoder and the game with it) first.
+    @MainActor func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let model, let play = model.play, play.running else {
+            if model?.console.running == true { model?.console.cancel() }
+            return .terminateNow
+        }
+        play.stop()
+        Task { @MainActor in
+            for _ in 0..<40 where play.running { try? await Task.sleep(nanoseconds: 500_000_000) }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+}
+
+// MARK: - Testing without the window
+
+@MainActor enum Headless {
+    static func get(_ id: String, flat: Bool) async {
+        let model = AppModel()
+        await model.refresh()
+        await model.loadLibrary()
+        guard let title = Title.named(id) else { print("\(id): not a known title"); exit(2) }
+        print("drive=\(Paths.drive.path) installed=\(model.isInstalled(id)) steamVR=\(model.steamVR) windowsSteam installed=\(model.windowsSteamInstalled) running=\(model.windowsSteamRunning) account=\(model.account.isEmpty ? "-" : "set")")
+        model.getAndPlay(title, flat: flat)
+        for _ in 0..<50 where model.flow?.stage == .working { try? await Task.sleep(nanoseconds: 100_000_000) }
+        if model.flow?.stage == .confirm { print("asks: \(gigabytes(model.flow!.bytes)), free \(model.flow!.free.map(gigabytes) ?? "?"); answered yes"); await model.confirmFlow() }
+        for _ in 0..<50 where model.play?.running == true { try? await Task.sleep(nanoseconds: 100_000_000) }
+        for line in model.flowLog { print(line) }
+        if let f = model.flow { print("stage: \(f.stage)") }
+        if let play = model.play { print("started (dry run):"); print(play.dryRunText) }
+        exit(0)
+    }
+
+    static func play(_ id: String, seconds: Double, flat: Bool = false) async {
+        let model = AppModel()
+        await model.refresh()
+        for _ in 0..<50 where model.games.isEmpty { try? await Task.sleep(nanoseconds: 200_000_000) }
+        print("ready=\(model.ready) rosetta=\(model.rosetta ?? false) steam=\(model.steamRunning) steamVR=\(model.steamVR) dlls=\(model.redistCount) games=\(model.games.map(\.id))")
+        guard let game = model.games.first(where: { $0.id == id }) else { print("\(id): not installed"); exit(2) }
+        print("start \(game.name): exe=\(game.exe?.path ?? "(own launcher)") headset=\(model.headset(for: game).rawValue) quality=\(model.quality(for: game).rawValue) flat=\(flat)")
+        model.start(game, flat: flat)
+        guard let play = model.play else { print("did not start: \(model.error ?? "")"); exit(1) }
+        if Play.dryRun { for _ in 0..<20 where play.running { try? await Task.sleep(nanoseconds: 100_000_000) }; print(play.dryRunText); exit(0) }
+        let began = Date()
+        while Date().timeIntervalSince(began) < seconds && play.running {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            print(String(format: "%5.0fs phase=%@ steamvr=%d headset=%d fps=%@ game=%d problem=%@ notice=%@", Date().timeIntervalSince(began), "\(play.phase)",
+                         listening(27062) ? 1 : 0, play.headsetConnected ? 1 : 0, play.fps.map { String(format: "%.1f", $0) } ?? "-",
+                         play.gameStarted ? 1 : 0, play.problem ?? "-", play.notice ?? "-"))
+        }
+        if play.running { play.stop() }
+        for _ in 0..<40 where play.running { try? await Task.sleep(nanoseconds: 500_000_000) }
+        print("ended: phase=\(play.phase) problem=\(play.problem ?? "-") last game log line: \(play.gameLines.last ?? "-")")
+        // (what the session card's report buttons would open)
+        print("fps samples=\(play.fpsSamples.count) missing functions=\(play.missingFunctions.count)")
+        if !play.fpsSamples.isEmpty { print("report: \(model.runsReportURL(play).absoluteString)") }
+        if !play.missingFunctions.isEmpty { print("missing: \(model.missingFunctionsURL(play).absoluteString)") }
+        exit(0)
+    }
+}
+
+/// Pictures of each page: the window server's image of the app's own window (no screen recording permission is
+/// needed for one's own windows; the function is looked up at run time, as the SDK no longer declares it).
+@MainActor enum Snapshot {
+    typealias CreateImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+    static let createImage: CreateImage? = {
+        guard let h = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_NOW), let f = dlsym(h, "CGWindowListCreateImage") else { return nil }
+        return unsafeBitCast(f, to: CreateImage.self)
+    }()
+
+    static func runIfAsked(_ model: AppModel) async {
+        let a = CommandLine.arguments
+        guard let i = a.firstIndex(of: "--snapshot"), i + 1 < a.count else { return }
+        let dir = URL(fileURLWithPath: a[i + 1])
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? await Task.sleep(nanoseconds: 2_500_000_000)
+        if let j = a.firstIndex(of: "--snapshot-get"), j + 1 < a.count, let title = Title.named(a[j + 1]) {
+            model.getAndPlay(title, flat: a.contains("--flat"))
+        }
+        for page in Page.allCases {
+            model.page = page
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard let window = NSApp.windows.first(where: { $0.isVisible }) else { continue }
+            // (the page, then the rest of it a screen at a time: <page>-2.png, ...)
+            let scroll = window.contentView.flatMap { scrollViews(in: $0) }?.max { $0.frame.width < $1.frame.width }
+            var shot = 1
+            while true {
+                guard let image = createImage?(.null, 1 << 3, UInt32(window.windowNumber), 1 << 0 | 1 << 3)?.takeRetainedValue() else { break }
+                try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
+                    .write(to: dir.appendingPathComponent(shot == 1 ? "\(page.rawValue).png" : "\(page.rawValue)-\(shot).png"))
+                guard let scroll, let document = scroll.documentView, shot < 6 else { break }
+                let visible = scroll.contentView.bounds
+                guard visible.maxY < document.frame.height - 1 else { break }
+                let y = min(visible.minY + visible.height * 0.9, document.frame.height - visible.height)
+                scroll.contentView.scroll(to: NSPoint(x: visible.minX, y: y))
+                scroll.reflectScrolledClipView(scroll.contentView)
+                shot += 1
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+        }
+        NSApp.terminate(nil)
+    }
+
+    static func scrollViews(in view: NSView) -> [NSScrollView] {
+        (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap { scrollViews(in: $0) }
+    }
+}

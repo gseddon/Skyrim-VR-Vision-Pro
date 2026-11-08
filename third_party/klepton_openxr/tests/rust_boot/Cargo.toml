@@ -1,0 +1,7 @@
+[package]
+name = "klepton-native-openxr-boot"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+[dependencies]
+openxr = { version = "=0.21.1", default-features = false }

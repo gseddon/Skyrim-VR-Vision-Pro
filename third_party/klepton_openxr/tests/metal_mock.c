@@ -1,0 +1,333 @@
+#include "klepton_native.h"
+#include "metal_host.h"
+#include "session_host.h"
+#include "image_sync_host.h"
+#include "frame_host.h"
+#define XR_USE_GRAPHICS_API_METAL 1
+#include <openxr/openxr_platform.h>
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+static int dev, queue, tokens[12], texture[12], created, released, fail_after;
+static KlNativeSessionEvent injected;
+static XrResult begin_result = XR_SUCCESS, end_result = XR_SUCCESS, exit_result = XR_SUCCESS;
+static XrResult image_wait_result = XR_SUCCESS, image_write_result = XR_SUCCESS;
+static unsigned waits, completions, frame_waits, cancelled, published;
+static KlNativeFrameSample next_sample;
+static KlNativeFramePair last_pair;
+static XrResult publish_result = XR_SUCCESS;
+static XrResult cancel_result = XR_SUCCESS;
+static XrResult host_wait_frame(void *ctx, KlNativeFrameSample *out) { (void)ctx; *out = next_sample; ++frame_waits; return XR_SUCCESS; }
+static XrResult host_publish(void *ctx, const KlNativeFramePair *pair) { (void)ctx; ++published; if (publish_result == XR_SUCCESS) last_pair = *pair; return publish_result; }
+static XrResult host_cancel(void *ctx, void *ticket) { (void)ctx; assert(ticket == &dev); ++cancelled; return cancel_result; }
+static XrResult image_wait(void *ctx, void *lease, XrDuration timeout) { (void)ctx; assert(lease && timeout >= 0); ++waits; return image_wait_result; }
+static XrResult image_complete(void *ctx, void *lease) { (void)ctx; assert(lease); ++completions; return image_write_result; }
+static XrTime ack_time = 20;
+static XrResult poll(void *ctx, KlNativeSessionEvent *event) {
+    (void)ctx; if (!injected.type) return XR_EVENT_UNAVAILABLE;
+    *event = injected; injected.type = 0; return XR_SUCCESS;
+}
+static XrResult begin_host(void *ctx, XrTime *time) { (void)ctx; *time = ack_time; return begin_result; }
+static XrResult end_host(void *ctx, XrTime *time) { (void)ctx; *time = ack_time; return end_result; }
+static XrResult request_exit_host(void *ctx) { (void)ctx; return exit_result; }
+static XrSessionState poll_state(PFN_xrPollEvent fn, XrInstance instance) {
+    XrEventDataBuffer b = { .type = XR_TYPE_EVENT_DATA_BUFFER };
+    assert(fn(instance, &b) == XR_SUCCESS);
+    assert(b.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED);
+    return ((XrEventDataSessionStateChanged *)&b)->state;
+}
+static XrResult hmd(void *ctx) { (void)ctx; return XR_SUCCESS; }
+static XrResult graphics(void *ctx, void **d, void **q) { (void)ctx; *d = &dev; *q = &queue; return XR_SUCCESS; }
+static XrResult formats(void *ctx, uint32_t cap, uint32_t *count, int64_t *out) {
+    (void)ctx; if (!count) return XR_ERROR_VALIDATION_FAILURE; *count = 1;
+    if (!cap) return XR_SUCCESS;
+    if (!out) return XR_ERROR_VALIDATION_FAILURE;
+    out[0] = 80; return XR_SUCCESS;
+}
+static XrResult create(void *ctx, const KlNativeMetalImageInfo *info, void **out, void **lease) {
+    (void)ctx; assert(info->format == 80 && info->width == 16 && info->height == 16 && info->array_size == 2);
+    if (fail_after && created == fail_after) return XR_ERROR_OUT_OF_MEMORY;
+    *out = &texture[created]; *lease = &tokens[created++]; return XR_SUCCESS;
+}
+static void release(void *ctx, void *lease) { (void)ctx; assert(lease); ++released; }
+#define GET(type, var, instance, name) \
+    PFN_xrVoidFunction raw_##var = NULL; \
+    assert(kl_native_get_instance_proc_addr(instance, name, &raw_##var) == XR_SUCCESS); \
+    type var = (type)raw_##var; assert(var)
+int main(void) {
+    KlNativeHost host = { 1, sizeof(host), NULL, hmd, NULL };
+    KlNativeMetalHost metal = { KL_NATIVE_METAL_HOST_VERSION, sizeof(metal), NULL, graphics, formats, create, release };
+    assert(kl_native_configure(&host) == XR_SUCCESS);
+    assert(kl_native_configure_metal(&metal) == XR_SUCCESS);
+    KlNativeSessionHost platform = { KL_NATIVE_SESSION_HOST_VERSION, sizeof(platform), NULL, poll, begin_host, end_host, request_exit_host };
+    assert(kl_native_configure_session(&platform) == XR_SUCCESS);
+    KlNativeImageSyncHost sync = { KL_NATIVE_IMAGE_SYNC_HOST_VERSION, sizeof(sync), NULL, image_wait, image_complete };
+    assert(kl_native_configure_image_sync(&sync) == XR_SUCCESS);
+    KlNativeFrameHost frame_host = { KL_NATIVE_FRAME_HOST_VERSION, sizeof(frame_host), NULL, host_wait_frame, host_publish, host_cancel };
+    assert(kl_native_configure_frame(&frame_host) == XR_SUCCESS);
+    GET(PFN_xrEnumerateInstanceExtensionProperties, enum_ext, XR_NULL_HANDLE, "xrEnumerateInstanceExtensionProperties");
+    uint32_t count = 0;
+    assert(enum_ext(NULL, 0, &count, NULL) == XR_SUCCESS && count == 1);
+    XrExtensionProperties ext = { .type = XR_TYPE_EXTENSION_PROPERTIES };
+    assert(enum_ext(NULL, 1, &count, &ext) == XR_SUCCESS && !strcmp(ext.extensionName, XR_KHR_METAL_ENABLE_EXTENSION_NAME));
+    GET(PFN_xrCreateInstance, new_instance, XR_NULL_HANDLE, "xrCreateInstance");
+    const char *requested = XR_KHR_METAL_ENABLE_EXTENSION_NAME;
+    XrInstanceCreateInfo ci = { .type = XR_TYPE_INSTANCE_CREATE_INFO, .enabledExtensionCount = 1, .enabledExtensionNames = &requested };
+    ci.applicationInfo.apiVersion = XR_MAKE_VERSION(1, 0, 0);
+    XrInstance instance; assert(new_instance(&ci, &instance) == XR_SUCCESS);
+    assert(kl_native_configure_metal(NULL) == XR_ERROR_CALL_ORDER_INVALID);
+    GET(PFN_xrGetMetalGraphicsRequirementsKHR, req, instance, "xrGetMetalGraphicsRequirementsKHR");
+    GET(PFN_xrCreateSession, new_session, instance, "xrCreateSession");
+    GET(PFN_xrDestroySession, destroy_session, instance, "xrDestroySession");
+    GET(PFN_xrCreateSwapchain, new_swap, instance, "xrCreateSwapchain");
+    GET(PFN_xrDestroySwapchain, destroy_swap, instance, "xrDestroySwapchain");
+    GET(PFN_xrEnumerateSwapchainImages, images, instance, "xrEnumerateSwapchainImages");
+    GET(PFN_xrDestroyInstance, destroy_instance, instance, "xrDestroyInstance");
+    GET(PFN_xrBeginSession, begin, instance, "xrBeginSession");
+    GET(PFN_xrEndSession, end, instance, "xrEndSession");
+    GET(PFN_xrRequestExitSession, request_exit, instance, "xrRequestExitSession");
+    GET(PFN_xrPollEvent, poll_event, instance, "xrPollEvent");
+    GET(PFN_xrCreateReferenceSpace, create_space, instance, "xrCreateReferenceSpace");
+    GET(PFN_xrDestroySpace, destroy_space, instance, "xrDestroySpace");
+    GET(PFN_xrLocateSpace, locate_space, instance, "xrLocateSpace");
+    GET(PFN_xrWaitFrame, wait_frame, instance, "xrWaitFrame");
+    GET(PFN_xrBeginFrame, begin_frame, instance, "xrBeginFrame");
+    GET(PFN_xrEndFrame, end_frame, instance, "xrEndFrame");
+    GET(PFN_xrLocateViews, locate_views, instance, "xrLocateViews");
+    GET(PFN_xrAcquireSwapchainImage, acquire, instance, "xrAcquireSwapchainImage");
+    GET(PFN_xrWaitSwapchainImage, wait_image, instance, "xrWaitSwapchainImage");
+    GET(PFN_xrReleaseSwapchainImage, release_image, instance, "xrReleaseSwapchainImage");
+    XrGraphicsBindingMetalKHR binding = { .type = XR_TYPE_GRAPHICS_BINDING_METAL_KHR, .commandQueue = &queue };
+    XrSessionCreateInfo si = { .type = XR_TYPE_SESSION_CREATE_INFO, .next = &binding, .systemId = 1 };
+    XrSession session;
+    assert(new_session(instance, &si, &session) == XR_ERROR_GRAPHICS_REQUIREMENTS_CALL_MISSING);
+    XrGraphicsRequirementsMetalKHR r = { .type = XR_TYPE_GRAPHICS_REQUIREMENTS_METAL_KHR };
+    assert(req(instance, 1, &r) == XR_SUCCESS && r.metalDevice == &dev);
+    binding.commandQueue = &dev;
+    assert(new_session(instance, &si, &session) == XR_ERROR_GRAPHICS_DEVICE_INVALID);
+    binding.commandQueue = &queue;
+    assert(new_session(instance, &si, &session) == XR_SUCCESS);
+    XrSessionBeginInfo bi = { .type = XR_TYPE_SESSION_BEGIN_INFO, .primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO };
+    XrEventDataBuffer b = { .type = XR_TYPE_EVENT_DATA_BUFFER };
+    assert(poll_event(instance, &b) == XR_EVENT_UNAVAILABLE);
+    assert(begin(session, &bi) == XR_ERROR_SESSION_NOT_READY);
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_FOCUSED, 5 };
+    assert(poll_event(instance, &b) == XR_ERROR_CALL_ORDER_INVALID);
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_READY, 10 };
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_READY);
+    begin_result = XR_ERROR_RUNTIME_FAILURE;
+    assert(begin(session, &bi) == XR_ERROR_RUNTIME_FAILURE);
+    begin_result = XR_SUCCESS;
+    assert(begin(session, &bi) == XR_SUCCESS);
+    assert(destroy_session(session) == XR_ERROR_SESSION_RUNNING);
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_SYNCHRONIZED);
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_VISIBLE, 19 };
+    assert(poll_event(instance, &b) == XR_ERROR_TIME_INVALID);
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_VISIBLE, 21 };
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_VISIBLE);
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_FOCUSED, 22 };
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_FOCUSED);
+    XrReferenceSpaceCreateInfo rs = { .type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO,
+        .referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL, .poseInReferenceSpace.orientation.w = 1 };
+    XrSpace local, stage, view;
+    assert(create_space(session, &rs, &local) == XR_SUCCESS);
+    rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+    assert(create_space(session, &rs, &stage) == XR_SUCCESS);
+    rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+    assert(create_space(session, &rs, &view) == XR_SUCCESS);
+    next_sample = (KlNativeFrameSample){ .ticket = &dev, .frame_id = 101, .pose_id = 201,
+        .predicted_display_time = 100, .predicted_display_period = 10, .should_render = XR_TRUE,
+        .head_location_flags = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT,
+        .local_from_head = { .orientation.w = 1, .position = {1, 1.5f, -2} },
+        .head_from_eye = { { .orientation.w = 1, .position.x = -0.03f }, { .orientation.w = 1, .position.x = 0.03f } },
+        .fov = { {-.8f,.8f,.8f,-.8f}, {-.8f,.8f,.8f,-.8f} } };
+    XrFrameState fs = { .type = XR_TYPE_FRAME_STATE };
+    assert(wait_frame(session, NULL, &fs) == XR_SUCCESS && fs.shouldRender == XR_TRUE && fs.predictedDisplayTime == 100);
+    assert(wait_frame(session, NULL, &fs) == XR_ERROR_CALL_ORDER_INVALID);
+    XrViewLocateInfo vi = { .type = XR_TYPE_VIEW_LOCATE_INFO, .viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, .displayTime = 100, .space = view };
+    XrViewState vs = { .type = XR_TYPE_VIEW_STATE };
+    XrView views[2] = { {.type = XR_TYPE_VIEW}, {.type = XR_TYPE_VIEW} };
+    assert(locate_views(session, &vi, &vs, 2, &count, views) == XR_SUCCESS && count == 2);
+    assert(views[0].pose.position.x < -0.029f && views[1].pose.position.x > 0.029f);
+    vi.space = stage;
+    assert(locate_views(session, &vi, &vs, 2, &count, views) == XR_SUCCESS && vs.viewStateFlags == 0);
+    XrSpaceLocation location = { .type = XR_TYPE_SPACE_LOCATION };
+    assert(locate_space(view, stage, 100, &location) == XR_SUCCESS && location.locationFlags == 0);
+    assert(begin_frame(session, NULL) == XR_SUCCESS);
+    XrFrameEndInfo fi = { .type = XR_TYPE_FRAME_END_INFO, .displayTime = 100, .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE };
+    cancel_result = XR_ERROR_RUNTIME_FAILURE;
+    assert(end_frame(session, &fi) == XR_ERROR_RUNTIME_FAILURE);
+    assert(destroy_session(session) == XR_ERROR_SESSION_RUNNING);
+    cancel_result = XR_SUCCESS;
+    assert(end_frame(session, &fi) == XR_SUCCESS && cancelled == 2 && published == 0);
+    next_sample.frame_id = 102; next_sample.pose_id = 202; next_sample.predicted_display_time = 110;
+    next_sample.stage_valid = XR_TRUE; next_sample.local_from_stage.orientation.w = 1;
+    next_sample.local_from_stage.position.y = -1;
+    assert(wait_frame(session, NULL, &fs) == XR_SUCCESS);
+    assert(locate_space(view, stage, 110, &location) == XR_SUCCESS && location.locationFlags && location.pose.position.y == 2.5f);
+    assert(begin_frame(session, NULL) == XR_SUCCESS);
+    fi.displayTime = 110; assert(end_frame(session, &fi) == XR_SUCCESS);
+    next_sample.frame_id = 103; next_sample.pose_id = 203; next_sample.predicted_display_time = 120;
+    next_sample.local_from_head.orientation.w = 0; cancel_result = XR_ERROR_RUNTIME_FAILURE;
+    assert(wait_frame(session, NULL, &fs) == XR_ERROR_RUNTIME_FAILURE);
+    assert(wait_frame(session, NULL, &fs) == XR_ERROR_RUNTIME_FAILURE);
+    cancel_result = XR_SUCCESS; next_sample.local_from_head.orientation.w = 1;
+    next_sample.frame_id = 104; next_sample.pose_id = 204; next_sample.predicted_display_time = 130;
+    assert(wait_frame(session, NULL, &fs) == XR_SUCCESS);
+    assert(begin_frame(session, NULL) == XR_SUCCESS); fi.displayTime = 130;
+    assert(end_frame(session, &fi) == XR_SUCCESS && published == 0);
+    next_sample.frame_id = 0; next_sample.pose_id = 205; next_sample.predicted_display_time = 140;
+    unsigned cancelled_before = cancelled;
+    assert(wait_frame(session, NULL, &fs) == XR_ERROR_RUNTIME_FAILURE);
+    assert(cancelled == cancelled_before + 1); /* opaque ticket still cancellable */
+    assert(destroy_space(view) == XR_SUCCESS);
+    assert(destroy_space(stage) == XR_SUCCESS);
+    assert(destroy_space(local) == XR_SUCCESS);
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_STOPPING, 23 };
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_STOPPING);
+    end_result = XR_TIMEOUT_EXPIRED;
+    assert(end(session) == XR_ERROR_RUNTIME_FAILURE);
+    end_result = XR_ERROR_RUNTIME_FAILURE;
+    assert(end(session) == XR_ERROR_RUNTIME_FAILURE);
+    assert(destroy_session(session) == XR_ERROR_SESSION_RUNNING);
+    ack_time = 24; end_result = XR_SUCCESS;
+    assert(end(session) == XR_SUCCESS);
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_IDLE);
+    XrSwapchainCreateInfo sc = { .type = XR_TYPE_SWAPCHAIN_CREATE_INFO, .format = 80, .sampleCount = 1, .width = 16, .height = 16, .faceCount = 1, .arraySize = 2, .mipCount = 1 };
+    XrSwapchain swap;
+    fail_after = 2;
+    assert(new_swap(session, &sc, &swap) == XR_ERROR_OUT_OF_MEMORY && released == 2 && swap == XR_NULL_HANDLE);
+    fail_after = 0;
+    assert(new_swap(session, &sc, &swap) == XR_SUCCESS && created == 5);
+    assert(acquire(swap, NULL, NULL) == XR_ERROR_VALIDATION_FAILURE);
+    XrSwapchainImageWaitInfo wi = { .type = XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO, .timeout = 1 };
+    uint32_t i0, i1, i2;
+    assert(wait_image(swap, &wi) == XR_ERROR_CALL_ORDER_INVALID);
+    assert(release_image(swap, NULL) == XR_ERROR_CALL_ORDER_INVALID);
+    assert(acquire(swap, NULL, &i0) == XR_SUCCESS && i0 == 0);
+    assert(acquire(swap, NULL, &i1) == XR_SUCCESS && i1 == 1);
+    assert(acquire(swap, NULL, &i2) == XR_SUCCESS && i2 == 2);
+    assert(acquire(swap, NULL, &i2) == XR_ERROR_CALL_ORDER_INVALID);
+    assert(destroy_swap(swap) == XR_ERROR_CALL_ORDER_INVALID);
+    assert(destroy_session(session) == XR_ERROR_CALL_ORDER_INVALID);
+    assert(destroy_instance(instance) == XR_ERROR_CALL_ORDER_INVALID);
+    image_wait_result = XR_TIMEOUT_EXPIRED;
+    assert(wait_image(swap, &wi) == XR_TIMEOUT_EXPIRED);
+    assert(release_image(swap, NULL) == XR_ERROR_CALL_ORDER_INVALID);
+    image_wait_result = XR_SUCCESS;
+    assert(wait_image(swap, &wi) == XR_SUCCESS);
+    assert(wait_image(swap, &wi) == XR_ERROR_CALL_ORDER_INVALID);
+    image_write_result = XR_ERROR_RUNTIME_FAILURE;
+    assert(release_image(swap, NULL) == XR_ERROR_RUNTIME_FAILURE);
+    assert(destroy_swap(swap) == XR_ERROR_CALL_ORDER_INVALID);
+    image_write_result = XR_SUCCESS;
+    assert(release_image(swap, NULL) == XR_SUCCESS);
+    assert(wait_image(swap, &wi) == XR_SUCCESS && release_image(swap, NULL) == XR_SUCCESS);
+    assert(wait_image(swap, &wi) == XR_SUCCESS && release_image(swap, NULL) == XR_SUCCESS);
+    assert(waits == 4 && completions == 4);
+    assert(images(swap, 0, &count, NULL) == XR_SUCCESS && count == 3);
+    XrSwapchainImageMetalKHR imgs[3]; memset(imgs, 0, sizeof imgs);
+    for (unsigned i = 0; i < 3; ++i) imgs[i].type = XR_TYPE_SWAPCHAIN_IMAGE_METAL_KHR;
+    assert(images(swap, 2, &count, (XrSwapchainImageBaseHeader *)imgs) == XR_ERROR_SIZE_INSUFFICIENT && count == 3);
+    imgs[1].type = XR_TYPE_UNKNOWN;
+    assert(images(swap, 3, &count, (XrSwapchainImageBaseHeader *)imgs) == XR_ERROR_VALIDATION_FAILURE);
+    assert(imgs[0].texture == NULL && imgs[2].texture == NULL);
+    imgs[1].type = XR_TYPE_SWAPCHAIN_IMAGE_METAL_KHR;
+    assert(images(swap, 3, &count, (XrSwapchainImageBaseHeader *)imgs) == XR_SUCCESS);
+    assert(imgs[0].texture == &texture[2] && imgs[2].texture == &texture[4]);
+    /* One real release of a two-layer image may feed both projection eyes. */
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_READY, 200 };
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_READY);
+    ack_time = 201;
+    assert(begin(session, &bi) == XR_SUCCESS);
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_SYNCHRONIZED);
+    rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
+    assert(create_space(session, &rs, &local) == XR_SUCCESS);
+    next_sample.frame_id = 105; next_sample.pose_id = 205; next_sample.predicted_display_time = 210;
+    assert(wait_frame(session, NULL, &fs) == XR_SUCCESS && fs.shouldRender == XR_TRUE);
+    assert(begin_frame(session, NULL) == XR_SUCCESS);
+    /* This completed release belongs to the current latched frame/pose. */
+    assert(acquire(swap, NULL, &i0) == XR_SUCCESS);
+    assert(wait_image(swap, &wi) == XR_SUCCESS);
+    assert(release_image(swap, NULL) == XR_SUCCESS);
+    XrCompositionLayerProjectionView projection_views[2] = {
+        { .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW, .pose = { .orientation.w = 1, .position = {1, 1.5f, -2} },
+          .fov = {-.8f, .8f, .8f, -.8f}, .subImage = { .swapchain = swap, .imageRect = { {0,0}, {16,16} }, .imageArrayIndex = 0 } },
+        { .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW, .pose = { .orientation.w = 1, .position = {2, 1.5f, -2} },
+          .fov = {-.8f, .8f, .8f, -.8f}, .subImage = { .swapchain = swap, .imageRect = { {0,0}, {16,16} }, .imageArrayIndex = 1 } } };
+    XrCompositionLayerProjection projection = { .type = XR_TYPE_COMPOSITION_LAYER_PROJECTION, .space = local, .viewCount = 2, .views = projection_views };
+    const XrCompositionLayerBaseHeader *layer = (const XrCompositionLayerBaseHeader *)&projection;
+    fi.displayTime = 210; fi.layerCount = 1; fi.layers = &layer;
+    projection_views[1].subImage.imageRect.extent.width = 17;
+    assert(end_frame(session, &fi) == XR_ERROR_SWAPCHAIN_RECT_INVALID && published == 0);
+    projection_views[1].subImage.imageRect.extent.width = 16;
+    projection_views[1].subImage.imageArrayIndex = 0;
+    assert(end_frame(session, &fi) == XR_ERROR_LAYER_INVALID && published == 0);
+    projection_views[1].subImage.imageArrayIndex = 1;
+    publish_result = XR_ERROR_RUNTIME_FAILURE;
+    assert(end_frame(session, &fi) == XR_ERROR_RUNTIME_FAILURE && published == 1);
+    publish_result = XR_SUCCESS;
+    assert(end_frame(session, &fi) == XR_SUCCESS && published == 2);
+    assert(last_pair.sample.frame_id == 105 && last_pair.sample.pose_id == 205 && last_pair.sample.ticket == &dev);
+    assert(last_pair.eye[0].texture == last_pair.eye[1].texture && last_pair.eye[0].array_layer == 0 && last_pair.eye[1].array_layer == 1);
+    assert(last_pair.eye[0].local_from_render_eye.position.x == 1 && last_pair.eye[1].local_from_render_eye.position.x == 2);
+    next_sample.frame_id = 106; next_sample.pose_id = 206; next_sample.predicted_display_time = 220;
+    assert(wait_frame(session, NULL, &fs) == XR_SUCCESS);
+    assert(begin_frame(session, NULL) == XR_SUCCESS);
+    fi.displayTime = 220;
+    assert(end_frame(session, &fi) == XR_ERROR_CALL_ORDER_INVALID && published == 2);
+    fi.layerCount = 0; fi.layers = NULL;
+    assert(end_frame(session, &fi) == XR_SUCCESS); /* rejected pair can be cancelled */
+    assert(destroy_space(local) == XR_SUCCESS);
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_STOPPING, 230 };
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_STOPPING);
+    ack_time = 231;
+    assert(end(session) == XR_SUCCESS);
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_IDLE);
+    assert(destroy_swap(swap) == XR_SUCCESS && released == 5);
+    assert(destroy_swap(swap) == XR_ERROR_HANDLE_INVALID);
+    assert(destroy_session(session) == XR_SUCCESS);
+    assert(destroy_session(session) == XR_ERROR_HANDLE_INVALID);
+    assert(new_session(instance, &si, &session) == XR_SUCCESS);
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_READY, 300 };
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_READY);
+    ack_time = 1;
+    assert(begin(session, &bi) == XR_ERROR_RUNTIME_FAILURE);
+    assert(destroy_session(session) == XR_ERROR_SESSION_RUNNING);
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_LOSS_PENDING);
+    ack_time = 301;
+    assert(end(session) == XR_SUCCESS);
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_IDLE);
+    assert(destroy_session(session) == XR_SUCCESS);
+    assert(new_session(instance, &si, &session) == XR_SUCCESS);
+    assert(request_exit(session) == XR_ERROR_SESSION_NOT_RUNNING);
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_READY, 400 };
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_READY);
+    ack_time = 401; assert(begin(session, &bi) == XR_SUCCESS);
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_SYNCHRONIZED);
+    exit_result = XR_ERROR_RUNTIME_FAILURE;
+    assert(request_exit(session) == XR_ERROR_RUNTIME_FAILURE);
+    exit_result = XR_SUCCESS;
+    assert(request_exit(session) == XR_SUCCESS);
+    assert(request_exit(session) == XR_ERROR_CALL_ORDER_INVALID);
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_STOPPING, 402 };
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_STOPPING);
+    ack_time = 403; assert(end(session) == XR_SUCCESS);
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_IDLE);
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_EXITING, 404 };
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_EXITING);
+    assert(destroy_session(session) == XR_SUCCESS);
+    assert(destroy_instance(instance) == XR_SUCCESS);
+    assert(kl_native_configure_image_sync(NULL) == XR_SUCCESS);
+    assert(new_instance(&ci, &instance) == XR_SUCCESS);
+    assert(req(instance, 1, &r) == XR_SUCCESS);
+    assert(new_session(instance, &si, &session) == XR_SUCCESS);
+    assert(new_swap(session, &sc, &swap) == XR_SUCCESS);
+    assert(acquire(swap, NULL, &i0) == XR_ERROR_FUNCTION_UNSUPPORTED);
+    assert(destroy_swap(swap) == XR_SUCCESS);
+    assert(destroy_session(session) == XR_SUCCESS);
+    assert(destroy_instance(instance) == XR_SUCCESS);
+    assert(kl_native_configure_metal(NULL) == XR_SUCCESS);
+    puts("Metal provider mock resource lifecycle: pass; no GPU or frame");
+}

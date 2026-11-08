@@ -1,0 +1,42 @@
+{
+  "$schema": "./profile.schema.json",
+  "appid": "275850",
+  "key": "nms",
+  "name": "No Man's Sky",
+  "launcher": "game",
+  "engine": "vxrt",
+  "exe": "Binaries/NMS.exe",
+  "default_scenario": "start",
+  "scenarios": {
+    "start": {
+      "args": [],
+      "seconds": 120,
+      "note": "from the start to the title screen; flat first (VXRT_FLAT=1), Vulkan only on PC"
+    }
+  },
+  "status": {
+    "state": "partial",
+    "level": "runs",
+    "summary": {
+      "ja": "本物の Windows 版 Steam（ユーザー自身がサインイン、~/Verantyx_VR_Drive/vxrt_wsteam）を VXRuntime で動かし、そこから起動する（steam.exe -applaunch 275850、VR は -HmdEnable 1。scripts/launch_vxrt_nms_vr.sh）。Mac の画面では惑星の地形まで描画され、ユーザーが遊べた。VR では Vision Pro の VeRantyx アプリと ALVR アプリの両方で映像と音を確認し、ALVR では手の入力も届いた。ヘッドセットでの fps はまだ低め（25〜40）。ハーネスでの計測はまだ。",
+      "en": "Started by the real Windows Steam client on VXRuntime, signed in to by the user (~/Verantyx_VR_Drive/vxrt_wsteam): steam.exe -applaunch 275850, with -HmdEnable 1 for VR (scripts/launch_vxrt_nms_vr.sh). On the Mac's screen it draws the planet's terrain and the user played it. In VR, picture and sound checked with both the Vision Pro's VeRantyx app and the ALVR app; through ALVR the hand input reached the game too. Frame rate in the headset still low (25-40 fps). No harness measurement yet."
+    },
+    "checked": "2026-10-25",
+    "machine": "Apple M1 Max, 32-core GPU"
+  },
+  "baselines": {},
+  "known_issues": [
+    {
+      "summary": "2026-10-25: the SteamStub error below is answered by the real Windows Steam client the user signed in to (VXRuntime/README.md \"The Windows Steam client\"), not by imitating Steam. Started directly with scripts/launch_vxrt_game.sh the game still stops there. Headset frame rate 25-40 fps; no harness run or measurement yet.",
+      "since": "2026-10-25"
+    },
+    {
+      "summary": "Flat runs on 2026-10-23 (scripts/launch_vxrt_game.sh with VXRT_FLAT=1, buildid 25732212): the SteamStub stub first needed msvcrt.dll!vsprintf (an int3 loop at NMS.exe+0x76e60ec when GetProcAddress failed) and RegisterTraceGuidsW; with both, steam_api64's SteamAPI_Init loads the Steam bridge (SteamClient017/014 created), then the stub opens the event and file mapping Local\\SteamStart_SharedMemFile of a Windows Steam client, finds none and shows \"Steam Error: Application load error 3:0000065558\". Answering that Windows Steam client protocol ourselves would mean imitating Steam's DRM, which the rules forbid (AGENTS.md).",
+      "since": "2026-10-23"
+    }
+  ],
+  "notes": [
+    "Vulkan only on PC (the game carries the Khronos loader vulkan-1.dll; VXRuntime's built-in vulkan-1.dll is used instead). Also carries openvr_api.dll, DLSS/XeSS/Streamline, PlayFab/Party, NVIDIA Aftermath; no anti-cheat.",
+    "VXRT_DEBUGGER=0 is not needed for the stub's check (it failed the same way with and without)."
+  ]
+}
