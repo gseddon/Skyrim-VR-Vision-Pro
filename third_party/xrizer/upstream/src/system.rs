@@ -356,9 +356,9 @@ impl vr::IVRSystem026_Interface for System {
         axis_id: u32,
         duration_us: std::ffi::c_ushort,
     ) {
-        self.input
-            .force(|_| Input::new(self.openxr.clone()))
-            .legacy_haptic(device_index, axis_id, duration_us);
+        if let Ok(input) = self.input.try_force(|_| Input::try_new(self.openxr.clone())) {
+            input.legacy_haptic(device_index, axis_id, duration_us);
+        }
     }
     fn GetControllerStateWithPose(
         &self,
@@ -368,7 +368,10 @@ impl vr::IVRSystem026_Interface for System {
         state_size: u32,
         pose: *mut vr::TrackedDevicePose_t,
     ) -> bool {
-        let input = self.input.force(|_| Input::new(self.openxr.clone()));
+        if pose.is_null() { return false; }
+        let Ok(input) = self.input.try_force(|_| Input::try_new(self.openxr.clone())) else {
+            return false;
+        };
 
         let Some(hand) = input.device_index_to_hand(device_index) else {
             return false;
@@ -376,12 +379,7 @@ impl vr::IVRSystem026_Interface for System {
 
         if self.GetControllerState(device_index, state, state_size) {
             unsafe {
-                *pose.as_mut().unwrap() = self
-                    .input
-                    .get()
-                    .unwrap()
-                    .get_controller_pose(hand, Some(origin))
-                    .unwrap_or_default();
+                pose.write(input.get_controller_pose(hand, Some(origin)).unwrap_or_default());
             }
             true
         } else {
@@ -528,7 +526,7 @@ impl vr::IVRSystem026_Interface for System {
         if got_event && !pose.is_null() {
             unsafe {
                 let index = (&raw const (*event).trackedDeviceIndex).read();
-                pose.write(input.get_device_pose(index, Some(origin)).unwrap());
+                pose.write(input.get_device_pose(index, Some(origin)).unwrap_or_default());
             }
         }
         got_event
@@ -836,12 +834,12 @@ impl vr::IVRSystem026_Interface for System {
         pose_array: *mut vr::TrackedDevicePose_t,
         pose_count: u32,
     ) {
-        self.input
-            .force(|_| Input::new(self.openxr.clone()))
-            .get_poses(
-                unsafe { std::slice::from_raw_parts_mut(pose_array, pose_count as usize) },
-                Some(origin),
-            );
+        if pose_count == 0 || pose_array.is_null() { return; }
+        let poses = unsafe { std::slice::from_raw_parts_mut(pose_array, pose_count as usize) };
+        poses.fill(vr::TrackedDevicePose_t::default());
+        if let Ok(input) = self.input.try_force(|_| Input::try_new(self.openxr.clone())) {
+            input.get_poses(poses, Some(origin));
+        }
     }
     fn SetDisplayVisibility(&self, _: bool) -> bool {
         // Act as if we're limited to direct mode

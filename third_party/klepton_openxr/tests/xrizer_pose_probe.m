@@ -266,6 +266,14 @@ int main(int argc,char **argv){
                 assert(display->GetControllerRoleForTrackedDeviceIndex(1)==vr::TrackedControllerRole_Invalid);
                 vr::VRControllerState_t controller={};
                 assert(!display->GetControllerState(1,&controller,sizeof controller));
+                assert(!display->GetControllerStateWithPose(vr::TrackingUniverseStanding,1,&controller,sizeof controller,&one));
+                assert(!display->GetControllerStateWithPose(vr::TrackingUniverseStanding,1,&controller,sizeof controller,nullptr));
+                display->TriggerHapticPulse(1,0,100);
+                memset(last,0xff,sizeof last);
+                display->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding,0,last,3);
+                assert(last[0].bPoseIsValid==poses[0].bPoseIsValid && !last[1].bDeviceIsConnected && !last[2].bDeviceIsConnected);
+                display->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding,0,nullptr,0);
+                display->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding,0,nullptr,3);
                 compositor->PostPresentHandoff();
             }
             cleanup(core);
