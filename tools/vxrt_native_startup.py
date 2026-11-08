@@ -82,6 +82,10 @@ def validate(result):
     if result.get('status') not in ('observed', 'refused'):
         problems.append('invalid evidence status')
     if result.get('status') == 'observed':
+        if result.get('schema_version', 1) >= 3:
+            source = result.get('source_identity', {})
+            if source.get('commit') != result.get('source_commit') or not re.fullmatch(r'[0-9a-f]{64}', source.get('patch_sha256', '')):
+                problems.append('invalid source identity')
         keys = ['runtime', 'exe']
         if result.get('schema_version', 1) >= 3:
             keys.append('xrizer_dylib')
