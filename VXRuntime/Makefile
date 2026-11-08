@@ -193,6 +193,10 @@ $(XROS_DIR)/libvxrt.a: $(XROS_OBJ)
 	@rm -f $@
 	xcrun -sdk $(XROS_SDK) libtool -static -o $@ $(XROS_OBJ)
 xros-lib: $(XROS_DIR)/libvxrt.a
+# Optional build-only proof; never changes the default app or launches a simulator.
+xros-xrizer-static-probe:
+	./tests/test_xrizer_xros_static_link.sh
+.PHONY: xros-xrizer-static-probe
 # Our own test programs for the app, their modules linked into it (tools/xros_aot.sh), the files they read beside them.
 XROS_TESTS = build/xros_clear.exe build/d3d12.exe build/recomp/suite.exe build/hello_crt.exe build/seh_try.exe build/unwind.exe build/cxx_exceptions.exe build/xros_child.exe build/xros_input.exe build/xros_vr_depth.exe
 XROS_TESTS += build/native_vr_d3d11.exe
