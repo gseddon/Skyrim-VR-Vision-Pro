@@ -56,6 +56,15 @@ static XrResult views(void *p, KlNativeViewConfiguration *out) {
         .maxImageRectHeight=h.height,.recommendedSwapchainSampleCount=1,.maxSwapchainSampleCount=1};
     return XR_SUCCESS;
 }
+/* Static synthetic optics for the explicit development host, independent of
+ * a tracked head sample, predicted time, floor, or frame ticket. */
+static XrResult view_geometry(void *p, KlNativeViewGeometry *out) {
+    if (!p || !out) return XR_ERROR_VALIDATION_FAILURE;
+    *out=(KlNativeViewGeometry){.version=KL_NATIVE_VIEW_GEOMETRY_VERSION,.struct_size=sizeof(*out),.geometry_id=1,
+        .head_from_eye={{{0,0,0,1},{-.032f,0,0}},{{0,0,0,1},{.032f,0,0}}},
+        .fov={{-.785398f,.785398f,.785398f,-.785398f},{-.785398f,.785398f,.785398f,-.785398f}}};
+    return XR_SUCCESS;
+}
 static XrResult poll_event(void *p,KlNativeSessionEvent *out) {
     VXDevXRHost *h=host(p); if (!h || !out) return XR_ERROR_VALIDATION_FAILURE;
     if (!h.event.type) return XR_EVENT_UNAVAILABLE;
@@ -220,10 +229,12 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
         void *ctx=(__bridge void *)h;
         KlNativeHost system={.version=1,.size=sizeof(system),.context=ctx,.hmd_available=available};
         KlNativeViewHost view={KL_NATIVE_VIEW_HOST_VERSION,sizeof(view),ctx,views};
+        KlNativeViewGeometryHost geometry={KL_NATIVE_VIEW_GEOMETRY_VERSION,sizeof(geometry),ctx,view_geometry};
         KlNativeSessionHost session={KL_NATIVE_SESSION_HOST_VERSION,sizeof(session),ctx,poll_event,begin_session,end_session,request_exit};
         KlNativeFrameHost frame={KL_NATIVE_FRAME_HOST_VERSION,sizeof(frame),ctx,wait_frame,publish,cancel_frame};
         KlNativeInputHost inputHost={KL_NATIVE_INPUT_HOST_VERSION,sizeof(inputHost),ctx,input};
         if (kl_native_configure(&system)!=XR_SUCCESS || kl_native_configure_views(&view)!=XR_SUCCESS ||
+            kl_native_configure_view_geometry(&geometry)!=XR_SUCCESS ||
             kl_native_configure_metal(&metal)!=XR_SUCCESS || kl_native_configure_image_sync(&sync)!=XR_SUCCESS ||
             kl_native_configure_session(&session)!=XR_SUCCESS || kl_native_configure_frame(&frame)!=XR_SUCCESS ||
             kl_native_configure_input(&inputHost)!=XR_SUCCESS) return -1;
@@ -241,6 +252,12 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
     }
 }
 #ifdef VXRT_XRIZER_DEV_AUDIT
+int vx_xrizer_dev_audit_preframe(void) {
+    VXDevXRHost *h=dev_host;
+    if (!h || !h.audit || !h.frames || h.nextFrame || h.outstanding || h.published || h.acquired || h.released) return -1;
+    vx_log("xrizer dev audit: pre-frame geometry with zero waits/publishes/cancels");
+    return 0;
+}
 int vx_xrizer_dev_audit_acquire(vx_native_vr_frame *out) {
     VXDevXRHost *h=dev_host;
     if (!h || !h.audit || !h.frames || !out || h.acquired!=h.released || h.published!=h.acquired+1) return -1;
