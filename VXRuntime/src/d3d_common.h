@@ -80,6 +80,8 @@ struct d3d_device {
     d3d_object *context;             // the immediate context
     d3d_object *adapter;             // IDXGIAdapter1, made on demand
     uint32_t flags, feature_level, max_latency;
+    volatile uint64_t producer_submitted, producer_completed;
+    volatile int producer_failed;
     volatile uint64_t submitted, completed;   // command buffers committed, and the last one the GPU finished
     int apple_family;                // Metal's Apple GPU family: 7 = M1, 8 = M2, 9 = M3/M4, 10 = M5 and later (0: other)
     void *slices;                    // chunks small renamed buffers are carved from (d3d11.m)
@@ -101,6 +103,7 @@ typedef struct d3d_texture {
     void *mtl;                       // id<MTLTexture> (retained)
     uint8_t *cpu;                    // staging textures: the CPU copy Map hands out
     size_t cpu_pitch, cpu_size;
+    int external_origin;             // wrapped/replaced Metal texture: producer may be external
     int shared;                      // shared between processes: its slot in the shared-resource table + 1
     void **keyed_vtbl;               // IDXGIKeyedMutex (shared textures)
     struct d3d_texture *native_next; // live-handle lookup, private to d3d11.m
@@ -198,6 +201,12 @@ void d3d_texture_png(d3d_device *dev, void *texture, const char *path);   // dxg
 d3d_texture *d3d_texture_wrap(d3d_device *dev, const uint32_t desc[TD_COUNT], void *mtl, int shared);   // mtl retained
 d3d_buffer  *d3d_buffer_wrap(d3d_device *dev, const uint32_t desc[6], void *mtl, int shared, void *shm, size_t shm_size);
 void         d3d_texture_replace(d3d_texture *t, void *mtl_texture);     // a swap chain's buffer after a resize
+// Caller serializes immediate-context recording and checked flush. Returns -1
+// on producer error or timeout; a producer error remains sticky for this device.
+int          d3d_flush_checked(d3d_device *dev);
+#ifdef VXRT_GUEST_PRODUCER_TESTING
+void         d3d_test_fail_next_producer(void);
+#endif
 void         d3d_flush(d3d_device *dev, int wait);                       // commits the immediate context's work
 void         d3d_mark_gpu(d3d_context *c, d3d_object *o);                // a copy recorded now reads or writes o
 d3d_device  *d3d_device_from(void *unknown);                             // an ID3D11Device / IDXGIDevice pointer
