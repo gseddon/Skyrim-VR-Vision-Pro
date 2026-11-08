@@ -9,16 +9,21 @@ import CompositorServices
 import Metal
 import QuartzCore
 import simd
+import Darwin
 
 final class VXImmersiveRenderer: @unchecked Sendable {
     private let layerRenderer: LayerRenderer
     private let queue: MTLCommandQueue
     private let arSession = ARKitSession()
     private let worldTracking = WorldTrackingProvider()
+    private let trackingGate = VXTrackingGate()
     private let nativeInput = VXNativeInput()
     private var tracking = false
     private var lastReport = CACurrentMediaTime()
     private var cleared = 0
+    private var nativeXRTracking: VXNativeXRTracking?
+    private var spatialClockCalibrated = false
+    private var lastSpatialSample = 0.0
     private static let near: Float = 0.1, far: Float = 10000
 
     static func start(_ layerRenderer: LayerRenderer) {
@@ -45,6 +50,17 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                         }
                     } else { try await r.arSession.run([r.worldTracking]) }
                     r.tracking = true
+                    if vx_xros_native_enabled() != 0 {
+                        r.spatialClockCalibrated = Self.clockMatchesMach()
+                        if r.spatialClockCalibrated {
+                            let adapter = VXNativeXRTracking(session: r.arSession, world: r.worldTracking,
+                                hands: r.nativeInput.handTrackingEnabled ? r.nativeInput.hands : nil, gate: r.trackingGate)
+                            r.nativeXRTracking = adapter
+                            await adapter.start()
+                        } else {
+                            vxrt_jlog("vr_error", "\"what\":\"spatial clock calibration failed\"")
+                        }
+                    }
                 } catch { vxrt_jlog("vr_error", "\"what\":\"world tracking: \(error.localizedDescription)\"") }
             }
             let thread = Thread { r.loop() }
@@ -65,6 +81,20 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         return Double(c.seconds) + Double(c.attoseconds) * 1e-18
     }
 
+    // CompositorServices and ARKit use Mach absolute time. Check the Swift
+    // Instant epoch against bracketing Mach reads before passing its seconds
+    // to accessory prediction; a failed comparison disables collection.
+    private static func clockMatchesMach() -> Bool {
+        var info = mach_timebase_info_data_t()
+        guard mach_timebase_info(&info) == KERN_SUCCESS, info.numer != 0, info.denom != 0 else { return false }
+        let before = mach_absolute_time()
+        let compositor = seconds(LayerRenderer.Clock().now)
+        let after = mach_absolute_time()
+        let factor = Double(info.numer) / Double(info.denom) / 1e9
+        let low = Double(before) * factor, high = Double(after) * factor
+        return compositor.isFinite && compositor >= low - 0.001 && compositor <= high + 0.001
+    }
+
     private func loop() {
         let cfg = layerRenderer.configuration
         vxrt_jlog("vr_start", "\"layout\":\"\(cfg.layout)\",\"color\":\(cfg.colorFormat.rawValue),\"depth\":\(cfg.depthFormat.rawValue),\"tracking\":\(tracking)")
@@ -72,6 +102,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
             switch layerRenderer.state {
             case .invalidated:
                 vxrt_jlog("vr_end", "\"why\":\"layer invalidated\"")
+                if let adapter = nativeXRTracking { Task { await adapter.stop() } }
                 return
             case .paused:
                 layerRenderer.waitUntilRunning()
@@ -93,7 +124,11 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         // (no drawables: the system cancelled this frame; ending its submission would abort the app)
         guard !drawables.isEmpty else { return }
         let presentation = Self.seconds(timing.presentationTime)
-        let anchor = tracking ? worldTracking.queryDeviceAnchor(atTimestamp: presentation) : nil
+        if spatialClockCalibrated, let adapter = nativeXRTracking, presentation - lastSpatialSample >= 0.1 {
+            lastSpatialSample = presentation
+            Task { await adapter.collect(at: presentation) }
+        }
+        let anchor = tracking ? trackingGate.read { worldTracking.queryDeviceAnchor(atTimestamp: presentation) } ?? nil : nil
         var head = anchor?.originFromAnchorTransform ?? matrix_identity_float4x4
         let native = vx_xros_native_enabled() != 0
         var have: Int32 = 0
@@ -122,7 +157,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                     frustums[i * 4 + 3] = (1 - p.columns.2.y) / p.columns.1.y
                 }
             }
-            let controllers = nativeInput.controllers()
+            let controllers = trackingGate.read { nativeInput.controllers() } ?? [vx_native_openvr_controller(), vx_native_openvr_controller()]
             have = withUnsafePointer(to: &head) { hp in
                 hp.withMemoryRebound(to: Float.self, capacity: 16) { h in
                     eyes.withUnsafeBufferPointer { e in
