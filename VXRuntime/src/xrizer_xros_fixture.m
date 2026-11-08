@@ -129,6 +129,8 @@ int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],co
     memcpy(sample.head_from_eye,geometry.head_from_eye,sizeof sample.head_from_eye);memcpy(sample.fov,geometry.fov,sizeof sample.fov);
     int result=vx_xros_xrizer_offer(host,&sample);
     if(!result)offered_ids[id % 1024]=id;
+    if(!result && id==1) vx_log("xrizer xros fixture: head flags=%llu pos=%.4f %.4f %.4f tracked=%d",
+        (unsigned long long)head_flags,head_position[0],head_position[1],head_position[2],tracked?1:0);
     pthread_mutex_unlock(&lock);return result;
 }
 int vx_xros_fixture_surface_lost(void) {
