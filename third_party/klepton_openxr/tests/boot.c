@@ -101,8 +101,15 @@ int main(void) {
     ai.subactionPaths = NULL;
     assert(create_action(set2, &ai, &other) == XR_ERROR_VALIDATION_FAILURE);
     ai.countSubactionPaths = 1;
-    ai.subactionPaths = &left; ai.actionType = XR_ACTION_TYPE_FLOAT_INPUT;
+    ai.subactionPaths = &left; ai.actionType = (XrActionType)999;
     assert(create_action(set2, &ai, &other) == XR_ERROR_FEATURE_UNSUPPORTED);
+    XrActionType supported_types[] = { XR_ACTION_TYPE_FLOAT_INPUT, XR_ACTION_TYPE_VECTOR2F_INPUT, XR_ACTION_TYPE_VIBRATION_OUTPUT };
+    for (unsigned i = 0; i < sizeof supported_types / sizeof supported_types[0]; ++i) {
+        ai.actionType = supported_types[i];
+        assert(create_action(set2, &ai, &other) == XR_SUCCESS);
+        assert(destroy_action(other) == XR_SUCCESS);
+        assert(destroy_action(other) == XR_ERROR_HANDLE_INVALID);
+    }
     ai.actionType = XR_ACTION_TYPE_BOOLEAN_INPUT;
     assert(create_action(set2, &ai, &other) == XR_SUCCESS && other != action);
     assert(destroy_action(other) == XR_SUCCESS);

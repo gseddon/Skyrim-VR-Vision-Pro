@@ -50,41 +50,45 @@ impl<C: openxr_data::Compositor> Input<C> {
         )?;
         let input_data = &session_data.input_data;
 
-        profiles::run_for_all_profiles(&mut Runner {
+        let mut runner = Runner {
             openxr: &self.openxr,
             input_data,
             legacy: &legacy,
-        });
+            error: None,
+        };
+        profiles::run_for_all_profiles(&mut runner);
+        if let Some(error) = runner.error { return Err(error); }
 
         struct Runner<'a, C: openxr_data::Compositor> {
             openxr: &'a super::OpenXrData<C>,
             input_data: &'a super::InputSessionData,
             legacy: &'a LegacyActionData,
+            error: Option<xr::sys::Result>,
         }
 
         impl<C: openxr_data::Compositor> RunWithProfile for Runner<'_, C> {
             fn run<P: super::InteractionProfile>(&mut self) {
+                if self.error.is_some() { return; }
                 if !P::has_required_extensions(&self.openxr.enabled_extensions) {
                     return;
                 }
 
-                let conv = super::profiles::InputToXrPath::new(&self.openxr.instance);
+                let conv = super::profiles::InputToXrPath::new_fallible(&self.openxr.instance);
                 let bindings = P::legacy_bindings(&conv);
-                self.openxr
-                    .instance
-                    .suggest_interaction_profile_bindings(
-                        self.openxr
-                            .instance
-                            .string_to_path(P::profile_path())
-                            .unwrap(),
+                if let Some(error) = conv.error() { self.error = Some(error); return; }
+                let profile = match self.openxr.instance.string_to_path(P::profile_path()) {
+                    Ok(profile) => profile,
+                    Err(error) => { self.error = Some(error); return; }
+                };
+                if let Err(error) = self.openxr.instance.suggest_interaction_profile_bindings(
+                        profile,
                         &bindings
                             .into_iter(
                                 &self.legacy.actions,
                                 self.input_data.pose_data.get().unwrap(),
                             )
                             .collect::<Vec<_>>(),
-                    )
-                    .unwrap();
+                    ) { self.error = Some(error); }
             }
         }
 
@@ -92,18 +96,18 @@ impl<C: openxr_data::Compositor> Input<C> {
 
         session
             .attach_action_sets(&[&legacy.set, pose_set])
-            .unwrap();
+            ?;
         session
             .sync_actions(&[
                 xr::ActiveActionSet::new(&legacy.set),
                 xr::ActiveActionSet::new(pose_set),
             ])
-            .unwrap();
+            ?;
 
         input_data
             .actions
             .set(LoadedActions::Legacy(legacy))
-            .unwrap_or_else(|_| panic!("Actions unexpectedly set up"));
+            .map_err(|_| xr::sys::Result::ERROR_RUNTIME_FAILURE)?;
         Ok(())
     }
 

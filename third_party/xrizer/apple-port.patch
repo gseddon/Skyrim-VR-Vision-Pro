@@ -1194,7 +1194,7 @@ index bdd9e70..d9d8989 100644
  }
  
 diff --git a/src/input/legacy.rs b/src/input/legacy.rs
-index 3099735..4d5abde 100644
+index 3099735..6990866 100644
 --- a/src/input/legacy.rs
 +++ b/src/input/legacy.rs
 @@ -38,7 +38,7 @@ macro_rules! button_mask_from_ids {
@@ -1206,7 +1206,7 @@ index 3099735..4d5abde 100644
          debug!("setting up legacy actions");
  
          let session_data = self.openxr.session_data.get();
-@@ -47,7 +47,7 @@ impl<C: openxr_data::Compositor> Input<C> {
+@@ -47,44 +47,48 @@ impl<C: openxr_data::Compositor> Input<C> {
              &self.openxr.instance,
              self.subaction_paths.left,
              self.subaction_paths.right,
@@ -1214,16 +1214,84 @@ index 3099735..4d5abde 100644
 +        )?;
          let input_data = &session_data.input_data;
  
-         profiles::run_for_all_profiles(&mut Runner {
-@@ -104,6 +104,7 @@ impl<C: openxr_data::Compositor> Input<C> {
+-        profiles::run_for_all_profiles(&mut Runner {
++        let mut runner = Runner {
+             openxr: &self.openxr,
+             input_data,
+             legacy: &legacy,
+-        });
++            error: None,
++        };
++        profiles::run_for_all_profiles(&mut runner);
++        if let Some(error) = runner.error { return Err(error); }
+ 
+         struct Runner<'a, C: openxr_data::Compositor> {
+             openxr: &'a super::OpenXrData<C>,
+             input_data: &'a super::InputSessionData,
+             legacy: &'a LegacyActionData,
++            error: Option<xr::sys::Result>,
+         }
+ 
+         impl<C: openxr_data::Compositor> RunWithProfile for Runner<'_, C> {
+             fn run<P: super::InteractionProfile>(&mut self) {
++                if self.error.is_some() { return; }
+                 if !P::has_required_extensions(&self.openxr.enabled_extensions) {
+                     return;
+                 }
+ 
+-                let conv = super::profiles::InputToXrPath::new(&self.openxr.instance);
++                let conv = super::profiles::InputToXrPath::new_fallible(&self.openxr.instance);
+                 let bindings = P::legacy_bindings(&conv);
+-                self.openxr
+-                    .instance
+-                    .suggest_interaction_profile_bindings(
+-                        self.openxr
+-                            .instance
+-                            .string_to_path(P::profile_path())
+-                            .unwrap(),
++                if let Some(error) = conv.error() { self.error = Some(error); return; }
++                let profile = match self.openxr.instance.string_to_path(P::profile_path()) {
++                    Ok(profile) => profile,
++                    Err(error) => { self.error = Some(error); return; }
++                };
++                if let Err(error) = self.openxr.instance.suggest_interaction_profile_bindings(
++                        profile,
+                         &bindings
+                             .into_iter(
+                                 &self.legacy.actions,
+                                 self.input_data.pose_data.get().unwrap(),
+                             )
+                             .collect::<Vec<_>>(),
+-                    )
+-                    .unwrap();
++                    ) { self.error = Some(error); }
+             }
+         }
+ 
+@@ -92,18 +96,19 @@ impl<C: openxr_data::Compositor> Input<C> {
+ 
+         session
+             .attach_action_sets(&[&legacy.set, pose_set])
+-            .unwrap();
++            ?;
+         session
+             .sync_actions(&[
+                 xr::ActiveActionSet::new(&legacy.set),
+                 xr::ActiveActionSet::new(pose_set),
+             ])
+-            .unwrap();
++            ?;
+ 
+         input_data
              .actions
              .set(LoadedActions::Legacy(legacy))
-             .unwrap_or_else(|_| panic!("Actions unexpectedly set up"));
+-            .unwrap_or_else(|_| panic!("Actions unexpectedly set up"));
++            .map_err(|_| xr::sys::Result::ERROR_RUNTIME_FAILURE)?;
 +        Ok(())
      }
  
      pub fn legacy_haptic(
-@@ -388,41 +389,41 @@ pub(super) struct LegacyActionData {
+@@ -388,41 +393,41 @@ pub(super) struct LegacyActionData {
  }
  
  impl LegacyActionData {
@@ -1278,6 +1346,92 @@ index 3099735..4d5abde 100644
      }
  }
  
+diff --git a/src/input/profiles.rs b/src/input/profiles.rs
+index d929080..4884d9f 100644
+--- a/src/input/profiles.rs
++++ b/src/input/profiles.rs
+@@ -100,6 +100,7 @@ pub fn run_for_all_profiles(runner: &mut impl RunWithProfile) {
+ 
+ pub struct InputToXrPath<'a, P: InteractionProfile> {
+     instance: &'a xr::Instance,
++    error: Option<std::cell::Cell<Option<xr::sys::Result>>>,
+     _marker: std::marker::PhantomData<P>,
+ }
+ 
+@@ -108,15 +109,31 @@ impl<'a, P: InteractionProfile> InputToXrPath<'a, P> {
+     pub fn new(instance: &'a xr::Instance) -> InputToXrPath<'a, P> {
+         Self {
+             instance,
++            error: None,
+             _marker: Default::default(),
+         }
+     }
++    pub fn new_fallible(instance: &'a xr::Instance) -> InputToXrPath<'a, P> {
++        Self { instance, error: Some(Default::default()), _marker: Default::default() }
++    }
++    pub fn error(&self) -> Option<xr::sys::Result> {
++        self.error.as_ref().and_then(|error| error.get())
++    }
++    fn path(&self, name: &str) -> xr::Path {
++        match self.instance.string_to_path(name) {
++            Ok(path) => path,
++            Err(error) => match &self.error {
++                Some(slot) => { if slot.get().is_none() { slot.set(Some(error)); } xr::Path::NULL }
++                None => panic!("Failed to intern input path {name}: {error}"),
++            },
++        }
++    }
+     pub fn into<T, M>(&self) -> Vec<xr::Path>
+     where
+         T: InputPath,
+         P::LegalPaths: ContainsPath<T, M>,
+     {
+-        vec![self.instance.string_to_path(&T::DYN.to_string()).unwrap()]
++        vec![self.path(&T::DYN.to_string())]
+     }
+ 
+     pub fn leftright<Subpath, Component, M1, M2>(&self) -> Vec<xr::Path>
+@@ -127,34 +144,22 @@ impl<'a, P: InteractionProfile> InputToXrPath<'a, P> {
+         P::LegalPaths: ContainsPath<Right<Subpath, Component>, M2>,
+     {
+         vec![
+-            self.instance
+-                .string_to_path(&Left::<Subpath, Component>::DYN.to_string())
+-                .unwrap(),
+-            self.instance
+-                .string_to_path(&Right::<Subpath, Component>::DYN.to_string())
+-                .unwrap(),
++            self.path(&Left::<Subpath, Component>::DYN.to_string()),
++            self.path(&Right::<Subpath, Component>::DYN.to_string()),
+         ]
+     }
+ 
+     pub fn haptics(&self) -> Vec<xr::Path> {
+         vec![
+-            self.instance
+-                .string_to_path("/user/hand/left/output/haptic")
+-                .unwrap(),
+-            self.instance
+-                .string_to_path("/user/hand/right/output/haptic")
+-                .unwrap(),
++            self.path("/user/hand/left/output/haptic"),
++            self.path("/user/hand/right/output/haptic"),
+         ]
+     }
+ 
+     pub fn pose(&self) -> Vec<xr::Path> {
+         vec![
+-            self.instance
+-                .string_to_path("/user/hand/left/input/grip/pose")
+-                .unwrap(),
+-            self.instance
+-                .string_to_path("/user/hand/right/input/grip/pose")
+-                .unwrap(),
++            self.path("/user/hand/left/input/grip/pose"),
++            self.path("/user/hand/right/input/grip/pose"),
+         ]
+     }
+ }
 diff --git a/src/lib.rs b/src/lib.rs
 index 663f147..a6cc8ee 100644
 --- a/src/lib.rs
@@ -1691,7 +1845,7 @@ index 0000000..e5ec4bf
 +    }
 +}
 diff --git a/src/openxr_data.rs b/src/openxr_data.rs
-index d2386be..0a6dd49 100644
+index e3e9eff..0a6dd49 100644
 --- a/src/openxr_data.rs
 +++ b/src/openxr_data.rs
 @@ -5,6 +5,7 @@ use crate::{
@@ -1879,13 +2033,13 @@ index d2386be..0a6dd49 100644
          session_data.session.request_exit().unwrap();
          let mut state = session_data.state;
          while state != xr::SessionState::STOPPING {
-@@ -365,7 +432,47 @@ impl<C: Compositor> OpenXrData<C> {
+@@ -365,6 +432,46 @@ impl<C: Compositor> OpenXrData<C> {
                  state = s;
              }
          }
 +        true
 +    }
- 
++
 +    #[cfg(target_vendor = "apple")]
 +    fn end_session(&self, session_data: &mut SessionData) -> bool {
 +        if let Err(err) = session_data.session.request_exit() {
@@ -1923,10 +2077,9 @@ index d2386be..0a6dd49 100644
 +            }
 +        }
 +        true
-+    }
+     }
  }
  
- pub struct AtomicXrTime(AtomicI64);
 @@ -398,6 +505,9 @@ impl std::fmt::Display for GraphicalSession {
      fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
          match self {
