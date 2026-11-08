@@ -181,7 +181,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                 let texture = drawables[0].colorTextures[0]
                 let offered = eyes.withUnsafeBufferPointer { e in
                     frustums.withUnsafeBufferPointer { f in
-                        vx_xros_fixture_offer(UInt32(texture.width), UInt32(texture.height), e.baseAddress, f.baseAddress, presentation)
+                        vx_xros_fixture_offer(UInt32(texture.width), UInt32(texture.height), e.baseAddress, f.baseAddress, presentation, nil, 0)
                     }
                 }
                 if xrizerFixtureOffscreenOffers < 2 {
@@ -239,13 +239,18 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                         xrizerFixtureStarted = vx_xros_fixture_start(device, commandQueue) == 0
                         if xrizerFixtureStarted { _ = xrizerFixtureSurface.started() }
                     }
-                    vxrt_jlog("xrizer_fixture_start", "\"started\":\(xrizerFixtureStarted),\"head\":\"injected\",\"controllers\":\"disconnected\"")
+                    vxrt_jlog("xrizer_fixture_start", "\"started\":\(xrizerFixtureStarted),\"head\":\"device_anchor_or_untracked\",\"controllers\":\"disconnected\"")
                 }
                 if xrizerFixtureStarted && dedicated && d.views.count == 2 {
                     let texture = d.colorTextures[0]
+                    let headTracked: Int32 = anchor?.isTracked == true ? 1 : 0
                     let offered = eyes.withUnsafeBufferPointer { e in
                         frustums.withUnsafeBufferPointer { f in
-                            vx_xros_fixture_offer(UInt32(texture.width), UInt32(texture.height), e.baseAddress, f.baseAddress, presentation)
+                            withUnsafePointer(to: &head) { hp in
+                                hp.withMemoryRebound(to: Float.self, capacity: 16) { h in
+                                    vx_xros_fixture_offer(UInt32(texture.width), UInt32(texture.height), e.baseAddress, f.baseAddress, presentation, headTracked != 0 ? h : nil, headTracked)
+                                }
+                            }
                         }
                     }
                     if offered == 0 { have = vx_xros_fixture_present_begin(presentation) }

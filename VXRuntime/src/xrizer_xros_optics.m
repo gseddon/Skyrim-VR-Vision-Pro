@@ -1,6 +1,16 @@
 #include "xrizer_xros_optics.h"
 #import <simd/simd.h>
 #include <string.h>
+#include <time.h>
+
+int vx_xros_host_time_is_current(double seconds, double slack_seconds) {
+    if (!isfinite(seconds) || !isfinite(slack_seconds) || seconds <= 0 || slack_seconds < 0) return 0;
+    uint64_t before = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    uint64_t after = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    double low = (double)before * 1e-9 - slack_seconds;
+    double high = (double)after * 1e-9 + slack_seconds;
+    return seconds >= low && seconds <= high;
+}
 
 static int pose_from_matrix(const float *v, float orientation[4], float position[3]) {
     for (unsigned i = 0; i < 16; i++) if (!isfinite(v[i])) return -1;
@@ -31,5 +41,14 @@ int vx_xros_optics_from_tangents(const float eyes[32], const float tangents[8],
         fov_angles[i][2] = atanf(-f[2]);
         fov_angles[i][3] = atanf(-f[3]);
     }
+    return 0;
+}
+
+int vx_xros_head_pose(const float head[16], int tracked, float orientation_xyzw[4], float position[3], uint64_t *flags) {
+    float identity[16] = {0};
+    if (!orientation_xyzw || !position || !flags) return -1;
+    for (int i = 0; i < 4; i++) identity[i * 5] = 1.f;
+    if (pose_from_matrix(head ? head : identity, orientation_xyzw, position)) return -1;
+    *flags = head && tracked ? (VX_XROS_INJECTED_HEAD_FLAGS | VX_XROS_TRACKED_HEAD_FLAGS) : VX_XROS_INJECTED_HEAD_FLAGS;
     return 0;
 }

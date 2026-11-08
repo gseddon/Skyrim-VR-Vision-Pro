@@ -5,7 +5,6 @@
 #endif
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
-#include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,11 +29,17 @@ static uint64_t last_verified_frame;
 void vx_log(const char *, ...);
 static int ready, failed, draining, stopping;
 static unsigned readers, begin_count, end_count, exit_count;
-static uint64_t sample_id, frame_id, geometry_id;
+static uint64_t sample_id, frame_id, geometry_id, input_id;
+static XrTime input_time;
 /* Bounded history of accepted injected offers; protected by lock. */
 static uint64_t offered_ids[1024];
 static XrTime last_prediction, last_event;
-static XrTime now_ns(void) { struct timespec t; if(clock_gettime(CLOCK_MONOTONIC,&t))return 0; return (XrTime)t.tv_sec*INT64_C(1000000000)+t.tv_nsec; }
+/* Session events are Mach absolute nanoseconds. An accepted frame prediction
+ * is already on that clock. CLOCK_MONOTONIC includes sleep and must not be used. */
+static XrTime now_ns(void) {
+    uint64_t t=clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    return t>(uint64_t)INT64_MAX ? 0 : (XrTime)t;
+}
 static XrTime event_time_locked(void) { XrTime t=now_ns(); if(t<=last_event)t=last_event+1;last_event=t;return t; }
 static XrTime event_time(void) { pthread_mutex_lock(&lock);XrTime t=event_time_locked();pthread_mutex_unlock(&lock);return t; }
 static XrResult begin(void *ctx,XrTime *time) {
@@ -54,10 +59,20 @@ static XrResult request_exit(void *ctx) {
     if(!stopping) { error=vx_xros_xrizer_event(host,(KlNativeSessionEvent){KL_NATIVE_SESSION_STOPPING,event_time_locked()}); if(!error)stopping=1; }
     pthread_mutex_unlock(&lock);return error ? XR_ERROR_RUNTIME_FAILURE : XR_SUCCESS;
 }
+/* v1 input is the observed absence of both hands. Repeating that observation
+ * keeps one id and timestamp. A connected hand is not invented here. */
 static XrResult input(void *ctx,KlNativeInputSample *sample) {
-    (void)ctx; pthread_mutex_lock(&lock); uint64_t id=++sample_id; pthread_mutex_unlock(&lock);
-    *sample=(KlNativeInputSample){.sample_id=id,.sample_time=now_ns(),.hand_connected={XR_FALSE,XR_FALSE}};
-    return sample->sample_time>0 ? XR_SUCCESS : XR_ERROR_RUNTIME_FAILURE;
+    (void)ctx; if(!sample)return XR_ERROR_VALIDATION_FAILURE;
+    pthread_mutex_lock(&lock);
+    if(!input_id) {
+        XrTime t=now_ns();
+        if(t<=0){pthread_mutex_unlock(&lock);return XR_ERROR_RUNTIME_FAILURE;}
+        input_id=++sample_id; input_time=t;
+    }
+    uint64_t id=input_id; XrTime t=input_time;
+    pthread_mutex_unlock(&lock);
+    *sample=(KlNativeInputSample){.sample_id=id,.sample_time=t,.hand_connected={XR_FALSE,XR_FALSE}};
+    return XR_SUCCESS;
 }
 int vx_xros_fixture_enabled(void) { const char *v=getenv("VXRT_XRIZER_XROS_FIXTURE"); return v && !strcmp(v,"1"); }
 int vx_xros_fixture_start(void *device,void *queue) {
@@ -74,12 +89,15 @@ int vx_xros_fixture_start(void *device,void *queue) {
 fail:
     pthread_mutex_lock(&lock);failed=1;pthread_cond_broadcast(&ready_cond);pthread_mutex_unlock(&lock);return -1;
 }
-int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],const float tangents[8],double prediction) {
-    if(!width || !height || !eyes || !tangents || !isfinite(prediction) || prediction<=0 || prediction>(double)INT64_MAX/1e9)return -1;
+int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],const float tangents[8],double prediction,const float head[16],int tracked) {
+    /* 0.25 s covers one compositor presentation. It rejects a different epoch. */
+    if(!width || !height || !eyes || !tangents || !vx_xros_host_time_is_current(prediction,0.25) || prediction>(double)INT64_MAX/1e9)return -1;
     XrTime predicted=(XrTime)(prediction*1e9);
     KlNativeViewGeometry geometry={.version=KL_NATIVE_VIEW_GEOMETRY_VERSION,.struct_size=sizeof(geometry)};
-    float orientation[2][4], position[2][3], fov[2][4];
+    float orientation[2][4], position[2][3], fov[2][4], head_orientation[4], head_position[3];
+    uint64_t head_flags=0;
     if(vx_xros_optics_from_tangents(eyes,tangents,orientation,position,fov))return -1;
+    if(vx_xros_head_pose(head,tracked,head_orientation,head_position,&head_flags))return -1;
     for(unsigned i=0;i<2;i++) {
         geometry.head_from_eye[i].orientation=(XrQuaternionf){orientation[i][0],orientation[i][1],orientation[i][2],orientation[i][3]};
         geometry.head_from_eye[i].position=(XrVector3f){position[i][0],position[i][1],position[i][2]};
@@ -102,8 +120,9 @@ int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],co
     uint64_t id=++frame_id;
     KlNativeFrameSample sample={.frame_id=id,.pose_id=id,.predicted_display_time=predicted,
         .predicted_display_period=predicted-previous,.should_render=XR_TRUE,
-        .head_location_flags=XR_SPACE_LOCATION_ORIENTATION_VALID_BIT|XR_SPACE_LOCATION_POSITION_VALID_BIT,
-        .local_from_head={.orientation={0,0,0,1}}};
+        .head_location_flags=head_flags,
+        .local_from_head={.orientation={head_orientation[0],head_orientation[1],head_orientation[2],head_orientation[3]},
+            .position={head_position[0],head_position[1],head_position[2]}}};
     memcpy(sample.head_from_eye,geometry.head_from_eye,sizeof sample.head_from_eye);memcpy(sample.fov,geometry.fov,sizeof sample.fov);
     int result=vx_xros_xrizer_offer(host,&sample);
     if(!result)offered_ids[id % 1024]=id;
@@ -142,7 +161,7 @@ int WINAPI vx_xros_fixture_verify_shutdown(void) {
     uint64_t acquired=0,released=0,copied=0;
     float eyes[32]={0};for(unsigned eye=0;eye<2;eye++)for(unsigned i=0;i<4;i++)eyes[eye*16+i*5]=1;
     const float tangents[8]={-1,1,-1,1,-1,1,-1,1};
-    int resumed=vx_xros_fixture_offer(8,8,eyes,tangents,(double)now_ns()/1e9+10);
+    int resumed=vx_xros_fixture_offer(8,8,eyes,tangents,(double)now_ns()/1e9+10,NULL,0);
     int ok=begin_count==1 && end_count==1 && exit_count==1 && resumed==-1 &&
         !vx_xrizer_guest_d3d_counts(&source,&acquired,&released,&copied) && acquired==released && copied==4;
     vx_log("xrizer xros fixture: drain lifecycle=%u/%u/%u source leases=%llu/%llu copies=%llu resume=%d %s",
