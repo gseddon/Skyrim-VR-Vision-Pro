@@ -131,8 +131,9 @@ def capture(args):
     out = Path(args.out).resolve()
     if out == REPO or not out.is_relative_to(REPO) or out.exists():
         raise ValueError('output must be a new directory inside this checkout')
-    if not 0 < args.seconds <= 60:
-        raise ValueError('seconds must be in (0, 60]')
+    limit = 300 if getattr(args, 'experimental_xrizer', False) else 60   # longer observation only on the labelled dev host
+    if not 0 < args.seconds <= limit:
+        raise ValueError(f'seconds must be in (0, {limit}]')
     callback_limit = getattr(args, 'callback_depth_limit', None)
     if callback_limit is not None and not 2 <= callback_limit <= 256:
         raise ValueError('callback depth limit must be from 2 to 256')
@@ -231,6 +232,9 @@ def capture(args):
             (out / 'eyes').mkdir()
             env['VXRT_XRIZER_DEV_DUMP'] = str(out / 'eyes')
             result.setdefault('diagnostic', {})['dump_eyes'] = 'raw RGBA of published eyes, selected frames; development host only'
+        if getattr(args, 'wait_dump', None):
+            env['VXRT_WAIT_DUMP'] = args.wait_dump
+            result.setdefault('diagnostic', {})['wait_dump'] = args.wait_dump
         if getattr(args, 'fault_objects', False):
             env['VXRT_FAULT_OBJECTS'] = '1'
             result.setdefault('diagnostic', {})['fault_objects'] = 'register pointee dump at an unhandled fault'
@@ -309,6 +313,7 @@ def main():
     ap.add_argument('--trace-null-target', action='store_true', help='diagnostic only: capture a null AOT target snapshot')
     ap.add_argument('--dev-synthetic-stage', action='store_true', help='diagnostic only: the experimental dev host declares its synthetic local origin to be the floor, so Standing tracking space is valid; no physical floor is claimed')
     ap.add_argument('--dump-eyes', action='store_true', help='diagnostic only: the experimental dev host writes raw RGBA of the published eyes for frames 1, 2, 60, 300 and 600 under <out>/eyes')
+    ap.add_argument('--wait-dump', default=None, help='diagnostic only: VXRT_WAIT_DUMP seconds list, e.g. 30,50: log threads blocked in waits, with their guest return addresses')
     ap.add_argument('--fault-objects', action='store_true', help='diagnostic only: at an unhandled fault, log what each register points at (VXRT_FAULT_OBJECTS=1)')
     ap.add_argument('--trace-files', action='store_true', help='diagnostic only: log guest file opens that fail, with the path (VXRT_TRACE_FILES=1)')
     ap.add_argument('--trace-all-opens', action='store_true', help='diagnostic only: with --trace-files, log every guest file open (VXRT_TRACE_FILES=2)')
