@@ -1,7 +1,7 @@
 # Skyrim VR prepared-input AOT feasibility plan
 
 Date: 8 November 2026 (Europe/London)
-Status: private prepared input and eight bounded new-repository native probes complete; the latest strict run exposes a Bink translation gap; complete AOT feasibility remains open.
+Status: private prepared input and nine bounded new-repository native probes complete; Bink EMMS refusal has an owned fix; latest run captures native stack/guard exhaustion evidence; complete AOT feasibility remains open.
 
 ## Active work and ownership
 
@@ -26,21 +26,24 @@ probe008 stopped at **binkw64.dll+0x1d48**, inside its loaded hash/base-matched
 module: 3,351,147 entries, one strict fallback request/missing address. The
 translator did not execute. No game stereo image, menu or scene is established.
 
-Initial static triage finds that target is a discovered EMMS/RET leaf; the
-missing emitted block appears to be an unsupported instruction rather than an
-undiscovered function. This remains a hypothesis until the owned instruction
-reproducer, emitted-module inspection and differential test prove it. Keep
-**discovered**, **emitted**, **loaded** and **executed** code sets separate.
-Next: owned red/green semantic proof against Rosetta, narrow compiler fix if
-confirmed, required AOT suite, then regenerate only the affected private Bink
-module with explicit hash/base/compiler provenance before one changed probe.
-Do not enable fallback or rebuild unrelated game modules to hide the gap.
+The Bink target was discovered but refused as unsupported legacy EMMS. The
+narrow emitter fix passes a strengthened owned state fixture on both rebuilt
+and unchanged C12 runners (4 entries, zero fallback); the existing main/split
+AOT suite passes. Rosetta's TOP-preserving behavior differs from the vendor
+specification, so the reference mode and documented semantics stay explicit.
+Only Bink was regenerated: one added block and 95→94 refusals, no new refusal.
+See `research/2026-11-08-bink-emms-aot.md`. Keep **discovered**, **emitted**,
+**loaded** and **executed** code sets separate.
 
-The separate intermittent native SIGBUS remains unresolved. New raw fault
-register/stack-bound logging passes its owned real-signal control, but probe007
-and008 did not reproduce that game fault. Missing summaries in other probes
-remain unknown. Broad runtime checks are still red; current paired controls
-and skipped tests are in `research/2026-11-08-runtime-regression-round2.md`.
+Probe009 loaded the changed Bink module but hit the separate native SIGBUS
+before proving passage through that target. Raw fault SP is240 bytes below
+cached native stack_low, with the fault address224 bytes below. This strongly
+supports stack/guard exhaustion as the immediate mechanism; the source of stack
+consumption remains unresolved. Terra A now owns static callback/frame-size
+analysis and a minimal owned reproducer. No speculative stack-size increase or
+unchanged game retry. Missing summaries remain unknown; probe009 has none.
+Broad checks remain red, including the post-EMMS thread-area fault; see the
+EMMS report and `research/2026-11-08-runtime-regression-round2.md`.
 All game receipts, sealed observations, commands and limitations are indexed
 in `research/2026-11-08-skyrim-native-bootstrap-round2.md`. Authentication is not
 a fixture gate; no ownership or Steamworks success is fabricated.

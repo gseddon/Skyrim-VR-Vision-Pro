@@ -1,7 +1,7 @@
 # Skyrim VR native Darwin AOT implementation plan
 
 Date: 8 November 2026 (Europe/London)
-Status: supervised Terra implementation active in the standalone repository; actual Skyrim reaches native WaitGetPoses and event polling; latest probe finds a Bink AOT block gap; intermittent native fault and broad regression gates remain open; simulator integration in progress; physical headset and game scene unproven
+Status: supervised Terra implementation active in the standalone repository; actual Skyrim reaches native WaitGetPoses and event polling; Bink EMMS gap corrected in an owned proof; latest probe captures native stack exhaustion evidence; intermittent native fault and broad regression gates remain open; simulator integration in progress; physical headset and game scene unproven
 
 ## Overview
 
@@ -13,7 +13,7 @@ This is a fresh plan. No completed stage, source fix, baseline or game result fr
 
 The user selected the Android-style preparation/discovery/translation workflow and explicitly authorized unpacking private working copies of their owned game. Follow [the focused feasibility plan](2026-11-08-skyrim-vr-prepared-input-aot-feasibility.md) for the game/compiler lane. The user subsequently requested supervised XR work in parallel, and now requests a researched Klepton-based plan and confirmed the existing Apple host with Sony PS VR2 Sense controllers as the first input target. It defines input validation, dependency closure, artifact identity, semantic tests, strict startup and iteration gates. The original Steam installation remains read-only. AGENTS.md now records this authorization; the prior DRM-removal exclusion is removed. Steamworks responses and anti-cheat are not to be fabricated or bypassed.
 
-Pinned Steamless successfully prepared a private image: unexplained executable-section bytes fell from 78.98% to 0.86%. The old Valve error110 initialization stop has been superseded by real native xrizer initialization, D3D11 device creation, WaitGetPoses and event polling. Latest probe008 stops strictly at a Bink block absent from its compiled module; the active round below records counters and current investigation. The earlier no-image address was classified as a missing import stub. Original inputs remain unchanged. A game stereo image, menu, scene and complete game-code semantics remain unproven. See the focused plan for evidence and the systematic build/probe workflow.
+Pinned Steamless successfully prepared a private image: unexplained executable-section bytes fell from 78.98% to 0.86%. The old Valve error110 initialization stop has been superseded by real native xrizer initialization, D3D11 device creation, WaitGetPoses and event polling. Probe008 stopped strictly at a Bink EMMS block discovered but refused during translation; an owned semantic proof and narrow emitter fix now cover it. Latest probe009 reproduces the separate native crash with SP below its recorded stack bound. The active round below records counters and current investigation. The earlier no-image address was classified as a missing import stub. Original inputs remain unchanged. A game stereo image, menu, scene and complete game-code semantics remain unproven. See the focused plan for evidence and the systematic build/probe workflow.
 
 The confirmed XR revision reuses selected Klepton OpenXR and visionOS host code behind native xrizer, adding the missing Metal binding while retaining D3D11→Metal. See [the xrizer/Klepton workstream](2026-11-08-xrizer-klepton-native-openxr.md). The user confirmed this boundary; the experimental frontend/provider now passes owned guest integration, while connected input and the physical host remain incomplete.
 
@@ -80,7 +80,7 @@ non-Terra implementation worker was introduced.
 
 ### Actual game follow-up in this round
 
-Eight bounded native-backend probes are sealed in C's local ledger. They have
+Nine bounded native-backend probes are sealed in C's local ledger. They have
 advanced through real xrizer initialization, both pre-Wait eye transforms,
 the documented unavailable DXGI index -1, successful D3D11 device/swapchain
 creation, real Compositor022 acquisition and **WaitGetPoses returning 0**.
@@ -91,15 +91,21 @@ Probe008 passes the owned-tested event wrapper (actual size48 true then false),
 then strict dispatch stops at **binkw64.dll+0x1d48** in a loaded, hash/base-matched
 AOT image. It reports **3,351,147 entries, one fallback request and one missing
 address** (`o5`, `o6`, `o9=false`), with no translator execution. This fails
-zero-fallback acceptance. Terra A is classifying the static discovery pattern
-and preparing an owned reproducer before rebuilding only the affected module.
+zero-fallback acceptance. Terra A proved this was legacy EMMS translation refusal, not discovery. The
+strengthened owned state fixture passes with zero fallback on unchanged C12;
+the affected Bink module alone was regenerated (9752→9753 blocks, 95→94
+refusals). The other refusals remain unsupported/unclassified.
 These are synthetic-head/disconnected-controller Mac diagnostics, not physical
 tracking or rendered game scenes.
 
-The native SIGBUS at pthread_once observed in probes004/006 is intermittent
-and unresolved. Probe007 did not reproduce it, so the new raw fault diagnostics
-did not establish its cause. Probes001/002/004/006 lack AOT summaries; their
-entry/fallback totals remain unknown. Probe005 used an explicit callback-depth
+Probe009 loaded the changed Bink module but reproduced the native SIGBUS at
+pthread_once before establishing passage through the EMMS leaf. Its raw fault
+record gives SP240 bytes below cached native stack_low and fault address224
+bytes below it. This strongly supports native stack/guard exhaustion as the
+immediate mechanism; the stack-consuming call path and root cause remain
+under investigation. Do not fix this by guessing a larger stack.
+Probes001/002/004/006/009 lack AOT summaries; their entry/fallback totals remain
+unknown. Probe005 used an explicit callback-depth
 diagnostic and is not normal-depth acceptance. No compositor Submit, game
 stereo frame, menu, scene or physical headset playability has been established.
 See `research/2026-11-08-skyrim-native-bootstrap-round2.md` for exact identities,
@@ -220,7 +226,7 @@ Updated after the xrizer decision and Apple cross-builds on 8 November 2026. The
 | AOT / Windows compatibility | Owned CPU/D3D11 suite passes strict AOT on Mac and in visionOS simulator; actual MSVC guest scalar/float/matrix static-wrapper tests pass with zero fallback | Complete observed interface coverage, guest/provider stereo and clean broad runtime baseline |
 | D3D11 / Metal / native frame exchange | Owned Windows guest stereo passes pixels, poses, ownership and normal development-host consumption; static Apple adapter passes native Metal/no-render lifecycle | Integrated simulator/physical presentation and input; unsupported formats/origins |
 | xrizer Apple port | Owned guest path initializes, queries nonzero poses and submits stereo through the provider; ordinary initialization remains disabled | Real Apple-host integration, connected input, broader interface coverage and recoverable session replacement |
-| Skyrim VR | Private prepared code/modules; actual native xrizer init, D3D11 device creation and WaitGetPoses; event polling; prior 3.54M-entry zero-fallback checkpoint | Latest Bink block-discovery gap (one strict fallback request); intermittent SIGBUS; game stereo/menu/scene, input and performance |
+| Skyrim VR | Private prepared code/modules; actual native xrizer init, D3D11 device creation and WaitGetPoses; event polling; prior 3.54M-entry zero-fallback checkpoint | EMMS gap has owned fix; latest game SIGBUS has SP below native stack bound; game stereo/menu/scene, input and performance |
 | Physical Vision Pro | Unsigned device/simulator apps and raw spatial-controller collector compile | Integrated xrizer execution, signing/install/launch, resource budgets, local stereo/tracking/input/audio and sustained operation |
 
 Do not report a completion percentage: these are risk-reduction milestones, and the largest game-specific uncertainty is still untested.
@@ -257,7 +263,7 @@ xrizer owns the OpenVR compatibility behavior. It does not supply Apple's OpenXR
 
 ### Immediate uncertainties and stop conditions
 
-- Prepared-image analysis now leaves 0.86% of executable-section bytes unexplained; the earlier 78.98% figure describes the wrapped original. Neither number establishes executable-path completeness. Metadata gaps, refused blocks, callback discovery and instruction/ABI semantics still require measured investigation. The earlier no-image stop was classified as a missing Windows import. Current startup passes native event polling and stops at an undiscovered Bink AOT block; the separate native callback SIGBUS remains unresolved. Actual scene execution remains the game feasibility gate.
+- Prepared-image analysis now leaves 0.86% of executable-section bytes unexplained; the earlier 78.98% figure describes the wrapped original. Neither number establishes executable-path completeness. Metadata gaps, refused blocks, callback discovery and instruction/ABI semantics still require measured investigation. The earlier no-image stop was classified as a missing Windows import. Current startup passes native event polling; the Bink EMMS translation gap has an owned fix, while the latest actual probe captures SP below the native stack bound at SIGBUS. Its root cause remains unresolved. Actual scene execution remains the game feasibility gate.
 - Broad checks remain unresolved: the latest Rosetta and ARM64 candidate runs fail in D3D12 native object release; baseline/regression classification requires an equivalent control. Earlier released-memory and thread/SMC failures were also observed. Isolate and fix with reproducers. These block declaring the broad baseline accepted, but do not require stopping independent source work. A JIT-specific failure and strict-AOT correctness must be measured separately.
 - The existing custom OpenVR adapter uses System021/Compositor026 and test-only readback/expiry exports. Its fixture is a reference, not the production ABI contract. Add a fixture for the pinned xrizer's System019/Compositor022 (plus other interfaces as actually needed), and move diagnostics to host-side evidence rather than making xrizer implement test-only OpenVR exports.
 - The current host provides rotation-only image reprojection and no reconstructed scene depth. Physical translation, world scale/origin and comfort need explicit tests; the old clip-space marker cannot prove them. Haptics, overlays, audio and unsupported MSAA/format paths remain separate coverage items.
