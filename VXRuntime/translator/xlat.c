@@ -1923,7 +1923,7 @@ static int block_linked(xlat_buf *b, uint64_t rip, int max_insns, uint64_t *end)
     for (int i = 0; i < max_insns; i++) {
         x86_insn d;
         if (snapped) { if (i >= n) break; d = ins[i]; }                   // (the copy's: what the check compares)
-        else if (!x86_decode(XCODE(rip), 15, &d)) return -1;
+        else if (!x86_decode(XCODE(rip), 15, &d)) { b->refused_rip = rip; b->refused_reason = "decode"; return -1; }
         b->dead_flags = i < n ? dead[i] : 0;
         b->keep_operands = fuse_k && i == fuse_p;
         imap_mark(b, rip);
@@ -1941,7 +1941,7 @@ static int block_linked(xlat_buf *b, uint64_t rip, int max_insns, uint64_t *end)
         b->lazy_record = i == lazy_at;
         if (trap(b, &d, rip)) { b->dead_flags = 0; site_exit(b); *end = rip + d.len; return 0; }
         int c = control_linked(b, &d, rip);
-        if (c < 0) { b->dead_flags = 0; return -1; }
+        if (c < 0) { b->dead_flags = 0; b->refused_rip = rip; b->refused_reason = "control"; return -1; }
         if (c) { b->dead_flags = 0; *end = rip + d.len; return 0; }
         if (fuse_k && i == fuse_p && i != lazy_at && fuse_p == n - 2 && (dead[i] & flag_fx(&d).wr) == flag_fx(&d).wr && direct_compare(b, &d)) {
             b->dead_flags = 0; b->keep_operands = 0; rip += d.len; continue;
@@ -1965,7 +1965,7 @@ static int block_linked(xlat_buf *b, uint64_t rip, int max_insns, uint64_t *end)
             r = xlat_insn(b, &d, XCODE(rip), rip);
         }
         b->dead_flags = 0; b->keep_operands = 0; b->lazy_record = 0;
-        if (r < 0) return -1;
+        if (r < 0) { b->refused_rip = rip; b->refused_reason = "instruction"; return -1; }
         if (fuse_k && i == fuse_p) {
             b->fuse_kind = fuse_k; b->fuse_size = fuse_sz;
             if (fuse_p < n - 2) { E(b, a64_cset(X_COND, fused_cond(b, fuse_cc))); b->fuse_in_reg = 1; }
