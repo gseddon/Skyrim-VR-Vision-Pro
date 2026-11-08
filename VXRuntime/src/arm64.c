@@ -106,8 +106,17 @@ static int guest_find(uint64_t fn, uint64_t *handler, const void **desc) {
 // ---- the threads' x86 state -------------------------------------------------------------------------------------
 void *vx_x86_return_address(void);
 static __thread x86_ctx *t_ctx;
+// Cached on normal guest-context creation; fatal signal reporting never asks
+// pthread to discover stack metadata while a possibly damaged stack is active.
+static __thread uint64_t t_native_stack_low, t_native_stack_high, t_native_tid;
 x86_ctx *vx_x86_ctx(void) {
     if (t_ctx) return t_ctx;
+    pthread_t self = pthread_self();
+    uint64_t top = (uint64_t)(uintptr_t)pthread_get_stackaddr_np(self);
+    size_t size = pthread_get_stacksize_np(self);
+    uint64_t tid = 0;
+    (void)pthread_threadid_np(NULL, &tid);
+    t_native_stack_high = top; t_native_stack_low = size <= top ? top - size : 0; t_native_tid = tid;
     uint8_t *teb = vx_teb();                                  // (its x86 stack: vx_thread_attach)
     x86_ctx *c = calloc(1, sizeof *c);
     c->gs_base = (uint64_t)(uintptr_t)teb;
@@ -191,7 +200,8 @@ static __attribute__((noinline)) void callback_depth_check(uint64_t fn) {
 void *vx_x86_return_address(void) {
     return t_ctx && t_ctx->gpr[4] ? (void *)(uintptr_t)*(uint64_t *)(uintptr_t)t_ctx->gpr[4] : NULL;
 }
-void vx_arm64_thread_exit(void) { free(t_ctx); t_ctx = NULL; t_level = NULL; free(t_callbacks); t_callbacks = NULL; }
+void vx_arm64_thread_exit(void) { free(t_ctx); t_ctx = NULL; t_level = NULL; free(t_callbacks); t_callbacks = NULL;
+    t_native_stack_low = t_native_stack_high = t_native_tid = 0; }
 void *vx_seh_level_begin(const x86_ctx *outer);
 void vx_seh_level_end(void *level);
 void vx_seh_fault(DWORD code, DWORD n, const uint64_t *params) __attribute__((noreturn));
@@ -414,6 +424,30 @@ uint64_t vx_arm64_x86_pc(uint64_t pc) {
     uint64_t rip = code_owns(pc) ? code_rip_sp_at(pc, NULL) : 0;
     return rip ? rip : pc;
 }
+// Best effort: on a thread with a guest context these TLS slots were already
+// initialized before the fault. On an unknown thread no stack metadata is read.
+// The bounded record uses no allocation, formatting library, or symbol lookup.
+static size_t fatal_text(char *b, size_t n, size_t i, const char *s) {
+    while (*s && i<n) b[i++]=*s++; return i;
+}
+static size_t fatal_hex(char *b, size_t n, size_t i, uint64_t v) {
+    static const char digits[]="0123456789abcdef";
+    i=fatal_text(b,n,i,"0x");
+    for (int shift=60;shift>=0;shift-=4) if (i<n) b[i++]=digits[(v>>shift)&15];
+    return i;
+}
+static void fatal_record(int sig, const siginfo_t *si, const _STRUCT_ARM_THREAD_STATE64 *ss,
+                         uint64_t low, uint64_t high, uint64_t tid) {
+    char b[384]; size_t i=0;
+#define FIELD(label,value) do { i=fatal_text(b,sizeof b,i,label); i=fatal_hex(b,sizeof b,i,(uint64_t)(value)); } while (0)
+    i=fatal_text(b,sizeof b,i,"arm64: native fatal");
+    FIELD(" signal=",(unsigned)sig); FIELD(" code=",(uint32_t)si->si_code);
+    FIELD(" address=",(uintptr_t)si->si_addr); FIELD(" pc=",ss->__pc); FIELD(" sp=",ss->__sp);
+    FIELD(" lr=",ss->__lr); FIELD(" fp=",ss->__fp); FIELD(" stack_low=",low); FIELD(" stack_high=",high); FIELD(" tid=",tid);
+#undef FIELD
+    if (i<sizeof b) b[i++]='\n';
+    (void)write(STDERR_FILENO,b,i);
+}
 static void on_fault(int sig, siginfo_t *si, void *ucv) {
     ucontext_t *uc = ucv;
     _STRUCT_ARM_THREAD_STATE64 *ss = &uc->uc_mcontext->__ss;
@@ -475,6 +509,9 @@ static void on_fault(int sig, siginfo_t *si, void *ucv) {
         ss->__lr = 0;
         return;
     }
+    uint64_t stack_low=0,stack_high=0,tid=0;
+    if (t_ctx) { stack_low=t_native_stack_low; stack_high=t_native_stack_high; tid=t_native_tid; }
+    fatal_record(sig,si,ss,stack_low,stack_high,tid);
     if (code_owns(pc))
         vx_log("arm64: signal %d in translated code (host pc %#llx, no x86 instruction there, address %p)", sig, (unsigned long long)pc, si->si_addr);
     else
@@ -482,10 +519,13 @@ static void on_fault(int sig, siginfo_t *si, void *ucv) {
     void *frames[32];
     frames[0] = (void *)(uintptr_t)pc;
     int n = 1;
-    for (uint64_t *fp = (uint64_t *)(uintptr_t)ss->__fp; fp && n < 32 && ((uint64_t)(uintptr_t)fp & 7) == 0; fp = (uint64_t *)(uintptr_t)fp[0]) {
-        if (fp[1] < 4096) break;
-        frames[n++] = (void *)(uintptr_t)fp[1];
-        if (fp[0] <= (uint64_t)(uintptr_t)fp) break;
+    uint64_t fp=(uint64_t)ss->__fp, sp=(uint64_t)ss->__sp;
+    while (n < 32 && stack_low && stack_high > stack_low && sp >= stack_low && sp < stack_high &&
+           fp >= sp && fp >= stack_low && fp <= stack_high-16 && !(fp & 15)) {
+        const uint64_t *frame=(const uint64_t *)(uintptr_t)fp;
+        uint64_t next=frame[0], ret=frame[1]; if (ret < 4096) break;
+        frames[n++]=(void *)(uintptr_t)ret;
+        if (next <= fp) break; fp=next;
     }
     backtrace_symbols_fd(frames, n, 2);
     _exit(128 + sig);
