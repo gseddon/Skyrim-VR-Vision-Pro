@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import vxrt_native_startup as probe
+import skyrim_aot_pipeline as pipeline
 
 
 class Child:
@@ -171,6 +172,18 @@ class ProbeTest(unittest.TestCase):
         self.assertEqual(facts['xrizer_unsupported_interfaces'], ['IVROverlay_018'])
         self.assertEqual(facts['aot_summaries'], [])
         self.assertFalse(facts['zero_fallback_reported'])
+
+    def test_xrizer_panic_is_schema4_only_and_has_no_invented_summary(self):
+        log = ('[2026-11-08T13:12:01.355 ERROR xrizer ThreadId(1)] panicked at src/system.rs:75:14:\n'
+               "Couldn't locate views: ERROR_TIME_INVALID\n")
+        self.assertNotIn('xrizer_panics', probe.inspect_log(log, 3))
+        facts = probe.inspect_log(log, 4)
+        self.assertEqual(facts['xrizer_panics'], [{'source':'src/system.rs','line':75,'column':14,
+                                                   'message':"Couldn't locate views: ERROR_TIME_INVALID"}])
+        result = {'status':'observed','observed':[{'metric':k,'value':v} for k,v in facts.items()]}
+        classified = pipeline.classify(result)
+        self.assertEqual(classified['category'], 'xrizer_panic')
+        self.assertEqual(classified['aot_summaries'], [])
 
 
 if __name__=='__main__':unittest.main()

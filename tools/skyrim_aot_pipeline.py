@@ -215,6 +215,9 @@ def classify(result):
     if facts.get('xrizer_bridge_stops'):
         return {'category': 'unsupported_xrizer_bridge_slot', 'evidence': facts['xrizer_bridge_stops'],
                 'aot_summaries': facts.get('aot_summaries', [])}
+    if facts.get('xrizer_panics'):
+        return {'category': 'xrizer_panic', 'evidence': facts['xrizer_panics'],
+                'aot_summaries': facts.get('aot_summaries', [])}
     if facts.get('native_signals'):
         return {'category': 'native_signal', 'evidence': facts['native_signals'],
                 'backtrace': facts.get('native_backtrace', []),
