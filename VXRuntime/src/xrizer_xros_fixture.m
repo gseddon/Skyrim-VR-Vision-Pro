@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include "xrizer_xros_fixture.h"
 #include "xrizer_xros_optics.h"
+#include "xrizer_xros_sense.h"
 #include "xrizer_xros_fixture_guest.h"
 #include "xrizer_xros_host.h"
 #include "xrizer_guest_d3d.h"
@@ -71,7 +72,9 @@ static XrResult input(void *ctx,KlNativeInputSample *sample) {
     }
     uint64_t id=input_id; XrTime t=input_time;
     pthread_mutex_unlock(&lock);
-    *sample=(KlNativeInputSample){.sample_id=id,.sample_time=t,.hand_connected={XR_FALSE,XR_FALSE}};
+    int hands[2];
+    if(vx_xros_sense_v1_hands(NULL,0,hands))return XR_ERROR_RUNTIME_FAILURE;
+    *sample=(KlNativeInputSample){.sample_id=id,.sample_time=t,.hand_connected={(XrBool32)hands[0],(XrBool32)hands[1]}};
     return XR_SUCCESS;
 }
 int vx_xros_fixture_enabled(void) { const char *v=getenv("VXRT_XRIZER_XROS_FIXTURE"); return v && !strcmp(v,"1"); }

@@ -7,6 +7,7 @@
 #define XR_USE_GRAPHICS_API_METAL 1
 #include <openxr/openxr_platform.h>
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
@@ -18,8 +19,15 @@ static unsigned waits, completions, frame_waits, cancelled, published;
 static KlNativeFrameSample next_sample;
 static KlNativeFramePair last_pair;
 static KlNativeInputSample input_sample;
+static KlNativeInputSample2 input_sample2;
 static XrResult input_result = XR_SUCCESS;
 static XrResult sample_input(void *ctx, KlNativeInputSample *out) { (void)ctx; *out = input_sample; return input_result; }
+static XrResult sample_input2(void *ctx, KlNativeInputSample2 *out) { (void)ctx; *out = input_sample2; return input_result; }
+static KlNativeInputHand2 absent_hand(void) {
+    KlNativeInputHand2 hand = {0};
+    hand.trigger = hand.stick_x = hand.stick_y = NAN;
+    return hand;
+}
 static XrResult publish_result = XR_SUCCESS;
 static XrResult cancel_result = XR_SUCCESS;
 static XrResult host_wait_frame(void *ctx, KlNativeFrameSample *out) { (void)ctx; *out = next_sample; ++frame_waits; return XR_SUCCESS; }
@@ -125,6 +133,8 @@ int main(void) {
     binding.commandQueue = &queue;
     assert(new_session(instance, &si, &session) == XR_SUCCESS);
     assert(kl_native_configure_input(NULL) == XR_ERROR_CALL_ORDER_INVALID);
+    KlNativeInputHost2 early2 = { KL_NATIVE_INPUT_HOST_VERSION_2, sizeof(early2), NULL, sample_input2 };
+    assert(kl_native_configure_input2(&early2) == XR_ERROR_CALL_ORDER_INVALID);
     XrActionSetCreateInfo asi = { .type = XR_TYPE_ACTION_SET_CREATE_INFO };
     strcpy(asi.actionSetName, "input"); strcpy(asi.localizedActionSetName, "Input");
     XrActionSet set; assert(create_set(instance, &asi, &set) == XR_SUCCESS);
@@ -391,6 +401,55 @@ int main(void) {
     assert(poll_state(poll_event, instance) == XR_SESSION_STATE_IDLE);
     injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_EXITING, 404 };
     assert(poll_state(poll_event, instance) == XR_SESSION_STATE_EXITING);
+    assert(destroy_session(session) == XR_SUCCESS);
+    assert(destroy_instance(instance) == XR_SUCCESS);
+    KlNativeInputHost2 host2 = { KL_NATIVE_INPUT_HOST_VERSION_2, sizeof(host2), NULL, sample_input2 };
+    assert(kl_native_configure_input2(NULL) == XR_SUCCESS);
+    assert(kl_native_configure_input2(&host2) == XR_SUCCESS);
+    host2.version = 1; assert(kl_native_configure_input2(&host2) == XR_ERROR_VALIDATION_FAILURE);
+    host2.version = KL_NATIVE_INPUT_HOST_VERSION_2;
+    assert(new_instance(&ci, &instance) == XR_SUCCESS);
+    assert(req(instance, 1, &r) == XR_SUCCESS);
+    assert(new_session(instance, &si, &session) == XR_SUCCESS);
+    XrActionSet set2; assert(create_set(instance, &asi, &set2) == XR_SUCCESS);
+    XrPath hand2; assert(to_path(instance, "/user/hand/left", &hand2) == XR_SUCCESS);
+    XrAction action2;
+    XrActionCreateInfo ai2 = { .type = XR_TYPE_ACTION_CREATE_INFO, .actionType = XR_ACTION_TYPE_BOOLEAN_INPUT, .countSubactionPaths = 1, .subactionPaths = &hand2 };
+    strcpy(ai2.actionName, "sense"); strcpy(ai2.localizedActionName, "Sense");
+    assert(create_action(set2, &ai2, &action2) == XR_SUCCESS);
+    XrSessionActionSetsAttachInfo attach2 = { .type = XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO, .countActionSets = 1, .actionSets = &set2 };
+    assert(attach_sets(session, &attach2) == XR_SUCCESS);
+    XrActiveActionSet active2 = { .actionSet = set2 };
+    XrActionsSyncInfo sync2 = { .type = XR_TYPE_ACTIONS_SYNC_INFO, .countActiveActionSets = 1, .activeActionSets = &active2 };
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_READY, 10 };
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_READY);
+    ack_time = 20; assert(begin(session, &bi) == XR_SUCCESS);
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_SYNCHRONIZED);
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_VISIBLE, 21 };
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_VISIBLE);
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_FOCUSED, 22 };
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_FOCUSED);
+    input_sample2 = (KlNativeInputSample2){ .sample_id = 1, .sample_time = 30, .hand = { absent_hand(), absent_hand() } };
+    assert(sync_actions(session, &sync2) == XR_SUCCESS);
+    input_sample2.sample_id = 2; input_sample2.sample_time = 40;
+    input_sample2.hand[0].connected = XR_TRUE; input_sample2.hand[0].grip_position_tracked = XR_TRUE;
+    input_sample2.hand[0].trigger = 0.25f; input_sample2.hand[0].primary_pressed = XR_TRUE;
+    assert(sync_actions(session, &sync2) == XR_SUCCESS);
+    profile.interactionProfile = hand2;
+    assert(current_profile(session, hand2, &profile) == XR_SUCCESS && profile.interactionProfile == XR_NULL_PATH);
+    gi.action = action2; gi.subactionPath = hand2;
+    bs.isActive = XR_TRUE; assert(bool_state(session, &gi, &bs) == XR_SUCCESS && !bs.isActive && !bs.currentState);
+    input_sample2.hand[0].primary_pressed = XR_FALSE;
+    assert(sync_actions(session, &sync2) == XR_ERROR_VALIDATION_FAILURE); /* same id, changed controls */
+    assert(bool_state(session, &gi, &bs) == XR_ERROR_CALL_ORDER_INVALID);
+    input_sample2.sample_id = 3; input_sample2.sample_time = 50; input_sample2.hand[0].trigger = 1.5f;
+    assert(sync_actions(session, &sync2) == XR_ERROR_VALIDATION_FAILURE);
+    input_sample2.hand[0] = absent_hand(); input_sample2.hand[0].connected = XR_TRUE; input_sample2.hand[0].stick_x = 0.5f;
+    assert(sync_actions(session, &sync2) == XR_ERROR_VALIDATION_FAILURE); /* one stick axis */
+    injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_STOPPING, 60 };
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_STOPPING);
+    ack_time = 61; assert(end(session) == XR_SUCCESS);
+    assert(poll_state(poll_event, instance) == XR_SESSION_STATE_IDLE);
     assert(destroy_session(session) == XR_SUCCESS);
     assert(destroy_instance(instance) == XR_SUCCESS);
     assert(kl_native_configure_image_sync(NULL) == XR_SUCCESS);

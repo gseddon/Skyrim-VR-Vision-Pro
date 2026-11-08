@@ -6,6 +6,15 @@ import Foundation
 import Darwin
 import simd
 
+func vxSpatialSide(_ chirality: Accessory.Chirality) -> VXSpatialSide {
+    switch chirality {
+    case .left: return .left
+    case .right: return .right
+    case .unspecified: return .unspecified
+    @unknown default: return .unspecified
+    }
+}
+
 struct VXSpatialObservation {
     let connectionGeneration: UInt64
     let accessoryID: UUID
@@ -117,8 +126,9 @@ actor VXNativeXRTracking {
                   let predicted = provider.predictAnchor(for: anchor, at: presentation),
                   predicted.accessory.id == anchor.accessory.id,
                   predicted.isTracked, vxSpatialTimeValid(predicted.timestamp, presentation: presentation) else { continue }
-            let hand = predicted.heldChirality ?? predicted.accessory.inherentChirality
-            guard hand == .left || hand == .right else { continue }
+            guard let handIndex = vxSpatialHandIndex(held: predicted.heldChirality.map(vxSpatialSide),
+                                                      inherent: vxSpatialSide(predicted.accessory.inherentChirality)) else { continue }
+            let hand: Accessory.Chirality = handIndex == 0 ? .left : .right
             let locations = predicted.accessory.locations
             func originFrom(_ location: Accessory.LocationName) -> simd_float4x4? {
                 guard locations.contains(location) else { return nil }
@@ -149,7 +159,7 @@ actor VXNativeXRTracking {
             @unknown default: state = .unavailable
             }
             guard let canonical = vxSpatialCanonical(id: predicted.accessory.id, generation: generation,
-                hand: hand == .left ? 0 : 1, connected: true, anchorTime: predicted.timestamp,
+                hand: handIndex, connected: true, anchorTime: predicted.timestamp,
                 predictionTime: presentation, inputEventTimeOpaque: input.lastEventTimestamp,
                 captureBeforeTicks: before, captureAfterTicks: after, tracking: state,
                 originFromGrip: grip, originFromAim: aim, raw: raw) else { continue }
