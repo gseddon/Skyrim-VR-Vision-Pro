@@ -11,5 +11,6 @@ int vx_xrizer_dev_host_start(const char *xrizer_library, unsigned width, unsigne
 int vx_xrizer_dev_audit_acquire(vx_native_vr_frame *out);
 int vx_xrizer_dev_audit_release(uint64_t lease);
 int vx_xrizer_dev_audit_finish(void);
+int vx_xrizer_dev_audit_preframe(void);
 #endif
 #endif

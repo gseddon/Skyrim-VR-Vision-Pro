@@ -61,7 +61,8 @@ int vx_xrizer_dev_audit_observe(uint32_t variant) {
 }
 static WINAPI int VXRT_DevAuditCheck(uint32_t variant) { return variant<2 && observed[variant] ? results[variant] : -1; }
 static WINAPI int VXRT_DevAuditFinish(void) { return vx_xrizer_dev_audit_finish(); }
-static const vx_export exports[]={VX_EXPORT(VXRT_DevAuditCheck),VX_EXPORT(VXRT_DevAuditFinish)};
+static WINAPI int VXRT_DevAuditPreFrame(void) { return vx_xrizer_dev_audit_preframe(); }
+static const vx_export exports[]={VX_EXPORT(VXRT_DevAuditCheck),VX_EXPORT(VXRT_DevAuditFinish),VX_EXPORT(VXRT_DevAuditPreFrame)};
 __attribute__((constructor)) static void register_audit(void) {
     const char *v=getenv("VXRT_XRIZER_DEV_AUDIT");
     if (v && !strcmp(v,"1")) vx_register_module("vxrt_xrizer_dev_audit.dll",exports,sizeof exports/sizeof *exports);
