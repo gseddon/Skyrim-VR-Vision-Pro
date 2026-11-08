@@ -1,0 +1,5 @@
+LIBRARY kernel32.dll
+EXPORTS
+    VXRT_MissingImportFixture
+    GetCommandLineA
+    ExitProcess

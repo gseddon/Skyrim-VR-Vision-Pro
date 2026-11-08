@@ -1,0 +1,115 @@
+{
+  "$schema": "./profile.schema.json",
+  "appid": "546560",
+  "key": "alyx",
+  "name": "Half-Life: Alyx",
+  "launcher": "alyx",
+  "engine": "vxrt",
+  "default_scenario": "menu",
+  "tune": {
+    "scenario": "chapter",
+    "ladder": [
+      {
+        "quality": "3k",
+        "note": "fidelity level 4 fixed; left to itself (no preset) the game picks its own size, so the default is not on the ladder"
+      },
+      {
+        "quality": "2.5k",
+        "note": "2x MSAA, fidelity level 3"
+      },
+      {
+        "quality": "max",
+        "note": "2x MSAA, fidelity level 3"
+      }
+    ]
+  },
+  "scenarios": {
+    "menu": {
+      "args": [],
+      "seconds": 150,
+      "note": "the main menu (+map startup)"
+    },
+    "chapter": {
+      "args": [
+        "+map",
+        "a1_intro_world_2",
+        "+hlvr_pause_after_realmap",
+        "0"
+      ],
+      "seconds": 240,
+      "note": "chapter 1, on the train"
+    }
+  },
+  "status": {
+    "state": "works",
+    "summary": {
+      "ja": "VR で動作。3k プリセットで 60 fps（M1 Max）。ヘッドセットでレベルをまたいでプレイ済み",
+      "en": "Works in VR. 60 fps with the 3k preset (M1 Max); played in the headset across level changes"
+    },
+    "checked": "2026-10-14",
+    "machine": "Apple M1 Max, 32-core GPU",
+    "level": "playable"
+  },
+  "baselines": {
+    "menu": {
+      "min_fps": 18,
+      "non_black": true,
+      "connected": true,
+      "source": "2026-10-14, menu 20-22 fps (reg5)"
+    },
+    "menu@3k": {
+      "min_fps": 45,
+      "non_black": true,
+      "connected": true,
+      "source": "2026-10-14, 58.8 and 54.1 fps after the geometry path fix (runs 20261014T074457Z, 20261014T074703Z); 18-21 before"
+    },
+    "chapter@3k": {
+      "min_fps": 55,
+      "non_black": true,
+      "connected": true,
+      "source": "2026-10-14, a1_intro_world_2 at 3k, 60.0 fps (run 20261014T074923Z)"
+    }
+  },
+  "known_issues": [
+    {
+      "summary": "VXRT_VR_QUALITY=max: 16-21 fps (the 3k preset holds 60)",
+      "since": "2026-10-14"
+    },
+    {
+      "summary": "Saves made before 2026-10-14 (commit 8d10cfb) hold no level state: start the chapter again",
+      "since": "2026-10-14"
+    }
+  ],
+  "notes": [
+    "Needs -vr (scripts/launch_vxrt_alyx.sh passes it); without it the game starts in desktop mode.",
+    "2026-10-14: played in the headset at 3k through a2_quarantine_entrance -> a2_pistol (the level change that crashed before 8d10cfb); saves 2.5-6.2 MB.",
+    "2026-10-17: fences, foliage, fog and bottles that lit in one strong colour (red, green or blue) for single frames were reads beyond a constant buffer smaller than the shader declares (shader a10a2d66: cb3 37 float4s, 1 bound), fixed in 89e32a8; played on the MacBook Air without them, VXRT_FLASH_CAPTURE caught none in the game (before: 7 in about 90 s in the same rooms).",
+    "2026-10-19 (the user, in the Vision Pro's ALVR app with Joy-Con; not a harness run): the hands no longer vanish when ZL/ZR are left alone (ae75c23). Known: the buttons that pull the pistol's magazine out and reload are not where the game's controls put them (offset), but they work. The cause is not looked into (the ALVR client's Joy-Con mapping or this bridge's button mapping).",
+    "2026-10-23 (scratch run, not a harness run): with -novr -vulkan the game's Vulkan renderer (rendersystemvulkan.dll) runs on VXRuntime's own Vulkan (src/vk_*.m) flat on the Mac's screen: the main menu scene renders correctly (fog, lighting, textures, logo), 78-113 presents/s at 1512x982 on the M1 Max, 100 s without errors. Geometry shaders (vr_wireframe_hologram) are not supported there yet: those pipelines fail and the game goes on without them. Of Alyx's 14,898 Vulkan SPIR-V shaders (shaders_vulkan_000.vpk, read in a scratch directory), 14,843 translate and compile; 48 use function calls, 5 are geometry and 2 tessellation shaders."
+  ],
+  "tuned": {
+    "Apple M1 Max, 32-core GPU": {
+      "quality": "3k",
+      "settings": {},
+      "scenario": "chapter",
+      "median_fps": 60.0,
+      "per_eye": [
+        1440,
+        1620
+      ],
+      "display_hz": 60.0,
+      "checked": "2026-10-15",
+      "source": "tools/vxrt_tune.py 20261015-tune-alyx-verify (runs 20261015T001413Z-alyx-chapter-3k, 20261015T002231Z-alyx-chapter-3k)"
+    }
+  },
+  "playtests": [
+    {
+      "date": "2026-10-14",
+      "machine": "Apple M1 Max, 32-core GPU",
+      "quality": "3k",
+      "playable": true,
+      "reached": "a2_quarantine_entrance -> a2_pistol (level change, saves)",
+      "source": "the user's play in the headset with Joy-Con and hands, recorded on video (2026-10-14 22:46), before tools/vxrt_playtest.py existed; harness 20261015T012038Z-alyx-chapter-3k: level controls"
+    }
+  ]
+}

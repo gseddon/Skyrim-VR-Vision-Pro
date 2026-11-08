@@ -1,0 +1,52 @@
+// The execution engine (engine.c): translated blocks, linked to each other, with a cache.
+#pragma once
+#include "xlat.h"
+
+typedef struct xe xe;
+typedef struct {
+    uint64_t blocks, linked, entries, flushes;      // blocks translated, branches patched, entries from C, cache flushes
+    uint64_t x86_bytes, arm_insns;                  // code translated
+    uint64_t split_patches;                         // ordered accesses across 16 bytes patched (engine.c)
+    uint64_t flags_skipped, fused;                  // instructions whose flags nobody reads, Jccs fused with a CMP / TEST
+    uint64_t smc_pages;                             // pages whose translations went because the code was written
+} xe_stats;
+
+// ordered: memory accesses that may be shared as LDAPR / STLR (in-process, without TSO); installs a SIGBUS / SIGSEGV
+// handler for those across 16 bytes (call it after the program's own handlers: others go to them).
+xe *xe_new(int ordered);
+// The same, the translated code running in a Hypervisor.framework guest with x86's memory order in hardware (TSO):
+// vcpu.c. NULL: no hypervisor (the process needs the com.apple.security.hypervisor entitlement).
+xe *xe_new_vcpu(void);
+// Addresses that are native functions translated code may call (the ARM64 runtime's thunks, src/arm64.c): find
+// returns the thunk for one, else NULL; the engine then makes that address's block a call of the thunk.
+void xe_set_native(xe *e, void (*(*find)(uint64_t rip))(x86_ctx *));
+// vCPU: native functions guest.c answers in the guest: find(fn) gives the handler (its address in this process, in
+// guest.c's section) and its argument; 0: none, the call leaves the guest.
+void xe_set_guest(xe *e, int (*find)(uint64_t fn, uint64_t *handler, const void **desc));
+// A return-address ring for a thread's context (x86_ctx.ras); without one, contexts share the engine's.
+uint64_t xe_ring_new(xe *e);
+// The x86 instruction whose translation holds host address pc (0: none, or not an x86 instruction's code).
+uint64_t xe_rip_at(const xe *e, uint64_t pc);
+uint64_t xe_rip_sp_at(const xe *e, uint64_t pc, int64_t *sp);   // and RSP's offset from x4 there (xlat.c, stack runs)
+// Code that changes: with smc on, the pages translations come from are write-protected; the program's fault
+// handler calls xe_smc_write for a write fault (1: it was such a page, its translations are gone and it is
+// writable again: retry the write). xe_forget: memory freed or replaced (VirtualFree), its translations go.
+void xe_set_smc(xe *e, int on);
+int xe_smc_write(xe *e, uint64_t addr);
+void xe_forget(xe *e, uint64_t addr, uint64_t len);
+// Ordered mode: an LDAPR / STLR across 16 bytes faulted (uc: the signal's ucontext_t); 1: patched (DMB, the plain
+// access, DMB), the access is retried. xe_new installs a handler that calls this; a program with its own calls it.
+int xe_fix_split(xe *e, void *uc);
+// Whether pc is in the engine's translated code.
+int xe_owns(const xe *e, uint64_t pc);
+int xe_in_guest(const xe *e, uint64_t pc);   // vCPU: pc in guest.c's code (a call the guest answers)
+// Forgets every translation (the code it came from changed). Not while another thread runs translated code.
+void xe_flush(xe *e);
+// Code another runner owns (the static recompiler's modules, translator/aot.c): xe_run returns XE_FOREIGN when the
+// program reaches such an address, instead of translating it.
+enum { XE_FOREIGN = -3 };
+void xe_set_foreign(xe *e, int (*owns)(uint64_t rip));
+// Runs from ctx->rip until the code reaches stop (0), an x86 exception (ctx->fault, RIP at the instruction), an
+// instruction that cannot be translated (-1), or code xe_set_foreign's function owns (XE_FOREIGN).
+int xe_run(xe *e, x86_ctx *ctx, uint64_t stop);
+xe_stats xe_get_stats(const xe *e);

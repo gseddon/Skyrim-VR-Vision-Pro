@@ -1,0 +1,82 @@
+/* Typed, refusal-only OpenXR 1.0 entry points. Session/space/swapchain/action
+ * handles do not yet exist. Replace each entry with real behavior as implemented. */
+static XrResult XRAPI_CALL refuse_xrResultToString(XrInstance instance, XrResult value, char buffer[XR_MAX_RESULT_STRING_SIZE]) {
+    (void)value;
+    (void)buffer;
+    return valid_instance(instance) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrStructureTypeToString(XrInstance instance, XrStructureType value, char buffer[XR_MAX_STRUCTURE_NAME_SIZE]) {
+    (void)value;
+    (void)buffer;
+    return valid_instance(instance) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrGetReferenceSpaceBoundsRect(XrSession session, XrReferenceSpaceType referenceSpaceType, XrExtent2Df* bounds) {
+    (void)referenceSpaceType;
+    (void)bounds;
+    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrCreateActionSpace(XrSession session, const XrActionSpaceCreateInfo* createInfo, XrSpace* space) {
+    (void)createInfo;
+    (void)space;
+    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrSuggestInteractionProfileBindings(XrInstance instance, const XrInteractionProfileSuggestedBinding* suggestedBindings) {
+    (void)suggestedBindings;
+    return valid_instance(instance) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrAttachSessionActionSets(XrSession session, const XrSessionActionSetsAttachInfo* attachInfo) {
+    (void)attachInfo;
+    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrGetCurrentInteractionProfile(XrSession session, XrPath topLevelUserPath, XrInteractionProfileState* interactionProfile) {
+    (void)topLevelUserPath;
+    (void)interactionProfile;
+    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrGetActionStateBoolean(XrSession session, const XrActionStateGetInfo* getInfo, XrActionStateBoolean* state) {
+    (void)getInfo;
+    (void)state;
+    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrGetActionStateFloat(XrSession session, const XrActionStateGetInfo* getInfo, XrActionStateFloat* state) {
+    (void)getInfo;
+    (void)state;
+    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrGetActionStateVector2f(XrSession session, const XrActionStateGetInfo* getInfo, XrActionStateVector2f* state) {
+    (void)getInfo;
+    (void)state;
+    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrGetActionStatePose(XrSession session, const XrActionStateGetInfo* getInfo, XrActionStatePose* state) {
+    (void)getInfo;
+    (void)state;
+    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrSyncActions(XrSession session, const XrActionsSyncInfo* syncInfo) {
+    (void)syncInfo;
+    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrEnumerateBoundSourcesForAction(XrSession session, const XrBoundSourcesForActionEnumerateInfo* enumerateInfo, uint32_t sourceCapacityInput, uint32_t* sourceCountOutput, XrPath* sources) {
+    (void)enumerateInfo;
+    (void)sourceCapacityInput;
+    (void)sourceCountOutput;
+    (void)sources;
+    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrGetInputSourceLocalizedName(XrSession session, const XrInputSourceLocalizedNameGetInfo* getInfo, uint32_t bufferCapacityInput, uint32_t* bufferCountOutput, char* buffer) {
+    (void)getInfo;
+    (void)bufferCapacityInput;
+    (void)bufferCountOutput;
+    (void)buffer;
+    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrApplyHapticFeedback(XrSession session, const XrHapticActionInfo* hapticActionInfo, const XrHapticBaseHeader* hapticFeedback) {
+    (void)hapticActionInfo;
+    (void)hapticFeedback;
+    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}
+static XrResult XRAPI_CALL refuse_xrStopHapticFeedback(XrSession session, const XrHapticActionInfo* hapticActionInfo) {
+    (void)hapticActionInfo;
+    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
+}

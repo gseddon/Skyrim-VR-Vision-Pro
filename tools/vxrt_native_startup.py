@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""Bounded native AOT startup evidence, without assigning a VR/game compatibility level."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import struct
+import subprocess
+import sys
+
+import vxrt_ledger as ledger
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / 'VXRuntime/tools'))
+from native_vr_run import cpu_types
+SUMMARY = re.compile(r'aot: (\d+) entries into recompiled code, .*?, (\d+) fallbacks to the translator \((\d+) addresses\)')
+
+
+def digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def pe_hash(path):
+    data = Path(path).read_bytes()
+    if len(data) < 64 or data[:2] != b'MZ':
+        raise ValueError('expected a Windows PE image')
+    off = struct.unpack_from('<I', data, 60)[0]
+    if off + 26 > len(data) or data[off:off+4] != b'PE\0\0' or struct.unpack_from('<H', data, off+4)[0] != 0x8664 or struct.unpack_from('<H', data, off+24)[0] != 0x20b:
+        raise ValueError('expected an x86-64 PE32+ image')
+    h = 1469598103934665603
+    for b in data:
+        h = ((h ^ b) * 1099511628211) & 0xffffffffffffffff
+    return h
+
+
+def inspect_log(content, version=1):
+    summaries = [dict(entries=int(e), fallback_requests=int(f), missing_addresses=int(a)) for e, f, a in SUMMARY.findall(content)]
+    missing = re.findall(r'VXRT_AOT_STRICT: (0x[0-9a-fA-F]+) has no recompiled code', content)
+    patterns = (
+        'has no recompiled code', 'unimplemented function', 'dll not found', 'dll not loaded',
+        'could not load', 'cannot load', 'unhandled', 'messagebox:', 'not used', '[vxrt] abort:')
+    if version >= 2:
+        patterns += ('signal ', 'native backtrace:', 'callback depth limit', 'callback_depth_limit', 'openvr-init:')
+    candidates = [line for line in content.splitlines() if any(x in line.lower() for x in patterns)]
+    facts = dict(aot_summaries=summaries, missing_code=missing, problem_lines=candidates[:30],
+                aot_executed=any(s['entries'] > 0 for s in summaries),
+                zero_fallback_reported=bool(summaries) and all(s['fallback_requests'] == 0 and s['missing_addresses'] == 0 for s in summaries))
+    if version >= 2:
+        facts['native_signals'] = [dict(signal=int(sig), pc=pc, address=address, detail=detail)
+            for sig, pc, address, detail in re.findall(
+                r'\bsignal (\d+) at (0x[0-9a-fA-F]+) \(address (0x[0-9a-fA-F]+|0)\)([^\n]*)', content)]
+        facts['native_backtrace'] = re.findall(r'^\d+\s+\S+\s+0x[0-9a-fA-F]+\s+[^\n]*', content, re.MULTILINE)[:64]
+    return facts
+
+
+def validate(result):
+    problems = []
+    if result.get('kind') != 'native_aot_startup' or result.get('level') is not None:
+        problems.append('invalid scope or compatibility level')
+    if result.get('status') not in ('observed', 'refused'):
+        problems.append('invalid evidence status')
+    if result.get('status') == 'observed':
+        for key in ('runtime', 'exe'):
+            item = result['artifacts'][key]
+            if not Path(item['path']).is_file() or digest(item['path']) != item['sha256']:
+                problems.append(key + ' artifact changed or missing')
+        for item in result.get('observed', []):
+            path = REPO / item['artifact']
+            if not path.is_file() or digest(path) != item['sha256']:
+                problems.append('observation artifact changed or missing')
+        log = REPO / result['log']
+        if log.is_file():
+            facts = inspect_log(log.read_text(errors='replace'), result.get('schema_version', 1))
+            actual = {o['metric']: o['value'] for o in result['observed']}
+            for key, value in facts.items():
+                if actual.get(key) != value:
+                    problems.append(key + ' does not match log')
+        for item in result['artifacts']['modules']:
+            if not Path(item['path']).is_file() or digest(item['path']) != item['sha256']:
+                problems.append('AOT artifact changed or missing')
+        process_file = REPO / result['process']
+        if process_file.is_file():
+            process = json.loads(process_file.read_text())
+            actual = {o['metric']: o['value'] for o in result['observed']}
+            for key, value in process.items():
+                if actual.get(key) != value:
+                    problems.append(key + ' does not match process record')
+        else:
+            problems.append('process record missing')
+    return problems
+
+
+def capture(args):
+    out = Path(args.out).resolve()
+    if out == REPO or not out.is_relative_to(REPO) or out.exists():
+        raise ValueError('output must be a new directory inside this checkout')
+    if not 0 < args.seconds <= 60:
+        raise ValueError('seconds must be in (0, 60]')
+    callback_limit = getattr(args, 'callback_depth_limit', None)
+    if callback_limit is not None and not 2 <= callback_limit <= 256:
+        raise ValueError('callback depth limit must be from 2 to 256')
+    exe = Path(args.exe).resolve(strict=True)
+    runtime = Path(args.runtime).resolve(strict=True)
+    directory = Path(args.aot_dir).resolve(strict=True)
+    assets = Path(args.asset_root).resolve(strict=True)
+    dlls = [Path(p).resolve(strict=True) for p in args.dll_dir]
+    if not exe.is_relative_to(REPO):
+        raise ValueError('execute only a private repository-local image or an owned fixture')
+    if not assets.is_dir() or any(not p.is_dir() for p in dlls):
+        raise ValueError('asset and DLL roots must be directories')
+    if not runtime.is_file() or not os.access(runtime, os.X_OK) or 0x0100000c not in cpu_types(runtime):
+        raise ValueError('runtime must be an executable ARM64 Mach-O')
+    if not directory.is_dir() or not directory.is_relative_to(REPO):
+        raise ValueError('AOT directory must be repository-local')
+    stem = f'{exe.name.lower()}-{pe_hash(exe):016x}'
+    modules = sorted(directory.glob('*.dylib'))
+    if not any(p.name in (stem + '.dylib', stem + '.p0.dylib') for p in modules):
+        raise ValueError('no hash-matched AOT module for executable')
+    if any(0x0100000c not in cpu_types(p) for p in modules):
+        raise ValueError('AOT modules must be ARM64 Mach-O files')
+    # Private copied DLLs may live under the checkout; only original external
+    # trees share the read-only overlay, whose destination must stay outside it.
+    originals = [p for p in dlls if not p.is_relative_to(REPO)]
+    source = Path(os.path.commonpath([str(assets), *map(str, originals)]))
+    if source == Path('/') or REPO.is_relative_to(source) or out.is_relative_to(assets):
+        raise ValueError('asset/DLL overlay would include repository outputs or filesystem root')
+    # Do not run through another user's active runtime session.
+    busy = subprocess.run(['pgrep', '-x', 'vxrt(-arm64)?(-[[:alnum:]_.]+)*|vrserver|vrcompositor'], capture_output=True, text=True)
+    wine = subprocess.run(['pgrep', '-fl', '[w]ine.*(vrserver|hlvr|SkyrimVR)'], capture_output=True, text=True)
+    idle = busy.returncode == 1 and wine.returncode == 1
+    out.mkdir(parents=True)
+    result = dict(kind='native_aot_startup', schema_version=2, level=None, status='refused' if not idle else 'observed',
+                  appid=getattr(args, 'appid', None),
+                  scope='startup checkpoint only; no VR compatibility, frame, gameplay or performance claim',
+                  source_commit=subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip(),
+                  preconditions=[dict(code='user_not_playing', ok=idle, detail=(busy.stdout + wine.stdout).strip() or 'no active runtime found')],
+                  observed=[], derived=[], inferred=[], unknown=[
+                      'main-game code execution and scene initialization', 'VR connection and stereo frame delivery',
+                      'headset input, audio and playability', 'code coverage outside observed startup path'])
+    if idle:
+        root, overlay, temp = out/'root', out/'overlay', out/'temp'
+        for path in (root, overlay, temp):
+            path.mkdir()
+        env = {k: v for k, v in os.environ.items() if not k.startswith(('VXRT_', 'VERANTYX_'))}
+        env.update(VXRT_ROOT=str(root), VXRT_OVERLAY=f'{source}:{overlay}', VXRT_AOT_DIR=str(directory),
+                   VXRT_AOT_STRICT='1', VXRT_NO_WINE='1', VXRT_STEAM_BRIDGE='0', VXRT_MESSAGEBOX='auto',
+                   VXRT_NO_ACTIVATE='1', VXRT_MUTE='1', VERANTYX_AUDIO='0', TMPDIR=str(temp),
+                   VXRT_LOG_TIME='1', VXRT_TRACE_CALLS='3')
+        if dlls:
+            env['VXRT_DLL_PATH'] = ':'.join(map(str, dlls))
+        if callback_limit is not None:
+            env['VXRT_CALLBACK_DEPTH_LIMIT'] = str(callback_limit)
+            result['diagnostic'] = dict(callback_depth_limit=callback_limit,
+                scope='bounded diagnostic stop; not ordinary startup acceptance')
+        if getattr(args, 'trace_openvr_init', False):
+            env['VXRT_TRACE_OPENVR_INIT'] = '1'
+            result.setdefault('diagnostic', {})['openvr_init_passthrough_trace'] = True
+        inputs = [exe]
+        original = assets / exe.name
+        if original.is_file() and original.resolve() != exe:
+            inputs.append(original)
+        for base in [assets, *dlls]:
+            inputs.extend(p for p in base.glob('*.dll') if p.is_file())
+        input_hashes = {str(p): digest(p) for p in set(inputs)}
+        result['artifacts'] = dict(runtime=dict(path=str(runtime), sha256=digest(runtime)),
+                                   exe=dict(path=str(exe), sha256=digest(exe)),
+                                   modules=[dict(path=str(p), sha256=digest(p)) for p in modules],
+                                   read_only_inputs=input_hashes)
+        cmd = ['/usr/bin/arch', '-arm64', str(runtime), str(exe)]
+        result.update(command=cmd, cwd=str(assets), environment={k:v for k,v in env.items() if k.startswith(('VXRT_', 'VERANTYX_')) or k=='TMPDIR'}, timeout_seconds=args.seconds)
+        log = out/'startup.log'
+        timed_out = False
+        with log.open('wb') as f:
+            p = subprocess.Popen(cmd, cwd=assets, env=env, stdout=f, stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                rc = p.wait(timeout=args.seconds)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                os.killpg(p.pid, signal.SIGKILL)
+                rc = p.wait()
+        # No helper from the owned process group should survive the observation window.
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        facts = inspect_log(log.read_text(errors='replace'), result['schema_version'])
+        process = out/'process.json'
+        unchanged = all(Path(p).is_file() and digest(p) == h for p,h in input_hashes.items())
+        process.write_text(json.dumps(dict(returncode=rc, timed_out=timed_out, read_only_inputs_unchanged=unchanged), indent=2)+'\n')
+        result['log'] = str(log.relative_to(REPO))
+        result['process'] = str(process.relative_to(REPO))
+        for key, value in [('returncode', rc), ('timed_out', timed_out), ('read_only_inputs_unchanged', unchanged), *facts.items()]:
+            art = process if key in ('returncode', 'timed_out', 'read_only_inputs_unchanged') else log
+            result['observed'].append(dict(id=f'o{len(result["observed"])+1}', metric=key, value=value,
+                                           artifact=str(art.relative_to(REPO)), sha256=digest(art)))
+    path = out/'result.json'
+    path.write_text(json.dumps(result, indent=2, sort_keys=True)+'\n')
+    problems = validate(result)
+    if problems:
+        raise ValueError('invalid evidence: ' + '; '.join(problems))
+    ledger.append(dict(kind=result['kind'], result=str(path.relative_to(REPO)), result_sha256=digest(path)))
+    return result
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('--exe'); ap.add_argument('--runtime'); ap.add_argument('--aot-dir')
+    ap.add_argument('--asset-root'); ap.add_argument('--dll-dir', action='append', default=[])
+    ap.add_argument('--appid', help='optional subject label, not a compatibility claim')
+    ap.add_argument('--out'); ap.add_argument('--seconds', type=float, default=20)
+    ap.add_argument('--callback-depth-limit', type=int, help='diagnostic only: stop at nested callback depth 2..256')
+    ap.add_argument('--trace-openvr-init', action='store_true', help='diagnostic only: transparently log real OpenVR initialization results')
+    ap.add_argument('--validate', metavar='RESULT_JSON')
+    args = ap.parse_args()
+    try:
+        if args.validate:
+            problems = validate(json.loads(Path(args.validate).read_text()))
+            print(json.dumps(dict(valid=not problems, problems=problems)))
+            return 1 if problems else 0
+        if not all((args.exe, args.runtime, args.aot_dir, args.asset_root, args.out)):
+            ap.error('exe, runtime, aot-dir, asset-root and out are required')
+        result = capture(args)
+        print(json.dumps(result, indent=2))
+        return 3 if result['status'] == 'refused' else 0
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        print('native startup: ' + str(error), file=sys.stderr)
+        return 4
+
+
+if __name__ == '__main__':
+    sys.exit(main())
