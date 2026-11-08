@@ -46,9 +46,21 @@ VXRT_ARM64_THUNKS_ROOT ?= build
 VXRT_ARM64_EXTRA_CFLAGS ?=
 VXRT_ARM64_EXTRA_OBJS ?=
 VXRT_ARM64_EXTRA_LDFLAGS ?=
+XROS_SDK ?= xros
+# Explicit simulator-only experimental fixture; normal builds retain their defaults.
+XROS_XRIZER_FIXTURE ?= 0
+XROS_DIR = build/$(XROS_SDK)$(if $(filter 1,$(XROS_XRIZER_FIXTURE)),-xrizer-fixture)
+ifeq ($(XROS_XRIZER_FIXTURE),1)
+ifneq ($(XROS_SDK),xrsimulator)
+$(error XROS_XRIZER_FIXTURE requires XROS_SDK=xrsimulator)
+endif
+VXRT_ARM64_EXTRA_SRC += src/xrizer_guest_bridge.c src/xrizer_openvr_exports.c src/xrizer_guest_d3d.m src/xrizer_xros_host.m src/xrizer_xros_mailbox.c src/xrizer_xros_optics.m src/xrizer_xros_fixture.m
+VXRT_ARM64_THUNKS_ROOT = $(XROS_DIR)/thunkroot
+VXRT_ARM64_EXTRA_CFLAGS += -DVXRT_XRIZER_XROS_FIXTURE -I../third_party/xrizer/include -I../third_party/klepton_openxr/include -I../third_party/klepton_openxr/src
+endif
 $(VXRT_ARM64_THUNKS_ROOT)/thunks/stamp: $(filter %.c %.m,$(SRC) $(VXRT_ARM64_EXTRA_SRC)) src/vx.h tools/vx_thunks.py tools/vx_abi_scan.py
 	@mkdir -p $(VXRT_ARM64_THUNKS_ROOT)/thunks
-	VXRT_ABI_SCAN_EXTRA_CFLAGS="$(VXRT_ARM64_EXTRA_CFLAGS)" python3 tools/vx_thunks.py $(VXRT_ARM64_THUNKS_ROOT)/thunks $(filter %.c %.m,$(SRC) $(VXRT_ARM64_EXTRA_SRC))
+	VXRT_ABI_SCAN_EXTRA_CFLAGS="$(VXRT_ARM64_EXTRA_CFLAGS) $(if $(filter 1,$(XROS_XRIZER_FIXTURE)),-DVX_XROS_FIXTURE_SCAN)" python3 tools/vx_thunks.py $(VXRT_ARM64_THUNKS_ROOT)/thunks $(filter %.c %.m,$(SRC) $(VXRT_ARM64_EXTRA_SRC))
 	@touch $@
 # The static recompiler's tool (RECOMP.md, tools/vxrt_aot.c): native ARM64, built from the translator's sources.
 AOT_TOOL_SRC = tools/vxrt_aot.c translator/xlat.c translator/x87.c translator/x86dec.c
@@ -171,20 +183,19 @@ XROS_SDK ?= xros
 XROS_CODE_SIGNING ?= YES
 XROS_ALLOW_PROVISIONING ?= 0
 XROS_TARGET = arm64-apple-xros26.0$(if $(filter xrsimulator,$(XROS_SDK)),-simulator)
-XROS_DIR = build/$(XROS_SDK)
 XROS_CC = xcrun -sdk $(XROS_SDK) clang -target $(XROS_TARGET)
-XROS_CFLAGS = -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -include xros/vx_xros.h -Ixros/include -Isrc -Ibuild -Ithird_party/vulkan -fobjc-arc
+XROS_CFLAGS = $(if $(filter 1,$(XROS_XRIZER_FIXTURE)),$(VXRT_ARM64_EXTRA_CFLAGS) -I$(VXRT_ARM64_THUNKS_ROOT)) -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -include xros/vx_xros.h -Ixros/include -Isrc -Ibuild -Ithird_party/vulkan -fobjc-arc
 XROS_OUT = src/cocoa.m src/menus.m src/tray.m src/clipboard.m src/opengl.c src/directinput.m translator/engine.c translator/vcpu.c
 XROS_OUT += $(if $(filter xrsimulator,$(XROS_SDK)),src/upscale_core.m)
 XROS_SRC = $(filter-out $(XROS_OUT),$(ARM64_SRC)) src/xros_ui.m src/xros_vr.m src/xros_stubs.c translator/engine_nojit.c
 XROS_OBJ = $(patsubst %,$(XROS_DIR)/obj/%.o,$(XROS_SRC))
 # (the sources whose calls through ms_abi pointers are wrapped for visionOS: copies in $(XROS_DIR)/src, VISIONOS_PORT.md)
-XROS_SCAN = $(filter %.c %.m,$(filter $(SRC),$(XROS_SRC)))
+XROS_SCAN = $(filter %.c %.m,$(filter $(SRC) $(VXRT_ARM64_EXTRA_SRC),$(XROS_SRC)))
 $(XROS_DIR)/src/stamp: $(XROS_SCAN) tools/xros_x86calls.py tools/vx_abi_scan.py
 	@mkdir -p $(dir $@)
-	python3 tools/xros_x86calls.py $(XROS_DIR)/src $(XROS_SCAN) > $(XROS_DIR)/src/list
+	VXRT_ABI_SCAN_EXTRA_CFLAGS="$(VXRT_ARM64_EXTRA_CFLAGS) $(if $(filter 1,$(XROS_XRIZER_FIXTURE)),-DVX_XROS_FIXTURE_SCAN)" python3 tools/xros_x86calls.py $(XROS_DIR)/src $(XROS_SCAN) > $(XROS_DIR)/src/list
 	@touch $@
-$(XROS_DIR)/obj/%.o: % xros/vx_xros.h src/xros_vr.h src/native_openvr.h src/native_vr.h src/npu_interp.h build/thunks/stamp $(XROS_DIR)/src/stamp
+$(XROS_DIR)/obj/%.o: % xros/vx_xros.h src/xros_vr.h src/native_openvr.h src/native_vr.h src/npu_interp.h $(VXRT_ARM64_THUNKS_ROOT)/thunks/stamp $(XROS_DIR)/src/stamp
 	@mkdir -p $(dir $@)
 	@f=$(XROS_DIR)/src/$<; [ -f $$f ] || f=$<; echo "$(XROS_CC) ... -c -o $@ $$f"; $(XROS_CC) $(XROS_CFLAGS) -c -o $@ $$f
 # (the app has its own main: the loader's is called from it, xros/app)
@@ -193,6 +204,9 @@ $(XROS_DIR)/libvxrt.a: $(XROS_OBJ)
 	@rm -f $@
 	xcrun -sdk $(XROS_SDK) libtool -static -o $@ $(XROS_OBJ)
 xros-lib: $(XROS_DIR)/libvxrt.a
+ifeq ($(XROS_XRIZER_FIXTURE),1)
+xros-lib: xros-xrizer-static-probe
+endif
 # Optional build-only proof; never changes the default app or launches a simulator.
 xros-xrizer-static-probe:
 	./tests/test_xrizer_xros_static_link.sh
@@ -200,6 +214,15 @@ xros-xrizer-static-probe:
 # Our own test programs for the app, their modules linked into it (tools/xros_aot.sh), the files they read beside them.
 XROS_TESTS = build/xros_clear.exe build/d3d12.exe build/recomp/suite.exe build/hello_crt.exe build/seh_try.exe build/unwind.exe build/cxx_exceptions.exe build/xros_child.exe build/xros_input.exe build/xros_vr_depth.exe
 XROS_TESTS += build/native_vr_d3d11.exe
+ifeq ($(XROS_XRIZER_FIXTURE),1)
+XROS_TESTS += $(XROS_DIR)/guest/xrizer_xros_guest.exe
+$(XROS_DIR)/guest/xrizer_xros_guest.exe: tests/xrizer_xros_guest.cpp ../third_party/xrizer/upstream/openvr/headers/openvr-1.0.17.h
+	@mkdir -p $(XROS_DIR)/guest
+	git show 8e24024:VXRuntime/tests/xrizer_guest_abi_header.py > $(XROS_DIR)/guest/header.py
+	python3 $(XROS_DIR)/guest/header.py ../third_party/xrizer/upstream/openvr/headers/openvr-1.0.17.h $(XROS_DIR)/guest/openvr-guest-abi.h
+	xcrun clang++ -target x86_64-pc-windows-msvc -std=c++17 -fno-exceptions -fno-rtti -ffreestanding -O1 -I$(XROS_DIR)/guest -c $< -o $(XROS_DIR)/guest/fixture.o
+	$(MINGW) -nostdlib -Wl,-e,mainCRTStartup -o $@ $(XROS_DIR)/guest/fixture.o -lkernel32
+endif
 build/xros_clear.exe: tests/xros_clear.c
 	$(MINGW) -O1 -o $@ $< -ld3d12 -ldxgi
 build/xros_vr_depth.exe: tests/xros_vr_depth.c
@@ -223,10 +246,18 @@ build/xros_big.exe: tools/gen_big_test.py
 	rm -rf build/xros_big && python3 tools/gen_big_test.py build/xros_big $(XROS_BIG_FUNCS) 32
 	cd build/xros_big && for f in *.c; do $(MINGW) -O1 -c $$f & done; wait
 	$(MINGW) -o $@ build/xros_big/*.o
+ifeq ($(XROS_XRIZER_FIXTURE),1)
+# Keep the fixture's AOT work and app resources out of the default app's
+# build/xros scratch and bundle. Its only linked guest is the owned fixture.
+xros-aot-tests: build/vxrt-aot $(XROS_DIR)/guest/xrizer_xros_guest.exe
+	mkdir -p $(XROS_DIR)/bundle/exe
+	XROS_SDK=$(XROS_SDK) XROS_TARGET=$(XROS_TARGET) XROS_ARENA=$(XROS_ARENA) XROS_ARENA_MB=$(XROS_ARENA_MB) XROS_AOT_OUTPUT_ROOT=$(abspath $(XROS_DIR)) tools/xros_aot.sh $(XROS_DIR)/guest/xrizer_xros_guest.exe
+	cp $(XROS_DIR)/guest/xrizer_xros_guest.exe $(XROS_DIR)/bundle/exe/
+else
 xros-aot-tests: build/vxrt-aot $(XROS_TESTS) $(if $(filter-out 0,$(XROS_BIG_FUNCS)),build/xros_big.exe)
 	rm -rf build/xros/t && mkdir -p build/xros/t
 	for t in $(XROS_ARENA_TESTS) $(XROS_FW_TESTS) $(XROS_FWARENA_TESTS); do cp build/$${t#*:}.exe build/xros/t/$${t%%:*}.exe; done
-	XROS_SDK=$(XROS_SDK) XROS_TARGET=$(XROS_TARGET) XROS_ARENA=$(XROS_ARENA) XROS_ARENA_MB=$(XROS_ARENA_MB) tools/xros_aot.sh $(XROS_TESTS) \
+	XROS_SDK=$(XROS_SDK) XROS_TARGET=$(XROS_TARGET) XROS_ARENA=$(XROS_ARENA) XROS_ARENA_MB=$(XROS_ARENA_MB) $(if $(filter 1,$(XROS_XRIZER_FIXTURE)),XROS_AOT_OUTPUT_ROOT=$(abspath $(XROS_DIR))) tools/xros_aot.sh $(XROS_TESTS) \
 	  $(foreach t,$(XROS_ARENA_TESTS),build/xros/t/$(firstword $(subst :, ,$(t))).exe@$(XROS_ARENA)) \
 	  $(foreach t,$(XROS_FW_TESTS),fw:build/xros/t/$(firstword $(subst :, ,$(t))).exe) \
 	  $(foreach t,$(XROS_FWARENA_TESTS),fw:build/xros/t/$(firstword $(subst :, ,$(t))).exe@$(XROS_ARENA)) \
@@ -236,10 +267,23 @@ xros-aot-tests: build/vxrt-aot $(XROS_TESTS) $(if $(filter-out 0,$(XROS_BIG_FUNC
 	cp tests/shaders12/*.dxil build/xros/bundle/tests/shaders12/
 	@# (a game's local extras, never committed: build/xros/game_bundle/redist (the Visual C++ DLLs it loads), shadercache)
 	[ ! -d build/xros/game_bundle ] || cp -R build/xros/game_bundle/. build/xros/bundle/
+endif
 # The app (xros/app, xcodegen): signed for the headset with the team's automatic profile.
+XROS_FIXTURE_BUNDLE_ID ?= marimokodai.VXRuntimeHost.XrizerOffscreen
+XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(CURDIR)/../build/xros-host-static/latest/libklepton.a $(CURDIR)/../build/xros-host-static/latest/libxrizer.a -licucore -lz'
 xros-app: xros-lib xros-aot-tests
+ifeq ($(XROS_XRIZER_FIXTURE),1)
+	@test "$(XROS_CODE_SIGNING)" = NO || { echo 'simulator fixture requires XROS_CODE_SIGNING=NO' >&2; exit 2; }
+	mkdir -p $(XROS_DIR)/project
+	ln -sfn $(abspath xros/app/Sources) $(XROS_DIR)/project/Sources
+	ln -sfn $(abspath xros/app/embed_aot_frameworks.sh) $(XROS_DIR)/project/embed_aot_frameworks.sh
+	python3 -c 'from pathlib import Path; import sys; s=Path(sys.argv[1]).read_text(); old="../../build/xros/bundle"; assert s.count(old)==1; Path(sys.argv[2]).write_text(s.replace(old,sys.argv[3]))' xros/app/project.yml $(XROS_DIR)/project/project.yml $(abspath $(XROS_DIR)/bundle)
+	cd $(XROS_DIR)/project && xcodegen generate --quiet
+	xcodebuild -project $(XROS_DIR)/project/VXRuntimeHost.xcodeproj -scheme VXRuntimeHost -destination 'generic/platform=visionOS Simulator' -derivedDataPath $(XROS_DIR)/derived -quiet ARCHS=arm64 CODE_SIGNING_ALLOWED=NO VXRT_LIBDIR=$(CURDIR)/$(XROS_DIR) 'HEADER_SEARCH_PATHS=$(CURDIR)/src $(CURDIR)/translator' $(XROS_FIXTURE_APP_FLAGS) build
+else
 	cd xros/app && xcodegen generate --quiet
 	xcodebuild -project xros/app/VXRuntimeHost.xcodeproj -scheme VXRuntimeHost -destination 'generic/platform=$(if $(filter xrsimulator,$(XROS_SDK)),visionOS Simulator,visionOS)' -derivedDataPath $(XROS_DIR)/derived $(if $(filter 1,$(XROS_ALLOW_PROVISIONING)),-allowProvisioningUpdates) -quiet ARCHS=arm64 CODE_SIGNING_ALLOWED=$(XROS_CODE_SIGNING) VXRT_LIBDIR=$(CURDIR)/$(XROS_DIR) build
+endif
 	@ls -d $(XROS_DIR)/derived/Build/Products/Debug-$(XROS_SDK)/VXRuntimeHost.app
 .PHONY: xros-lib xros-aot-tests xros-app
 # Code that runs inside the vCPU guest (translator/guest.c): no calls, no globals, no stack protector.

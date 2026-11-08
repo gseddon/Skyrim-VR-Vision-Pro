@@ -113,11 +113,11 @@ The existing recipe selects `SIMCTL_CHILD_VXRT_XRIZER_XROS_FIXTURE=1` and `SIMCT
 
 ### Automated verification
 
-- [ ] New integrated app/guest/AOT/provider/toolchain/SDK/source/patch hashes and exact commands/statuses are recorded.
-- [ ] Guest initializes real static xrizer/provider; two spatially varying cropped eye pairs pass independent pixel/ID audit, four GPU copies complete, source leases balance12/12 and lifecycle1/1/1 drains; ExitProcess0.
-- [ ] Present positive AOT entries and zero fallback; 46 is the historical branch observation, not a number to manufacture or require if code legitimately changes.
-- [ ] Injected surface loss consumes STOPPING, drains outstanding work and refuses restart. Initial paused state is distinguished from active→paused loss.
-- [ ] Ordinary build resources remain unchanged; default Apple initialization remains fail-closed outside tested explicit modes.
+- [x] New integrated app/guest/AOT/provider/toolchain/SDK/source/patch hashes and exact commands/statuses are recorded.
+- [x] Guest initializes real static xrizer/provider; two spatially varying cropped eye pairs pass independent pixel/ID audit, four GPU copies complete, source leases balance12/12 and lifecycle1/1/1 drains; ExitProcess0.
+- [x] Present positive AOT entries and zero fallback; 46 is the historical branch observation, not a number to manufacture or require if code legitimately changes.
+- [x] Injected surface loss consumes STOPPING, drains outstanding work and refuses restart. Initial paused state is distinguished from active→paused loss.
+- [x] Ordinary build resources remain unchanged; default Apple initialization remains fail-closed outside tested explicit modes.
 
 Record mono drawable/offscreen output separately. Do not call injected loss an observed OS pause or provider pixel audit physical/drawable stereo.
 
@@ -143,8 +143,8 @@ Private receipts remain under C `build/xrizer-candidate-13/` and `build/xrizer-g
 
 B proceeds after integrated simulator verification while A/game work continues.
 
-- [ ] Trace actual `queryDrawables`, predicted presentation-time ARKit anchor, per-eye transforms/FOV, texture layout and GPU completion in the existing renderer; retain one compositor/pacing owner.
-- [ ] Prepare metre-scale world geometry and independently specified eye/projection goldens, origin/recenter, fresh/repeated frame/pose IDs, color/crop and reader lifetime checks. Preserve real tracking validity and stale-sample invalidation.
+- [x] Trace actual `queryDrawables`, predicted presentation-time ARKit anchor, per-eye transforms/FOV, texture layout and GPU completion in the existing renderer; retain one compositor/pacing owner. Census `c3d4e5f6`: dedicated layout, one 3840×2160 color texture, one depth texture, one view. The non-offscreen present path still requires two views and two equal color textures.
+- [ ] Prepare metre-scale world geometry and independently specified eye/projection goldens, origin/recenter, fresh/repeated frame/pose IDs, color/crop and reader lifetime checks. Preserve real tracking validity and stale-sample invalidation. Mac golden now covers the injected 64 mm eyes, ±π/4 fields, near 0.1 / far 100 projection, a 1 m origin shift, and rejection of a pose older than 1 s, newer than 0.1 s, or marked untracked. Fresh/repeated IDs, color/crop, reader lifetime, and a real tracked head remain open.
 - [ ] Connect actual host clock/tracking/session/input semantics through the provider. Owned injected controls precede hardware; no identity-head success substitutes for ARKit tracking.
 - [ ] Design Sense left/right identity, GameController controls and supported haptics plus ARKit accessory grip/aim tracking, timing, disconnect/reconnect and permissions. Verify current source/SDK capabilities before implementing; no hand anchor substituted for tracked controller pose.
 - [ ] Prepare target-device signed fixture, correct device AOT/static ABI artifacts, address-space/memory/resource probes, exact install/launch protocol and rollback preserving app data. Build-only results stay labelled.
@@ -176,3 +176,6 @@ Planning-document validation: inspect links and diff; no runtime regression reru
 - Parent tool checks: 15 startup and 11 pipeline Python tests passed; generated agent-file check reports 20 files current. These are tool/unit checks, not runtime/game acceptance.
 - 18:02 UTC: Candidate 14 built (`8af027a...`). Control 1 (owned null snapshot check) passed exit 0 (25 AOT entries, 0 fallback). Control 2 (joined guest stereo fixture) passed exit 0 (107 AOT entries, 0 fallback).
 - 18:03 UTC: Skyrim Probe 012 executed with `--trace-null-target` under parent orchestration. The previous null-vtable crash from probe 011 did not recur (demonstrating that single-part table sentinel lookup was the false crash trigger). Skyrim advanced through Compositor022, event polling, controller queries, and complete D3D11 render setup, reaching 3,493,721 AOT entries before strict stop at `binkw64.dll+0xe1de` (`0xf0000e1de`), an MMX decoder block (`pxor %mm5, %mm5`). 12-row ledger verified (`ff959c8...`). No exceptions or native signals.
+- 19:09 UTC: Terra B integrated `e86df82` then `896c7d2` onto `a1522f3` in `codex/terra-b-sim` and ran one offscreen simulator fixture, nonce `b1a7c0de`. Exit 0, frame/pose 1/1 and 2/2, four copies, leases 12/12, lifecycle 1/1/1, 46 AOT entries, zero fallback. Census `c3d4e5f6` measured one dedicated-layout drawable: one view, one 3840×2160 color texture, one depth texture. Receipts are in `VXRuntime/tests/xrizer_xros_fixture.md`.
+- 19:20 UTC: Mac optics golden passed. Injected eyes are 64 mm apart with ±π/4 fields. The game projection for near 0.1 m and far 100 m is recorded in `VXRuntime/tests/xrizer_xros_optics_golden.m`. Drawable far 10000 m stays separate.
+- 19:25 UTC: The same golden now checks a 1 m origin translation and the presenter age window: current from 0.1 s ahead through 1 s behind, rejected when older, further ahead, untracked, or non-finite. `native_vr_present.m` and the host pose matrix call that shared predicate. This is an injected control, not ARKit tracking. Exit 0. Output dir `VXRuntime/build/xros-optics-golden.l2Fxzz`.
