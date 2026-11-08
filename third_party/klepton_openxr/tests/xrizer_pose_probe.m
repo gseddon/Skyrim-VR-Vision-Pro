@@ -93,6 +93,11 @@ static XrResult view_configuration(void *ctx,KlNativeViewConfiguration *out){
         .recommendedImageRectHeight=8,.maxImageRectHeight=8,.recommendedSwapchainSampleCount=1,.maxSwapchainSampleCount=1};
     return XR_SUCCESS;
 }
+static XrResult view_geometry(void *ctx,KlNativeViewGeometry *out){
+    (void)ctx; *out={.version=KL_NATIVE_VIEW_GEOMETRY_VERSION,.struct_size=sizeof(*out),.geometry_id=1,
+        .head_from_eye={{{0,0,0,1},{-.032f,0,0}},{{0,0,0,1},{.032f,0,0}}},
+        .fov={{-.7f,.8f,.9f,-.6f},{-.73f,.82f,.9f,-.6f}}}; return XR_SUCCESS;
+}
 static XrResult poll_host(void *ctx,KlNativeSessionEvent *event){
     StereoHost *h=stereo(ctx);if(!h.event.type)return XR_EVENT_UNAVAILABLE;
     *event=h.event;h.event={}; if(focused_probe && event->type==KL_NATIVE_SESSION_VISIBLE) h.event={KL_NATIVE_SESSION_FOCUSED,h.clockBase+22}; return XR_SUCCESS;
@@ -202,12 +207,13 @@ int main(int argc,char **argv){
         void *ctx=(__bridge void *)h;
         KlNativeHost system={.version=1,.size=sizeof(system),.context=ctx,.hmd_available=available};
         KlNativeViewHost views={KL_NATIVE_VIEW_HOST_VERSION,sizeof(views),ctx,view_configuration};
+        KlNativeViewGeometryHost geometry={KL_NATIVE_VIEW_GEOMETRY_VERSION,sizeof(geometry),ctx,view_geometry};
         KlNativeSessionHost session={.version=KL_NATIVE_SESSION_HOST_VERSION,.struct_size=sizeof(session),.context=ctx,
             .poll_event=poll_host,.begin_session=begin_host,.end_session=end_host,.request_exit=request_exit};
         KlNativeFrameHost frames={KL_NATIVE_FRAME_HOST_VERSION,sizeof(frames),ctx,wait_host,publish_pair,cancel_host};
         KlNativeInputHost input={KL_NATIVE_INPUT_HOST_VERSION,sizeof(input),ctx,input_snapshot}; assert(kl_native_configure_input(&input)==XR_SUCCESS);
         sync={KL_NATIVE_IMAGE_SYNC_HOST_VERSION,sizeof(sync),ctx,wait_available,complete_writes};
-        assert(kl_native_configure(&system)==XR_SUCCESS && kl_native_configure_metal(&resources)==XR_SUCCESS && kl_native_configure_views(&views)==XR_SUCCESS);
+        assert(kl_native_configure(&system)==XR_SUCCESS && kl_native_configure_metal(&resources)==XR_SUCCESS && kl_native_configure_views(&views)==XR_SUCCESS && kl_native_configure_view_geometry(&geometry)==XR_SUCCESS);
         assert(kl_native_configure_session(&session)==XR_SUCCESS && kl_native_configure_image_sync(&sync)==XR_SUCCESS && kl_native_configure_frame(&frames)==XR_SUCCESS);
         NSMutableArray<SourceEye *> *sources=[NSMutableArray new];static unsigned tokens[2];
         for(unsigned eye=0;eye<2;++eye){
@@ -234,6 +240,17 @@ int main(int argc,char **argv){
         puts("actual System019 role slot18 before WaitGetPoses: both hands disconnected");
         error=-1;auto display=(vr::IVRSystem *)get_interface(core,vr::IVRSystem_Version,&error);assert(display && error==0);
         uint32_t w=0,hh=0;display->GetRecommendedRenderTargetSize(&w,&hh);assert(w==8 && hh==8);
+        for(unsigned eye=0;eye<2;++eye){
+            auto transform=display->GetEyeToHeadTransform((vr::EVREye)eye);
+            near(transform.m[0][3],eye?.032f:-.032f);
+            near(transform.m[0][0],1); near(transform.m[1][1],1); near(transform.m[2][2],1);
+            auto projection=display->GetProjectionMatrix((vr::EVREye)eye,.1f,100.f);
+            float left=tanf(eye?-.73f:-.7f), right=tanf(eye?.82f:.8f), up=tanf(.9f), down=tanf(-.6f);
+            near(projection.m[0][0],2/(right-left)); near(projection.m[1][1],2/(up-down));
+            near(projection.m[0][2],(right+left)/(right-left)); near(projection.m[1][2],(up+down)/(up-down));
+        }
+        assert(h.waits==0 && !h.outstanding && h.publishes==0 && h.cancels==0);
+        puts("actual native System019 eye transforms/projections before first Wait: injected static optics, zero frame tickets");
         if(pose_probe){
             puts("owned-apple-test: injected focus/head and disconnected controllers");
             float first=0, second=0; unsigned successes=0;
@@ -243,6 +260,13 @@ int main(int argc,char **argv){
                 printf("attempt=%u result=%d hmd-connected=%d valid=%d x=%f controllers=%d/%d input_samples=%u\n",n,(int)result,poses[0].bDeviceIsConnected,poses[0].bPoseIsValid,poses[0].mDeviceToAbsoluteTracking.m[0][3],poses[1].bDeviceIsConnected,poses[2].bDeviceIsConnected,input_samples);
                 if(result!=vr::VRCompositorError_None){compositor->PostPresentHandoff();break;}
                 ++successes;
+                if(n<=2) for(unsigned eye=0;eye<2;++eye){
+                    auto transform=display->GetEyeToHeadTransform((vr::EVREye)eye);
+                    near(transform.m[0][3],eye?.032f:-.032f);
+                    auto projection=display->GetProjectionMatrix((vr::EVREye)eye,.1f,100.f);
+                    float left=tanf(eye?-.73f:-.7f),right=tanf(eye?.82f:.8f),up=tanf(.9f),down=tanf(-.6f);
+                    near(projection.m[0][0],2/(right-left));near(projection.m[1][1],2/(up-down));
+                }
                 assert(!poses[1].bDeviceIsConnected && !poses[1].bPoseIsValid && !poses[2].bDeviceIsConnected && !poses[2].bPoseIsValid);
                 if(n==1)first=poses[0].mDeviceToAbsoluteTracking.m[0][3];
                 if(n==2){second=poses[0].mDeviceToAbsoluteTracking.m[0][3];assert(poses[0].bPoseIsValid && first!=second);}
@@ -279,7 +303,7 @@ int main(int argc,char **argv){
             cleanup(core);
             printf("diagnostic cleanup waits=%u cancels=%u input_samples=%u outstanding=%d begins/exits/ends=%u/%u/%u\n",h.waits,h.cancels,input_samples,h.outstanding!=NULL,h.begins,h.exits,h.ends);
             assert(h.begins==1 && h.exits==1 && h.ends==1 && !h.outstanding && h.waits==h.cancels && h.publishes==0 && h.sourceCopies==0);
-            assert(kl_native_configure_input(NULL)==XR_SUCCESS && kl_native_configure_frame(NULL)==XR_SUCCESS && kl_native_configure_image_sync(NULL)==XR_SUCCESS && kl_native_configure_session(NULL)==XR_SUCCESS);
+            assert(kl_native_configure_input(NULL)==XR_SUCCESS && kl_native_configure_view_geometry(NULL)==XR_SUCCESS && kl_native_configure_frame(NULL)==XR_SUCCESS && kl_native_configure_image_sync(NULL)==XR_SUCCESS && kl_native_configure_session(NULL)==XR_SUCCESS);
             assert(kl_native_configure_views(NULL)==XR_SUCCESS && kl_native_configure_metal(NULL)==XR_SUCCESS && kl_apple_metal_host_destroy(&resources)==XR_SUCCESS);
             assert(successes==4 && input_samples>0);
             return 0;
@@ -325,7 +349,7 @@ int main(int argc,char **argv){
         assert(sessions_created==1 && sessions_destroyed==1);
         if(failures)assert(!fail_wait_once && !fail_copy_once && !fail_write_once && !fail_publish_once &&
             copy_failures==1 && write_failures==1 && publish_failures==1 && image_acquires==2 && image_waits==3 && image_releases==3);
-        assert(kl_native_configure_frame(NULL)==XR_SUCCESS && kl_native_configure_image_sync(NULL)==XR_SUCCESS && kl_native_configure_session(NULL)==XR_SUCCESS);
+        assert(kl_native_configure_view_geometry(NULL)==XR_SUCCESS && kl_native_configure_frame(NULL)==XR_SUCCESS && kl_native_configure_image_sync(NULL)==XR_SUCCESS && kl_native_configure_session(NULL)==XR_SUCCESS);
         assert(kl_native_configure_views(NULL)==XR_SUCCESS && kl_native_configure_metal(NULL)==XR_SUCCESS && kl_apple_metal_host_destroy(&resources)==XR_SUCCESS);
         printf("actual xrizer native stereo: waits=%u publishes=%u completed_source_copies=%u source_leases=%u/%u lifecycle=%u/%u/%u; same session, zero pose-array counts\n",
             h.waits,h.publishes,h.sourceCopies,h.sourceAcquires,h.sourceReleases,h.begins,h.exits,h.ends);

@@ -192,6 +192,21 @@ impl System {
         let mut views = self.views.lock().unwrap();
         views.get_views(&session, self.openxr.display_time.get(), ty)
     }
+
+    fn optical_views(&self) -> Option<[xr::View; 2]> {
+        #[cfg(target_vendor = "apple")]
+        if !self.openxr.frame_observed.load(std::sync::atomic::Ordering::Acquire) {
+            match crate::apple_provider::static_views(&self.openxr.instance,self.openxr.system_id) {
+                Ok(mut views) => {
+                    // Match xrizer's existing parallel-view convention.
+                    for view in &mut views { view.pose.orientation=xr::Quaternionf::IDENTITY; }
+                    return Some(views);
+                }
+                Err(error) => { warn!("Static view geometry unavailable: {error}"); return None; }
+            }
+        }
+        Some(self.get_views(xr::ReferenceSpaceType::VIEW).views)
+    }
 }
 
 impl vr::IVRSystem026_Interface for System {
@@ -218,6 +233,10 @@ impl vr::IVRSystem026_Interface for System {
         let [mut left, mut right, mut up, mut down] = [0.0; 4];
         self.GetProjectionRaw(eye, &mut left, &mut right, &mut down, &mut up);
 
+        if !near_z.is_finite() || !far_z.is_finite() || far_z==near_z || right<=left || up<=down {
+            return Default::default();
+        }
+
         let idx = 1.0 / (right - left);
         let idy = 1.0 / (up - down);
         let idz = 1.0 / (far_z - near_z);
@@ -241,12 +260,12 @@ impl vr::IVRSystem026_Interface for System {
         top: *mut f32,
         bottom: *mut f32,
     ) {
-        let ty = self
-            .openxr
-            .session_data
-            .get()
-            .current_origin_as_reference_space();
-        let view = self.get_views(ty).views[eye as usize];
+        let Some(views) = self.optical_views() else {
+            unsafe { if let Some(p)=left.as_mut(){*p=0.0;} if let Some(p)=right.as_mut(){*p=0.0;}
+                if let Some(p)=top.as_mut(){*p=0.0;} if let Some(p)=bottom.as_mut(){*p=0.0;} }
+            return;
+        };
+        let view = views[eye as usize];
 
         // Top and bottom are flipped, for some reason
         unsafe {
@@ -279,7 +298,7 @@ impl vr::IVRSystem026_Interface for System {
         false
     }
     fn GetEyeToHeadTransform(&self, eye: vr::EVREye) -> vr::HmdMatrix34_t {
-        let views = self.get_views(xr::ReferenceSpaceType::VIEW).views;
+        let Some(views) = self.optical_views() else { return Default::default(); };
         let view = views[eye as usize];
         let view_rot = view.pose.orientation;
 
@@ -712,7 +731,10 @@ impl vr::IVRSystem026_Interface for System {
 
         match prop {
             vr::ETrackedDeviceProperty::UserIpdMeters_Float => {
-                let views = self.get_views(xr::ReferenceSpaceType::VIEW).views;
+                let Some(views) = self.optical_views() else {
+                    if let Some(error)=unsafe { error.as_mut() } { *error=vr::ETrackedPropertyError::UnknownProperty; }
+                    return 0.0;
+                };
                 views[1].pose.position.x - views[0].pose.position.x
             }
             vr::ETrackedDeviceProperty::DisplayFrequency_Float => self.openxr.get_refresh_rate(),

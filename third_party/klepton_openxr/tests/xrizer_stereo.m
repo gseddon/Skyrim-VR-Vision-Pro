@@ -80,6 +80,11 @@ static XrResult view_configuration(void *ctx,KlNativeViewConfiguration *out){
         .recommendedImageRectHeight=8,.maxImageRectHeight=8,.recommendedSwapchainSampleCount=1,.maxSwapchainSampleCount=1};
     return XR_SUCCESS;
 }
+static XrResult view_geometry(void *ctx,KlNativeViewGeometry *out){
+    (void)ctx; *out={.version=KL_NATIVE_VIEW_GEOMETRY_VERSION,.struct_size=sizeof(*out),.geometry_id=1,
+        .head_from_eye={{{0,0,0,1},{-.032f,0,0}},{{0,0,0,1},{.032f,0,0}}},
+        .fov={{-.7f,.8f,.9f,-.6f},{-.73f,.82f,.9f,-.6f}}};return XR_SUCCESS;
+}
 static XrResult poll_host(void *ctx,KlNativeSessionEvent *event){
     StereoHost *h=stereo(ctx);if(!h.event.type)return XR_EVENT_UNAVAILABLE;
     *event=h.event;h.event={};return XR_SUCCESS;
@@ -188,11 +193,12 @@ int main(int argc,char **argv){
         void *ctx=(__bridge void *)h;
         KlNativeHost system={.version=1,.size=sizeof(system),.context=ctx,.hmd_available=available};
         KlNativeViewHost views={KL_NATIVE_VIEW_HOST_VERSION,sizeof(views),ctx,view_configuration};
+        KlNativeViewGeometryHost geometry={KL_NATIVE_VIEW_GEOMETRY_VERSION,sizeof(geometry),ctx,view_geometry};
         KlNativeSessionHost session={.version=KL_NATIVE_SESSION_HOST_VERSION,.struct_size=sizeof(session),.context=ctx,
             .poll_event=poll_host,.begin_session=begin_host,.end_session=end_host,.request_exit=request_exit};
         KlNativeFrameHost frames={KL_NATIVE_FRAME_HOST_VERSION,sizeof(frames),ctx,wait_host,publish_pair,cancel_host};
         sync={KL_NATIVE_IMAGE_SYNC_HOST_VERSION,sizeof(sync),ctx,wait_available,complete_writes};
-        assert(kl_native_configure(&system)==XR_SUCCESS && kl_native_configure_metal(&resources)==XR_SUCCESS && kl_native_configure_views(&views)==XR_SUCCESS);
+        assert(kl_native_configure(&system)==XR_SUCCESS && kl_native_configure_metal(&resources)==XR_SUCCESS && kl_native_configure_views(&views)==XR_SUCCESS && kl_native_configure_view_geometry(&geometry)==XR_SUCCESS);
         assert(kl_native_configure_session(&session)==XR_SUCCESS && kl_native_configure_image_sync(&sync)==XR_SUCCESS && kl_native_configure_frame(&frames)==XR_SUCCESS);
         NSMutableArray<SourceEye *> *sources=[NSMutableArray new];static unsigned tokens[2];
         for(unsigned eye=0;eye<2;++eye){
@@ -223,7 +229,7 @@ int main(int argc,char **argv){
                 h.sourceAcquires==0 && h.sourceCopies==0);
             cleanup(core);assert(h.begins==1 && h.exits==1 && h.ends==1 && sessions_created==1 && sessions_destroyed==1);
             assert(kl_native_configure_frame(NULL)==XR_SUCCESS && kl_native_configure_image_sync(NULL)==XR_SUCCESS && kl_native_configure_session(NULL)==XR_SUCCESS);
-            assert(kl_native_configure_views(NULL)==XR_SUCCESS && kl_native_configure_metal(NULL)==XR_SUCCESS && kl_apple_metal_host_destroy(&resources)==XR_SUCCESS);
+            assert(kl_native_configure_view_geometry(NULL)==XR_SUCCESS && kl_native_configure_views(NULL)==XR_SUCCESS && kl_native_configure_metal(NULL)==XR_SUCCESS && kl_apple_metal_host_destroy(&resources)==XR_SUCCESS);
             puts("nonzero caller pose arrays honestly refused before any frame ticket; clean native teardown; pose/action/controller support remains unavailable");
             (void)CFBridgingRetain(h);
             return 0; /* Verifies honest refusal only, never pose support. */
@@ -270,7 +276,7 @@ int main(int argc,char **argv){
         if(failures)assert(!fail_wait_once && !fail_copy_once && !fail_write_once && !fail_publish_once &&
             copy_failures==1 && write_failures==1 && publish_failures==1 && image_acquires==2 && image_waits==3 && image_releases==3);
         assert(kl_native_configure_frame(NULL)==XR_SUCCESS && kl_native_configure_image_sync(NULL)==XR_SUCCESS && kl_native_configure_session(NULL)==XR_SUCCESS);
-        assert(kl_native_configure_views(NULL)==XR_SUCCESS && kl_native_configure_metal(NULL)==XR_SUCCESS && kl_apple_metal_host_destroy(&resources)==XR_SUCCESS);
+        assert(kl_native_configure_view_geometry(NULL)==XR_SUCCESS && kl_native_configure_views(NULL)==XR_SUCCESS && kl_native_configure_metal(NULL)==XR_SUCCESS && kl_apple_metal_host_destroy(&resources)==XR_SUCCESS);
         printf("actual xrizer native stereo: waits=%u publishes=%u completed_source_copies=%u source_leases=%u/%u lifecycle=%u/%u/%u; same session, zero pose-array counts\n",
             h.waits,h.publishes,h.sourceCopies,h.sourceAcquires,h.sourceReleases,h.begins,h.exits,h.ends);
         puts("two real GPU eye pairs and native queue pixels/IDs/poses/FOV/repeats pass; owned native source tokens, injected tracking only; no Windows guest, D3D11 source, nonzero pose-array/controller, headset or Skyrim claim");

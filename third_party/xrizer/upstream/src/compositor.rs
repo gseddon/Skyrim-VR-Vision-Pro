@@ -120,6 +120,8 @@ impl Compositor {
 
         let Some((display_time, display_period)) = ctrl.with_any_graphics_mut::<wait_frame>(()) else { return false; };
         self.openxr.display_time.set(display_time);
+        #[cfg(target_vendor = "apple")]
+        self.openxr.frame_observed.store(true, Ordering::Release);
         self.openxr
             .display_period_nanos
             .store(display_period, Ordering::Relaxed);

@@ -42,6 +42,8 @@ pub struct OpenXrData<C: Compositor> {
     pub system_id: xr::SystemId,
     pub session_data: SessionReadGuard,
     pub display_time: AtomicXrTime,
+    #[cfg(target_vendor = "apple")]
+    pub frame_observed: std::sync::atomic::AtomicBool,
     pub display_period_nanos: AtomicI64,
     pub enabled_extensions: xr::ExtensionSet,
     #[cfg(target_vendor = "apple")]
@@ -202,6 +204,7 @@ impl<C: Compositor> OpenXrData<C> {
             if views.len() != 2 || views.iter().any(|v| v.recommended_image_rect_width == 0 || v.recommended_image_rect_height == 0) {
                 return Err(InitError::RequiredViewConfiguration(xr::sys::Result::ERROR_RUNTIME_FAILURE));
             }
+            crate::apple_provider::static_views(&instance,system_id).map_err(InitError::RequiredViewConfiguration)?;
         }
 
         let (initial_session, initial_waiter, initial_stream) = SessionData::new(
@@ -226,6 +229,8 @@ impl<C: Compositor> OpenXrData<C> {
             system_id,
             session_data,
             display_time: AtomicXrTime(display_time.into()), // This will get replaced on the first WaitGetPoses
+            #[cfg(target_vendor = "apple")]
+            frame_observed: std::sync::atomic::AtomicBool::new(false),
             display_period_nanos: 11111111.into(), // This will get replaced on the first WaitGetPoses
             enabled_extensions: exts,
             #[cfg(target_vendor = "apple")]

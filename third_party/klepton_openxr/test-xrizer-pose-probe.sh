@@ -2,7 +2,7 @@
 set -eu
 : "${XRIZER_RUST_ROOT:?set XRIZER_RUST_ROOT to repository-local toolchain directory}"
 mode=${XRIZER_FRONTEND_MODE:-missing-views}
-case "$mode" in missing-views|views-no-ready|ready-bootstrap) ;; *) echo 'unsupported XRIZER_FRONTEND_MODE' >&2;exit 2;;esac
+case "$mode" in missing-views|views-no-ready|ready-bootstrap|missing-geometry|invalid-geometry|geometry-error) ;; *) echo 'unsupported XRIZER_FRONTEND_MODE' >&2;exit 2;;esac
 fixture=${XRIZER_NATIVE_FIXTURE:-stereo}
 case "$fixture" in frontend|stereo) ;; *) echo 'unsupported XRIZER_NATIVE_FIXTURE' >&2;exit 2;;esac
 if [ "$fixture" = stereo ];then

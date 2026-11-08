@@ -16,6 +16,7 @@ static unsigned view_calls, session_polls, session_begins, session_ends, exit_re
 static XrResult last_view_result;
 static unsigned view_configurations;
 static int ready_bootstrap;
+static int geometry_mode;
 static KlNativeSessionEvent injected_event;
 static XrResult view_configuration(void *ctx,KlNativeViewConfiguration *out) {
     (void)ctx; ++view_configurations;
@@ -23,6 +24,14 @@ static XrResult view_configuration(void *ctx,KlNativeViewConfiguration *out) {
     for(unsigned i=0;i<2;++i)out->view[i]=(XrViewConfigurationView){.type=XR_TYPE_VIEW_CONFIGURATION_VIEW,
         .recommendedImageRectWidth=8,.maxImageRectWidth=8,.recommendedImageRectHeight=8,.maxImageRectHeight=8,
         .recommendedSwapchainSampleCount=1,.maxSwapchainSampleCount=1};
+    return XR_SUCCESS;
+}
+static XrResult view_geometry(void *ctx,KlNativeViewGeometry *out) {
+    (void)ctx; if(geometry_mode==2)return XR_ERROR_RUNTIME_FAILURE;
+    *out=(KlNativeViewGeometry){.version=KL_NATIVE_VIEW_GEOMETRY_VERSION,.struct_size=sizeof(*out),.geometry_id=1,
+        .head_from_eye={{{0,0,0,1},{-.032f,0,0}},{{0,0,0,1},{.032f,0,0}}},
+        .fov={{-.7f,.8f,.9f,-.6f},{-.73f,.82f,.9f,-.6f}}};
+    if(geometry_mode==1)out->head_from_eye[0].orientation.w=0;
     return XR_SUCCESS;
 }
 static XrResult XRAPI_CALL traced_views(XrInstance instance,XrSystemId system,XrViewConfigurationType type,
@@ -73,7 +82,10 @@ int main(int argc,char **argv) {
     /* The runner confines xrizer's logger; direct artifact execution must do so too. */
     assert(getenv("XDG_STATE_HOME") && getenv("XDG_CONFIG_HOME"));
     ready_bootstrap=!strcmp(argv[2],"ready-bootstrap");
-    const int have_views=ready_bootstrap || !strcmp(argv[2],"views-no-ready");
+    const int missing_geometry=!strcmp(argv[2],"missing-geometry");
+    geometry_mode=!strcmp(argv[2],"invalid-geometry")?1:!strcmp(argv[2],"geometry-error")?2:0;
+    const int geometry_failure=missing_geometry || geometry_mode;
+    const int have_views=ready_bootstrap || !strcmp(argv[2],"views-no-ready") || geometry_failure;
     if(!have_views && strcmp(argv[2],"missing-views"))return 2;
     setbuf(stdout,NULL);
     @autoreleasepool {
@@ -97,6 +109,8 @@ int main(int argc,char **argv) {
             metal.release_image(metal.context,lease);
             KlNativeViewHost views={KL_NATIVE_VIEW_HOST_VERSION,sizeof(views),NULL,view_configuration};
             assert(kl_native_configure_views(&views)==XR_SUCCESS);
+            if(!missing_geometry) { KlNativeViewGeometryHost geometry={KL_NATIVE_VIEW_GEOMETRY_VERSION,sizeof(geometry),NULL,view_geometry};
+                assert(kl_native_configure_view_geometry(&geometry)==XR_SUCCESS); }
         }
         void *library=dlopen(argv[1],RTLD_NOW|RTLD_LOCAL);
         if(!library){fprintf(stderr,"%s\n",dlerror());return 1;}
@@ -133,13 +147,13 @@ int main(int argc,char **argv) {
             printf("actual native System019 dimensions=%ux%u; Compositor022 acquired; Cleanup request_exit=%u end_ack=%u\n",width,height,exit_requests,session_ends);
         } else {
             assert(result==150);
-            if(have_views)assert(view_calls==2 && last_view_result==XR_SUCCESS && view_configurations==2 && session_polls==1);
+            if(have_views)assert(view_calls==2 && last_view_result==XR_SUCCESS && view_configurations==2 && session_polls==(geometry_failure?0:1));
             else assert(view_calls==1 && last_view_result==XR_ERROR_FUNCTION_UNSUPPORTED && session_polls==0);
             assert(session_begins==0);
         }
         assert(frame_waits==0 && acquired==0 && copies==0);
         assert(kl_native_configure_frame(NULL)==XR_SUCCESS && kl_native_configure_session(NULL)==XR_SUCCESS);
-        assert(kl_native_configure_views(NULL)==XR_SUCCESS);
+        assert(kl_native_configure_view_geometry(NULL)==XR_SUCCESS && kl_native_configure_views(NULL)==XR_SUCCESS);
         assert(kl_native_configure_image_sync(NULL)==XR_SUCCESS && kl_native_configure_metal(NULL)==XR_SUCCESS);
         assert(kl_apple_metal_host_destroy(&metal)==XR_SUCCESS);
         puts(ready_bootstrap ? "xrizer actual native frontend: Init, System019 dimensions, Compositor022 factory and real host-acknowledged Cleanup pass; no frame, guest ABI, headset or physical tracking claim" :
