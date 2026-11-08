@@ -33,6 +33,25 @@ static void fill(unsigned frame,unsigned eye) {
         p[3]=255;
     }
 }
+static void near_value(float got,float expected) {
+    float d=got-expected; check(d > -0.00003f && d < 0.00003f,52);
+}
+static void geometry(vr::IVRSystem *system) {
+    for (unsigned eye=0;eye<2;++eye) {
+        struct { unsigned long long before; vr::HmdMatrix34_t value; unsigned long long after; }
+            transform={0x123456789abcdef0ull,{},0xfedcba9876543210ull};
+        struct { unsigned long long before; vr::HmdMatrix44_t value; unsigned long long after; }
+            projection={0x123456789abcdef0ull,{},0xfedcba9876543210ull};
+        transform.value=system->GetEyeToHeadTransform((vr::EVREye)eye);
+        projection.value=system->GetProjectionMatrix((vr::EVREye)eye,.25f,7.5f);
+        check(transform.before==0x123456789abcdef0ull && transform.after==0xfedcba9876543210ull &&
+              projection.before==0x123456789abcdef0ull && projection.after==0xfedcba9876543210ull,53);
+        const float expected34[12]={1,0,0,eye?.032f:-.032f,0,1,0,0,0,0,1,0};
+        const float expected44[16]={1,0,0,0,0,1,0,0,0,0,-1.034482759f,-.258620690f,0,0,-1,0};
+        for (unsigned i=0;i<12;++i) near_value((&transform.value.m[0][0])[i],expected34[i]);
+        for (unsigned i=0;i<16;++i) near_value((&projection.value.m[0][0])[i],expected44[i]);
+    }
+}
 extern "C" void mainCRTStartup() {
     void *module=LoadLibraryA("openvr_api.dll");
     void *audit=LoadLibraryA("vxrt_xrizer_dev_audit.dll");
@@ -43,23 +62,13 @@ extern "C" void mainCRTStartup() {
     auto version=(unsigned char (*)(const char *))GetProcAddress(module,"VR_IsInterfaceVersionValid");
     auto description=(const char *(*)(int))GetProcAddress(module,"VR_GetVRInitErrorAsEnglishDescription");
     auto verify=(int (*)(unsigned))GetProcAddress(audit,"VXRT_DevAuditCheck");
+    auto preframe=(int (*)())GetProcAddress(audit,"VXRT_DevAuditPreFrame");
     auto finish=(int (*)())GetProcAddress(audit,"VXRT_DevAuditFinish");
     void *d3d=LoadLibraryA("d3d11.dll"); auto create=(create_device_fn)GetProcAddress(d3d,"D3D11CreateDevice");
-    check(module && audit && init && get && shutdown && token && version && description && verify && finish && create,1);
+    check(module && audit && init && get && shutdown && token && version && description && verify && preframe && finish && create,1);
     int error=-1; unsigned initial=init(&error,1,nullptr); check(initial!=0 && !error && token()==initial,2);
     check(version("IVRSystem_019") && !version("IVRSystem_999"),3);
     check(!get("IVRSystem_999",&error) && error==106 && description(error) && description(error)[0],32);
-    auto comp=(vr::IVRCompositor *)get(vr::IVRCompositor_Version,&error);
-    check(comp && !error,4);
-    struct { unsigned long long before; vr::TrackedDevicePose_t values[3]; unsigned long long after; }
-        standing={0x123456789abcdef0ull,{},0xfedcba9876543210ull};
-    check(comp->WaitGetPoses(standing.values,3,nullptr,0)==0,40);
-    check(standing.before==0x123456789abcdef0ull && standing.after==0xfedcba9876543210ull,41);
-    check(!standing.values[0].bPoseIsValid,42);
-    vr::TrackedDevicePose_t standing_last={};
-    check(comp->GetLastPoseForTrackedDeviceIndex(0,&standing_last,nullptr)==0 && !standing_last.bPoseIsValid,43);
-    comp->PostPresentHandoff();
-    comp->SetTrackingSpace(vr::TrackingUniverseSeated);
     auto system=(vr::IVRSystem *)get(vr::IVRSystem_Version,&error);
     check(system && !error,26);
     vr::ETrackedPropertyError property_error=(vr::ETrackedPropertyError)-1;
@@ -79,6 +88,19 @@ extern "C" void mainCRTStartup() {
           property_error==vr::TrackedProp_UnknownProperty && tracking_name[0]=='?',49);
     check(system->GetStringTrackedDeviceProperty(17,vr::Prop_SerialNumber_String,property_value,10,&property_error)==0 &&
           property_error==vr::TrackedProp_InvalidDevice,50);
+    geometry(system); // Actual game ordering: property query then geometry before Wait.
+    check(preframe()==0,54);
+    auto comp=(vr::IVRCompositor *)get(vr::IVRCompositor_Version,&error);
+    check(comp && !error,4);
+    struct { unsigned long long before; vr::TrackedDevicePose_t values[3]; unsigned long long after; }
+        standing={0x123456789abcdef0ull,{},0xfedcba9876543210ull};
+    check(comp->WaitGetPoses(standing.values,3,nullptr,0)==0,40);
+    check(standing.before==0x123456789abcdef0ull && standing.after==0xfedcba9876543210ull,41);
+    check(!standing.values[0].bPoseIsValid,42);
+    vr::TrackedDevicePose_t standing_last={};
+    check(comp->GetLastPoseForTrackedDeviceIndex(0,&standing_last,nullptr)==0 && !standing_last.bPoseIsValid,43);
+    comp->PostPresentHandoff();
+    comp->SetTrackingSpace(vr::TrackingUniverseSeated);
     check(system->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand)==vr::k_unTrackedDeviceIndexInvalid &&
           system->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_RightHand)==vr::k_unTrackedDeviceIndexInvalid,27);
     void *device=nullptr,*context=nullptr; check(create(nullptr,1,nullptr,0,nullptr,0,7,&device,nullptr,&context)==0 && device && context,5);
@@ -104,6 +126,7 @@ extern "C" void mainCRTStartup() {
         struct { unsigned long long before; vr::TrackedDevicePose_t values[3]; unsigned long long after; }
             poses={0x123456789abcdef0ull,{},0xfedcba9876543210ull};
         check(comp->WaitGetPoses(poses.values,3,nullptr,0)==0,7);
+        geometry(system);
         check(poses.before==0x123456789abcdef0ull,28);
         check(poses.after==0xfedcba9876543210ull,33);
         check(poses.values[0].bDeviceIsConnected,34); check(poses.values[0].bPoseIsValid,35);
