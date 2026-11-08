@@ -97,6 +97,15 @@ static WINAPI int WSAStartup(uint16_t version, uint8_t *data) {
 static WINAPI int WSACleanup(void) { return 0; }
 static WINAPI int WSAGetLastError(void) { return (int)vx_get_last_error(); }
 static WINAPI void WSASetLastError(int e) { vx_set_last_error((DWORD)e); }
+// Makes the socket nonblocking and returns 0. FD_* window messages are not posted: there is no async message thread.
+static WINAPI int WSAAsyncSelect(SOCKET s, void *wnd, uint32_t msg, int32_t event) {
+    (void)wnd; (void)msg; (void)event;
+    if (s > 0x7fffffff) { WSASetLastError(10038); return SOCKET_ERROR; }
+    int fl = fcntl((int)s, F_GETFL, 0);
+    if (fl < 0) { WSASetLastError(10038); return SOCKET_ERROR; }
+    if (fcntl((int)s, F_SETFL, fl | O_NONBLOCK) < 0) { WSASetLastError(10022); return SOCKET_ERROR; }
+    return 0;
+}
 
 // ---- sockets -----------------------------------------------------------------------------------------------------------------
 static WINAPI SOCKET ws_socket(int af, int type, int protocol) {
@@ -862,7 +871,7 @@ static const vx_export ws2[] = {
     NET("sendto", ws_sendto), NET("recvfrom", ws_recvfrom), NET("shutdown", ws_shutdown), NET("getsockname", ws_getsockname),
     NET("getpeername", ws_getpeername), VX_EXPORT(WSASend), VX_EXPORT(WSARecv), VX_EXPORT(WSASendTo), VX_EXPORT(WSASendMsg), VX_EXPORT(WSARecvFrom),
     VX_EXPORT(WSAIoctl), VX_EXPORT(GetAcceptExSockaddrs), NET("#1142", GetAcceptExSockaddrs), VX_EXPORT(AcceptEx), NET("#1141", AcceptEx),
-    VX_EXPORT(WSAEventSelect), VX_EXPORT(WSAEnumNetworkEvents), VX_EXPORT(WSACreateEvent), VX_EXPORT(WSACloseEvent), VX_EXPORT(WSASetEvent),
+    VX_EXPORT(WSAAsyncSelect), VX_EXPORT(WSAEventSelect), VX_EXPORT(WSAEnumNetworkEvents), VX_EXPORT(WSACreateEvent), VX_EXPORT(WSACloseEvent), VX_EXPORT(WSASetEvent),
     VX_EXPORT(WSAResetEvent), VX_EXPORT(WSAWaitForMultipleEvents), NET("setsockopt", ws_setsockopt),
     NET("getsockopt", ws_getsockopt), VX_EXPORT(ioctlsocket), NET("select", ws_select), VX_EXPORT(__WSAFDIsSet),
     NET("htons", ws_htons), NET("ntohs", ws_ntohs), NET("htonl", ws_htonl), NET("ntohl", ws_ntohl),
@@ -876,7 +885,7 @@ static const vx_export ws2[] = {
     NET("#11", ws_inet_addr), NET("#12", ws_inet_ntoa), NET("#13", ws_listen), NET("#14", ws_ntohl), NET("#15", ws_ntohs),
     NET("#16", ws_recv), NET("#17", ws_recvfrom), NET("#18", ws_select), NET("#19", ws_send), NET("#20", ws_sendto),
     NET("#21", ws_setsockopt), NET("#22", ws_shutdown), NET("#23", ws_socket), NET("#52", ws_gethostbyname),
-    NET("#57", ws_gethostname), NET("#111", WSAGetLastError), NET("#112", WSASetLastError), NET("#115", WSAStartup),
+    NET("#57", ws_gethostname), NET("#101", WSAAsyncSelect), NET("#111", WSAGetLastError), NET("#112", WSASetLastError), NET("#115", WSAStartup),
     NET("#116", WSACleanup), NET("#151", __WSAFDIsSet),
 };
 

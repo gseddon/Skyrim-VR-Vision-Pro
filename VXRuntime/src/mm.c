@@ -14,6 +14,10 @@ static WINAPI uint32_t timeGetDevCaps(uint32_t *caps, uint32_t size) { if (size 
 #define JOYERR_UNPLUGGED 167
 static WINAPI uint32_t waveOutGetNumDevs(void) { return 0; }
 static WINAPI uint32_t waveOutOpen(void *h, uint32_t dev, const void *fmt, uintptr_t cb, uintptr_t inst, DWORD flags) { (void)h; (void)dev; (void)fmt; (void)cb; (void)inst; (void)flags; return MMSYSERR_NODRIVER; }
+static WINAPI uint32_t waveOutSetVolume(void *hwo, DWORD volume) {
+    (void)volume;
+    return hwo ? 5 : MMSYSERR_NODRIVER;                            // no device: NULL is the preferred device, any other handle was never opened
+}
 static WINAPI uint32_t waveInGetNumDevs(void) { return 0; }
 static WINAPI uint32_t midiOutGetNumDevs(void) { return 0; }
 static WINAPI uint32_t joyGetNumDevs(void) { return 16; }
@@ -26,7 +30,7 @@ static WINAPI BOOL PlaySoundW(const WCHAR *s, HANDLE m, DWORD f) { (void)s; (voi
 
 static const vx_export winmm[] = {
     VX_EXPORT(timeGetTime), VX_EXPORT(timeBeginPeriod), VX_EXPORT(timeEndPeriod), VX_EXPORT(timeGetDevCaps),
-    VX_EXPORT(waveOutGetNumDevs), VX_EXPORT(waveOutOpen), VX_EXPORT(waveInGetNumDevs), VX_EXPORT(midiOutGetNumDevs),
+    VX_EXPORT(waveOutGetNumDevs), VX_EXPORT(waveOutOpen), VX_EXPORT(waveOutSetVolume), VX_EXPORT(waveInGetNumDevs), VX_EXPORT(midiOutGetNumDevs),
     VX_EXPORT(joyGetNumDevs), VX_EXPORT(joyGetPosEx), VX_EXPORT(joyGetPos), VX_EXPORT(joyGetDevCapsA), VX_EXPORT(joyGetDevCapsW),
     VX_EXPORT(PlaySoundA), VX_EXPORT(PlaySoundW),
 };

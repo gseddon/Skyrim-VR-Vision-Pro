@@ -15,6 +15,11 @@
 #include <unistd.h>
 #include <wchar.h>
 #include <wctype.h>
+#if !VX_XROS
+#include <sys/socket.h>
+#include <ifaddrs.h>
+#include <net/if_dl.h>
+#endif
 
 #define INVALID_HANDLE ((HANDLE)(intptr_t)-1)
 
@@ -173,6 +178,73 @@ static WINAPI LONG UuidCreate(UUID *u) {
     u->d3 = (uint16_t)((u->d3 & 0x0fff) | 0x4000);                 // version 4
     u->d4[0] = (uint8_t)((u->d4[0] & 0x3f) | 0x80);
     return 0;
+}
+// UuidCreateSequential: a version-1 UUID (RFC 4122). The time is 100 ns ticks since 1582-10-15.
+// A unicast adapter address makes it globally unique for this machine (RPC_S_OK). With none, the
+// node is random and marked multicast, and the status is RPC_S_UUID_LOCAL_ONLY. A null output is
+// RPC_S_INVALID_ARG. The clock sequence is fixed for this process; a repeated or backwards clock
+// still advances the timestamp so successive values stay ordered.
+static pthread_mutex_t g_uuid_seq_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_uuid_seq_clock, g_uuid_seq_last;
+static uint8_t g_uuid_seq_node[6];
+static int g_uuid_seq_state;
+static uint64_t uuid_seq_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (uint64_t)ts.tv_sec * 10000000ull + (uint64_t)ts.tv_nsec / 100ull + 0x01B21DD213814000ull;
+}
+static int uuid_seq_node(uint8_t node[6]) {
+#if VX_XROS
+    (void)node;
+    return 0;
+#else
+    struct ifaddrs *list = NULL;
+    if (getifaddrs(&list)) return 0;
+    int found = 0;
+    for (struct ifaddrs *a = list; a && !found; a = a->ifa_next) {
+        if (!a->ifa_addr || a->ifa_addr->sa_family != AF_LINK) continue;
+        const struct sockaddr_dl *dl = (const struct sockaddr_dl *)a->ifa_addr;
+        if (dl->sdl_alen != 6) continue;
+        const uint8_t *mac = (const uint8_t *)LLADDR(dl);
+        int zero = 1;
+        for (int i = 0; i < 6; i++) if (mac[i]) zero = 0;
+        if (zero || (mac[0] & 1)) continue;
+        memcpy(node, mac, 6);
+        found = 1;
+    }
+    freeifaddrs(list);
+    return found;
+#endif
+}
+static WINAPI LONG UuidCreateSequential(UUID *u) {
+    if (!u) return 87;
+    pthread_mutex_lock(&g_uuid_seq_lock);
+    if (!g_uuid_seq_state) {
+        uint16_t clock;
+        arc4random_buf(&clock, sizeof clock);
+        g_uuid_seq_clock = clock & 0x3fffu;
+        if (uuid_seq_node(g_uuid_seq_node)) g_uuid_seq_state = 1;
+        else {
+            arc4random_buf(g_uuid_seq_node, sizeof g_uuid_seq_node);
+            g_uuid_seq_node[0] |= 1;
+            g_uuid_seq_state = 2;
+        }
+    }
+    uint64_t t = uuid_seq_now();
+    if (t <= g_uuid_seq_last) t = g_uuid_seq_last + 1;
+    g_uuid_seq_last = t;
+    uint64_t clock = g_uuid_seq_clock;
+    int local = g_uuid_seq_state == 2;
+    uint8_t node[6];
+    memcpy(node, g_uuid_seq_node, sizeof node);
+    pthread_mutex_unlock(&g_uuid_seq_lock);
+    u->d1 = (DWORD)t;
+    u->d2 = (uint16_t)(t >> 32);
+    u->d3 = (uint16_t)(((t >> 48) & 0x0fffu) | 0x1000u);
+    u->d4[0] = (uint8_t)(((clock >> 8) & 0x3fu) | 0x80u);
+    u->d4[1] = (uint8_t)clock;
+    memcpy(u->d4 + 2, node, 6);
+    return local ? 1824 : 0;
 }
 static WINAPI LONG UuidToStringA(const UUID *u, char **out) {
     char *s = malloc(37);
@@ -697,7 +769,7 @@ static const vx_export advapi[] = {
     VX_EXPORT(ReportEventW), VX_EXPORT(EventSetInformation), VX_EXPORT(RegConnectRegistryA),
     VX_EXPORT(EventWriteString),
 };
-static const vx_export rpcrt4[] = { VX_EXPORT(UuidCreate), VX_EXPORT(UuidToStringA), VX_EXPORT(UuidFromStringA), VX_EXPORT(RpcStringFreeA) };
+static const vx_export rpcrt4[] = { VX_EXPORT(UuidCreate), VX_EXPORT(UuidCreateSequential), VX_EXPORT(UuidToStringA), VX_EXPORT(UuidFromStringA), VX_EXPORT(RpcStringFreeA) };
 static const vx_export shell32[] = {
     VX_EXPORT(CommandLineToArgvW), VX_EXPORT(SHGetSpecialFolderLocation), VX_EXPORT(SHGetPathFromIDListW), VX_EXPORT(SHGetPathFromIDListA),
     VX_EXPORT(SHGetFileInfoA), VX_EXPORT(DragQueryFileA), VX_EXPORT(SetCurrentProcessExplicitAppUserModelID),   // (Shell_NotifyIcon: tray.m)

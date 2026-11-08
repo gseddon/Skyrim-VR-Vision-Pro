@@ -118,6 +118,26 @@ aot-callback-depth-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/recomp/aot_c
 
 .PHONY: aot-callback-depth-check
 
+build/recomp/aot_uuid_sequential.exe: tests/aot_uuid_sequential.c
+	@mkdir -p build/recomp
+	$(MINGW) -O1 -nostdlib -e mainCRTStartup -o $@ $< -lkernel32 -lrpcrt4
+
+aot-uuid-sequential-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/recomp/aot_uuid_sequential.exe
+	tools/aot_build.sh build/recomp/aot_uuid_sequential.exe build/aot-uuid-sequential
+	python3 tests/aot_uuid_sequential_check.py --runtime $(VXRT_ARM64_TARGET) --exe build/recomp/aot_uuid_sequential.exe --aot-dir build/aot-uuid-sequential
+
+.PHONY: aot-uuid-sequential-check
+
+build/recomp/aot_loaded_imports.exe: tests/aot_loaded_imports.c
+	@mkdir -p build/recomp
+	$(MINGW) -O1 -nostdlib -e mainCRTStartup -o $@ $< -lkernel32
+
+aot-loaded-imports-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/recomp/aot_loaded_imports.exe
+	tools/aot_build.sh build/recomp/aot_loaded_imports.exe build/aot-loaded-imports
+	python3 tests/aot_loaded_imports_check.py --runtime $(VXRT_ARM64_TARGET) --exe build/recomp/aot_loaded_imports.exe --aot-dir build/aot-loaded-imports
+
+.PHONY: aot-loaded-imports-check
+
 build/recomp/openvr-init-check-fixture/openvr_api.dll: tests/aot_openvr_init_dll.c
 	@mkdir -p build/recomp/openvr-init-check-fixture
 	$(MINGW) -O1 -nostdlib -shared -e fixtureDllMain -Wl,--image-base,0xf06000000,--out-implib,build/recomp/openvr-init-check-fixture/libopenvr_owned.a -o $@ $< -lkernel32
