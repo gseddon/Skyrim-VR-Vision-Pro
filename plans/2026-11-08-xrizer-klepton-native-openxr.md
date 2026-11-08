@@ -5,6 +5,36 @@ Current source checkpoint: `gseddon/Skyrim-VR-Vision-Pro`, `codex/standalone-imp
 
 8 November 2026. Implementation plan after source research. **User confirmed existing Apple host + adapted Klepton core; Sony PS VR2 Sense controllers first. Phase A started.** Existing AOT/compiler work continues independently.
 
+## Current supervised increment
+
+The current work order and source checkout are in the main implementation plan
+and `MIGRATION.md`; older extraction checkpoints below remain historical evidence.
+The pinned source stays in the new standalone repository.
+
+- Owned MSVC Windows guest through real xrizer/provider, normal Mac development
+  host and D3D11-to-Metal passes two pixel/crop pairs, nonzero injected poses,
+  pre-frame optics, property/DXGI/mesh/event ABI checks and balanced shutdown:
+  107 strict-AOT entries, zero fallback. Actual Skyrim now reaches native
+  WaitGetPoses/event polling; its next observed failure is a separate Bink AOT
+  block gap, not evidence of a complete XR/game implementation.
+- Static Apple host adapter passes an actual native Mac Metal fixture with two
+  stereo pairs, held/repeat reader leases, two no-render zero-layer cycles and
+  clean drain (B commit `ed71003`, fixture `xFA4vt`). The no-render fix prevents
+  acquiring a new swapchain image for a frame whose should_render is false.
+- `xros-xrizer-static-probe` (B `5d97652`) builds and links the actual owned-test
+  xrizer archive, provider and adapter for arm64 visionOS simulator and checks
+  required static symbols/platform. This is build-only evidence.
+- Terra B is joining those static components and the actual guest wrappers to
+  an explicit simulator fixture mode in the existing app/LayerRenderer loop.
+  Gate guest initialization on static registration plus actual drawable optics;
+  add presenter source/lease integration rather than treating mailbox output as
+  display. No Mac dlopen path or second compositor loop.
+- Raw Sony Sense collection/mapping controls and unsigned Apple app builds pass;
+  connected provider input, actual simulator XR execution, physical tracking,
+  physical presentation and human playability remain unchecked. Default Apple
+  initialization stays unavailable outside explicit owned test modes.
+
+
 ## Outcome and architecture
 
 Run Skyrim's OpenVR calls through native Darwin xrizer into an Apple-compatible OpenXR implementation adapted from Klepton, then local Metal/Compositor Services/ARKit. Keep the current Windows compatibility host, strict x64→ARM64 AOT and D3D11→Metal renderer. All headset execution remains standalone.
