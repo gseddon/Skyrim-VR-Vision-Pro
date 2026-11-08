@@ -131,5 +131,17 @@ class ProbeTest(unittest.TestCase):
         self.assertNotIn('VXRT_TRACE_OPENVR', result['environment'])
         self.assertTrue(result['diagnostic']['openvr_init_passthrough_trace'])
 
+    def test_xrizer_mode_confines_all_xdg_paths(self):
+        self.args.experimental_xrizer = True
+        with patch.dict(probe.os.environ, {'XDG_CONFIG_HOME': '/outside', 'XDG_RUNTIME_DIR': '/outside'}):
+            result = probe.capture(self.args)
+        env = result['environment']
+        self.assertEqual(env['VXRT_XRIZER_OPENVR'], '1')
+        self.assertNotIn('XDG_RUNTIME_DIR', env)
+        for kind in ('STATE', 'CONFIG', 'CACHE', 'DATA'):
+            path = Path(env[f'XDG_{kind}_HOME'])
+            self.assertTrue(path.is_dir() and path.is_relative_to(Path(self.args.out)))
+        self.assertIn('development host', result['diagnostic']['experimental_xrizer'])
+
 
 if __name__=='__main__':unittest.main()
