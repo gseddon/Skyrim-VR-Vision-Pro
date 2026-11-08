@@ -51,13 +51,6 @@ def change(name,edit):
  p.write_text(new);manifest[name]=hashlib.sha256(p.read_bytes()).hexdigest()
  changes[name]={'original_sha256':base[name],'diagnostic_sha256':manifest[name],
  'diff':''.join(difflib.unified_diff(old.splitlines(True),new.splitlines(True),fromfile='original/'+name,tofile='diagnostic/'+name))}
-guard='        #[cfg(all(target_vendor = "apple", feature = "owned-apple-test"))]\n        if render_pose_count != 0 || game_pose_count != 0 {\n            return vr::EVRCompositorError::RequestFailed;\n        }\n'
-def remove_guards(s):
- assert s.count(guard)==2
- index_guard='        #[cfg(all(target_vendor = "apple", feature = "owned-apple-test"))]\n        {\n            let _ = (device_index, output_pose, output_game_pose);\n            return vr::EVRCompositorError::RequestFailed;\n        }\n'
- assert s.count(index_guard)==1
- return s.replace(guard,'').replace(index_guard,'')
-change('third_party/xrizer/upstream/src/compositor.rs',remove_guards)
 def edit_fixture(s):
  return (root/'third_party/klepton_openxr/tests/xrizer_pose_probe.m').read_text()
 change('third_party/klepton_openxr/tests/xrizer_stereo.m',edit_fixture)
