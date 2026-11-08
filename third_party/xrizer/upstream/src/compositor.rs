@@ -1247,7 +1247,11 @@ impl<G: GraphicsBackend> FrameController<G> {
             self.image_waited = false;
         }
 
-        if self.swapchain_data.is_some() {
+        #[cfg(target_vendor = "apple")]
+        let acquire_for_frame = self.should_render;
+        #[cfg(not(target_vendor = "apple"))]
+        let acquire_for_frame = true;
+        if acquire_for_frame && self.swapchain_data.is_some() {
             if self.acquire_swapchain_image().is_err() { return false; }
         }
 
@@ -1276,6 +1280,8 @@ impl<G: GraphicsBackend> FrameController<G> {
             TryInto<&'b openxr_data::Session<G::Api>, Error: std::fmt::Display>,
         <G::Api as xr::Graphics>::Format: PartialEq + std::fmt::Debug,
     {
+        #[cfg(target_vendor = "apple")]
+        if !self.should_render { return Err(vr::EVRCompositorError::RequestFailed); }
         if self.image_acquired && self.image_waited && self.eyes_submitted.iter().all(|eye| eye.is_some()) {
             let data = self.swapchain_data.as_mut().ok_or(vr::EVRCompositorError::RequestFailed)?;
             release_image(&mut data.swapchain).map_err(|_| vr::EVRCompositorError::RequestFailed)?;
@@ -1337,7 +1343,11 @@ impl<G: GraphicsBackend> FrameController<G> {
         for<'b> &'b crate::overlay::AnySwapchainMap:
             TryInto<&'b crate::overlay::SwapchainMap<G::Api>, Error: std::fmt::Display>,
     {
-        if self.image_acquired { return false; }
+        if self.image_acquired {
+            #[cfg(target_vendor = "apple")]
+            warn!("Cannot end frame while a swapchain image is acquired (should_render={})", self.should_render);
+            return false;
+        }
         let mut proj_layer_views = Vec::new();
 
         if self.should_render

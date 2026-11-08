@@ -214,7 +214,7 @@ index 1590702..abdae64 100644
          fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
              f.write_fmt(format_args!(
 diff --git a/src/compositor.rs b/src/compositor.rs
-index 6eaebd6..3fb3c97 100644
+index 6eaebd6..7e5e870 100644
 --- a/src/compositor.rs
 +++ b/src/compositor.rs
 @@ -99,55 +99,57 @@ impl Compositor {
@@ -587,7 +587,7 @@ index 6eaebd6..3fb3c97 100644
              should_render: false,
              app_suspend_render: false,
              app_fade_grid: false,
-@@ -1133,79 +1179,86 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1133,79 +1179,90 @@ impl<G: GraphicsBackend> FrameController<G> {
          &mut self,
          session_data: &SessionData,
          mut create_info: xr::SwapchainCreateInfo<G::Api>,
@@ -680,8 +680,13 @@ index 6eaebd6..3fb3c97 100644
 +            self.image_waited = false;
          }
  
-         if self.swapchain_data.is_some() {
+-        if self.swapchain_data.is_some() {
 -            self.acquire_swapchain_image();
++        #[cfg(target_vendor = "apple")]
++        let acquire_for_frame = self.should_render;
++        #[cfg(not(target_vendor = "apple"))]
++        let acquire_for_frame = true;
++        if acquire_for_frame && self.swapchain_data.is_some() {
 +            if self.acquire_swapchain_image().is_err() { return false; }
          }
  
@@ -697,10 +702,12 @@ index 6eaebd6..3fb3c97 100644
      }
  
      fn submit_impl(
-@@ -1223,48 +1276,39 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1223,48 +1280,41 @@ impl<G: GraphicsBackend> FrameController<G> {
              TryInto<&'b openxr_data::Session<G::Api>, Error: std::fmt::Display>,
          <G::Api as xr::Graphics>::Format: PartialEq + std::fmt::Debug,
      {
++        #[cfg(target_vendor = "apple")]
++        if !self.should_render { return Err(vr::EVRCompositorError::RequestFailed); }
 +        if self.image_acquired && self.image_waited && self.eyes_submitted.iter().all(|eye| eye.is_some()) {
 +            let data = self.swapchain_data.as_mut().ok_or(vr::EVRCompositorError::RequestFailed)?;
 +            release_image(&mut data.swapchain).map_err(|_| vr::EVRCompositorError::RequestFailed)?;
@@ -773,7 +780,7 @@ index 6eaebd6..3fb3c97 100644
          } else {
              Some(Default::default())
          };
-@@ -1272,11 +1316,12 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1272,11 +1322,12 @@ impl<G: GraphicsBackend> FrameController<G> {
          trace!("submitted {eye:?}");
          if self.eyes_submitted.iter().all(|eye| eye.is_some()) {
              let mut swapchain_data = self.swapchain_data.as_mut();
@@ -788,7 +795,7 @@ index 6eaebd6..3fb3c97 100644
          }
  
          Ok(())
-@@ -1288,10 +1333,11 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1288,10 +1339,15 @@ impl<G: GraphicsBackend> FrameController<G> {
          system: &System,
          display_time: xr::Time,
          overlays: Option<&OverlayMan>,
@@ -797,11 +804,15 @@ index 6eaebd6..3fb3c97 100644
          for<'b> &'b crate::overlay::AnySwapchainMap:
              TryInto<&'b crate::overlay::SwapchainMap<G::Api>, Error: std::fmt::Display>,
      {
-+        if self.image_acquired { return false; }
++        if self.image_acquired {
++            #[cfg(target_vendor = "apple")]
++            warn!("Cannot end frame while a swapchain image is acquired (should_render={})", self.should_render);
++            return false;
++        }
          let mut proj_layer_views = Vec::new();
  
          if self.should_render
-@@ -1305,6 +1351,10 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1305,6 +1361,10 @@ impl<G: GraphicsBackend> FrameController<G> {
  
              let crate::system::ViewData { flags, views } =
                  system.get_views(session_data.current_origin_as_reference_space());
@@ -812,7 +823,7 @@ index 6eaebd6..3fb3c97 100644
              proj_layer_views = views
                  .into_iter()
                  .enumerate()
-@@ -1368,11 +1418,10 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1368,11 +1428,10 @@ impl<G: GraphicsBackend> FrameController<G> {
              layers.extend(overlay_layers.iter().map(Deref::deref));
          }
  
