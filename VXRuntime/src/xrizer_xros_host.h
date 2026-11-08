@@ -48,6 +48,9 @@ int vx_xros_xrizer_register(vx_xros_xrizer_host *, const vx_xros_xrizer_static_a
 /* Producer calls are explicit: real surface readiness, calibrated views,
  * lifecycle events and host samples come from the existing compositor. */
 int vx_xros_xrizer_surface(vx_xros_xrizer_host *, int ready, const KlNativeViewConfiguration *views);
+/* Producer supplies independently observed VIEW-relative static optics; NULL
+ * makes them unavailable. This does not publish or imply a tracked frame. */
+int vx_xros_xrizer_geometry(vx_xros_xrizer_host *, const KlNativeViewGeometry *geometry);
 int vx_xros_xrizer_event(vx_xros_xrizer_host *, KlNativeSessionEvent event);
 int vx_xros_xrizer_offer(vx_xros_xrizer_host *, const KlNativeFrameSample *sample);
 /* Presenter acquires/relinquishes its own reader lease; exactly one release per

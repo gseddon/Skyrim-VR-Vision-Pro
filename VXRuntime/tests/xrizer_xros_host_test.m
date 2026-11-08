@@ -67,6 +67,19 @@ int main(void) {
         XrSystemGetInfo system_info={.type=XR_TYPE_SYSTEM_GET_INFO,.formFactor=XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY};
         XrSystemId system_id=0; assert(get_system(instance,&system_info,&system_id)==XR_ERROR_FORM_FACTOR_UNAVAILABLE);
         assert(vx_xros_xrizer_surface(h,1,&view)==0 && get_system(instance,&system_info,&system_id)==XR_SUCCESS);
+        GET(PFN_xrGetVxStaticViewGeometry,get_geometry,"xrGetVxStaticViewGeometry");
+        KlNativeViewGeometry optics={.version=KL_NATIVE_VIEW_GEOMETRY_VERSION,.struct_size=sizeof(optics)};
+        assert(get_geometry(instance,system_id,&optics)==XR_ERROR_FORM_FACTOR_UNAVAILABLE);
+        KlNativeViewGeometry supplied={.version=KL_NATIVE_VIEW_GEOMETRY_VERSION,.struct_size=sizeof(supplied),.geometry_id=4,
+            .head_from_eye={{{0,0,0,1},{-.032f,0,0}},{{0,0,0,1},{.032f,0,0}}},
+            .fov={{-.8f,.8f,.8f,-.8f},{-.8f,.8f,.8f,-.8f}}};
+        assert(vx_xros_xrizer_geometry(h,&supplied)==0 && get_geometry(instance,system_id,&optics)==XR_SUCCESS);
+        assert(optics.geometry_id==4 && optics.head_from_eye[0].position.x==-.032f);
+        supplied.head_from_eye[0].orientation.w=0;
+        assert(vx_xros_xrizer_geometry(h,&supplied)==0 && get_geometry(instance,system_id,&optics)==XR_ERROR_VALIDATION_FAILURE);
+        assert(vx_xros_xrizer_geometry(h,NULL)==0 && get_geometry(instance,system_id,&optics)==XR_ERROR_FORM_FACTOR_UNAVAILABLE);
+        supplied.head_from_eye[0].orientation.w=1;
+        assert(vx_xros_xrizer_geometry(h,&supplied)==0);
         GET(PFN_xrGetMetalGraphicsRequirementsKHR,requirements,"xrGetMetalGraphicsRequirementsKHR");
         GET(PFN_xrCreateSession,new_session,"xrCreateSession"); GET(PFN_xrDestroySession,destroy_session,"xrDestroySession");
         GET(PFN_xrDestroyInstance,destroy_instance,"xrDestroyInstance"); GET(PFN_xrPollEvent,poll,"xrPollEvent");
@@ -113,7 +126,7 @@ int main(void) {
         assert(poll_state(poll,instance)==XR_SESSION_STATE_EXITING);
         assert(destroy_session(session)==XR_SUCCESS && destroy_instance(instance)==XR_SUCCESS);
         assert(vx_xros_xrizer_retire(h)==0 && vx_xros_xrizer_retire(h)==-1);
-        assert(vx_xros_xrizer_offer(h,&sample)==-1);
+        assert(vx_xros_xrizer_offer(h,&sample)==-1 && vx_xros_xrizer_geometry(h,&supplied)==-1);
         puts("XR static host/provider lifecycle: pass; fake Metal, injected events, no GPU or headset");
     }
     return 0;
