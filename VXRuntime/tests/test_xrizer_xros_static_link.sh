@@ -4,8 +4,10 @@ set -euo pipefail
 : "${XRIZER_RUST_ROOT:?set XRIZER_RUST_ROOT to repository-local toolchain}"
 case "$XRIZER_RUST_ROOT" in /*) ;; *) echo 'XRIZER_RUST_ROOT must be absolute' >&2; exit 2;; esac
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-build="$repo/build/xros-host-static"
-mkdir -p "$build/target" "$build/state" "$build/config"
+cache="$repo/build/xros-host-static"
+mkdir -p "$cache/target"
+build=$(mktemp -d "$cache/probe-XXXXXX")
+mkdir -p "$build/state" "$build/config"
 python3 - "$repo" "$build" <<'PYMANIFEST'
 from pathlib import Path
 import hashlib,json,sys
@@ -17,7 +19,7 @@ manifest={str(p.relative_to(repo)):hashlib.sha256(p.read_bytes()).hexdigest() fo
 (build/'source-manifest.json').write_text(json.dumps(manifest,sort_keys=True,indent=2)+'\n')
 PYMANIFEST
 export CARGO_HOME="$XRIZER_RUST_ROOT/cargo" RUSTUP_HOME="$XRIZER_RUST_ROOT/rustup"
-export CARGO_TARGET_DIR="$build/target" XDG_STATE_HOME="$build/state" XDG_CONFIG_HOME="$build/config"
+export CARGO_TARGET_DIR="$cache/target" XDG_STATE_HOME="$build/state" XDG_CONFIG_HOME="$build/config"
 export PATH="$CARGO_HOME/bin:$PATH" SDKROOT="$(xcrun --sdk xrsimulator --show-sdk-path)"
 export BINDGEN_EXTRA_CLANG_ARGS=--target=arm64-apple-xros26.0-simulator
 cargo build --manifest-path "$repo/third_party/xrizer/upstream/Cargo.toml" --lib --no-default-features --features owned-apple-test --target aarch64-apple-visionos-sim --offline --locked > "$build/rust-build.log" 2>&1
@@ -29,7 +31,9 @@ for i in "${!sources[@]}"; do
  obj="$build/host-$i.o"; xcrun --sdk xrsimulator clang "${flags[@]}" "${incs[@]}" -c "$repo/${sources[$i]}" -o "$obj"; objects+=("$obj")
 done
 xcrun --sdk xrsimulator clang "${flags[@]}" "${incs[@]}" -c "$repo/VXRuntime/tests/xrizer_xros_static_link.c" -o "$build/probe.o"
-archive="$build/target/aarch64-apple-visionos-sim/debug/libxrizer.a"
+xcrun --sdk xrsimulator libtool -static -o "$build/libklepton.a" "${objects[3]}" "${objects[4]}" "${objects[5]}"
+archive="$build/libxrizer.a"
+cp "$cache/target/aarch64-apple-visionos-sim/debug/libxrizer.a" "$archive"
 xcrun --sdk xrsimulator clang -target arm64-apple-xros26.0-simulator -isysroot "$SDKROOT" "$build/probe.o" "${objects[@]}" "$archive" -framework Foundation -framework Metal -framework Security -framework SystemConfiguration -licucore -lz -o "$build/link-probe"
 nm -gU "$build/link-probe" > "$build/symbols.txt"
 for symbol in VRClientCoreFactory xrizer_configure_openxr_provider xrizer_configure_metal_host vx_xros_xrizer_register kl_native_get_instance_proc_addr; do
@@ -44,4 +48,5 @@ if any(hashlib.sha256((repo/name).read_bytes()).hexdigest()!=digest for name,dig
     raise SystemExit('source changed during static-link build')
 PYCHECK
 shasum -a 256 "$build/link-probe" "$archive" "$build/source-manifest.json" > "$build/hashes.txt"
+ln -sfn "$(basename "$build")" "$cache/latest"
 printf 'visionOS simulator static-link probe: build only, exact symbols pass; %s\n' "$build"
