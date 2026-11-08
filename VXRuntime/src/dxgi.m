@@ -369,7 +369,7 @@ static HRESULT make_buffer(swapchain *sc) {
     HRESULT hr;
     d3d_texture *t = d3d_texture_create(sc->dev, desc, &hr);
     if (!t) return hr;
-    if (!sc->buffer) { sc->buffer = t; return S_OK; }
+    if (!sc->buffer) { t->external_origin = 1; sc->buffer = t; return S_OK; }
     // Keep the buffer object (programs may hold it); give it the new Metal texture.
     void *mtl = t->mtl;
     t->mtl = NULL;

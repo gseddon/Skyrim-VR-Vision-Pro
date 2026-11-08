@@ -12,6 +12,12 @@ static void check(bool ok,unsigned code) { if (!ok) ExitProcess(code); }
 struct Desc { unsigned width,height,mips,array,format,samples,quality,usage,bind,cpu,misc; };
 struct Init { const void *data; unsigned row, slice; };
 typedef int (*create_device_fn)(void *,unsigned,void *,unsigned,const unsigned *,unsigned,unsigned,void **,unsigned *,void **);
+struct Guid { unsigned a; unsigned short b,c; unsigned char d[8]; };
+struct SwapDesc { unsigned mode[7], sample_count,sample_quality,usage,count; void *window; unsigned windowed,effect,flags; };
+typedef void *(*create_window_fn)(unsigned,const char *,const char *,unsigned,int,int,int,int,void *,void *,void *,void *);
+typedef int (*destroy_window_fn)(void *);
+typedef int (*create_swap_fn)(void *,unsigned,void *,unsigned,const unsigned *,unsigned,unsigned,const SwapDesc *,void **,void **,unsigned *,void **);
+typedef int (*get_buffer_fn)(void *,unsigned,const Guid *,void **);
 typedef int (*create_texture_fn)(void *,const Desc *,const Init *,void **);
 typedef void (*update_fn)(void *,void *,unsigned,const void *,const void *,unsigned,unsigned);
 typedef unsigned (*release_fn)(void *);
@@ -49,6 +55,17 @@ extern "C" void mainCRTStartup() {
     for (unsigned eye=0;eye<2;++eye) { fill(0,eye); Init initial={pixels[eye],32,256};
         check(((create_texture_fn)table(device)[5])(device,&desc,&initial,&textures[eye])==0 && textures[eye],6); }
     check(lease_control(textures[0])==0,17);
+    void *user=LoadLibraryA("user32.dll");
+    auto create_window=(create_window_fn)GetProcAddress(user,"CreateWindowExA");
+    auto destroy_window=(destroy_window_fn)GetProcAddress(user,"DestroyWindow");
+    auto create_swap=(create_swap_fn)GetProcAddress(d3d,"D3D11CreateDeviceAndSwapChain");
+    check(user && create_window && destroy_window && create_swap,20);
+    void *window=create_window(0,"STATIC","fixture",0,0,0,8,8,nullptr,nullptr,nullptr,nullptr); check(window!=nullptr,21);
+    SwapDesc sd={}; sd.mode[0]=sd.mode[1]=8; sd.mode[4]=28; sd.sample_count=1; sd.usage=0x20; sd.count=1; sd.window=window; sd.windowed=1;
+    void *swap=nullptr,*swap_device=nullptr,*swap_context=nullptr,*backbuffer=nullptr;
+    check(create_swap(nullptr,1,nullptr,0,nullptr,0,7,&sd,&swap,&swap_device,nullptr,&swap_context)==0 && swap,22);
+    const Guid iid={0,0,0,{0xc0,0,0,0,0,0,0,0x46}};
+    check(((get_buffer_fn)table(swap)[9])(swap,0,&iid,&backbuffer)==0 && backbuffer,23);
     Desc shared_desc=desc; shared_desc.misc=2; void *shared=nullptr;
     check(((create_texture_fn)table(device)[5])(device,&shared_desc,nullptr,&shared)==0 && shared,18);
     const vr::VRTextureBounds_t bounds={.25f,.125f,.75f,.5f};
@@ -57,6 +74,8 @@ extern "C" void mainCRTStartup() {
         if (!frame) {
             vr::Texture_t invalid={(void *)0x1234,vr::TextureType_DirectX,vr::ColorSpace_Linear};
             check(comp->Submit(vr::Eye_Left,&invalid,&bounds,vr::Submit_Default)==vr::VRCompositorError_InvalidTexture,13);
+            vr::Texture_t back={backbuffer,vr::TextureType_DirectX,vr::ColorSpace_Linear};
+            check(comp->Submit(vr::Eye_Left,&back,&bounds,vr::Submit_Default)==vr::VRCompositorError_InvalidTexture,24);
             vr::Texture_t foreign={shared,vr::TextureType_DirectX,vr::ColorSpace_Linear};
             check(comp->Submit(vr::Eye_Left,&foreign,&bounds,vr::Submit_Default)==vr::VRCompositorError_InvalidTexture,19);
             vr::Texture_t failed={bad_texture,vr::TextureType_DirectX,vr::ColorSpace_Linear};
@@ -69,6 +88,8 @@ extern "C" void mainCRTStartup() {
         }
         comp->PostPresentHandoff(); check(verify(frame)==0,10);
     }
+    ((release_fn)table(backbuffer)[2])(backbuffer); ((release_fn)table(swap)[2])(swap);
+    ((release_fn)table(swap_context)[2])(swap_context); ((release_fn)table(swap_device)[2])(swap_device); check(destroy_window(window)!=0,25);
     ((release_fn)table(shared)[2])(shared);
     ((release_fn)table(bad_texture)[2])(bad_texture); ((release_fn)table(bad_context)[2])(bad_context);
     ((release_fn)table(bad_device)[2])(bad_device);
