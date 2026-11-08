@@ -118,6 +118,16 @@ int main(void) {
         assert(begin_frame(session,NULL)==XR_SUCCESS);
         XrFrameEndInfo fi={.type=XR_TYPE_FRAME_END_INFO,.displayTime=100,.environmentBlendMode=XR_ENVIRONMENT_BLEND_MODE_OPAQUE};
         assert(end_frame(session,&fi)==XR_SUCCESS);
+        /* Real provider order with no image acquisition: repeated no-render
+         * frames must each consume exactly their own mailbox ticket. */
+        for (unsigned n=0;n<2;n++) {
+            sample.frame_id=2+n; sample.pose_id=3+n; sample.predicted_display_time=110+n*10; sample.should_render=XR_FALSE;
+            assert(vx_xros_xrizer_offer(h,&sample)==0);
+            assert(wait_xr(session,NULL,&state)==XR_SUCCESS && !state.shouldRender && state.predictedDisplayTime==sample.predicted_display_time);
+            assert(begin_frame(session,NULL)==XR_SUCCESS);
+            fi.displayTime=sample.predicted_display_time;
+            assert(end_frame(session,&fi)==XR_SUCCESS);
+        }
         assert(exit_xr(session)==XR_SUCCESS);
         assert(vx_xros_xrizer_event(h,(KlNativeSessionEvent){KL_NATIVE_SESSION_STOPPING,30})==0);
         assert(poll_state(poll,instance)==XR_SESSION_STATE_STOPPING);
