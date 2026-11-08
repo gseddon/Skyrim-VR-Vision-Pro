@@ -78,10 +78,10 @@ index 564781f..e74550e 100644
  
 diff --git a/src/apple_provider.rs b/src/apple_provider.rs
 new file mode 100644
-index 0000000..cf9e3e7
+index 0000000..a6fcaaf
 --- /dev/null
 +++ b/src/apple_provider.rs
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,72 @@
 +//! Explicit native provider entry registration; it does not enable Init.
 +use openxr::{self as xr, sys};
 +use std::sync::OnceLock;
@@ -100,6 +100,46 @@ index 0000000..cf9e3e7
 +pub fn entry() -> xr::Result<xr::Entry> {
 +    let fp = *PROVIDER.get().ok_or(sys::Result::ERROR_RUNTIME_UNAVAILABLE)?;
 +    unsafe { xr::Entry::from_get_instance_proc_addr(fp) }
++}
++
++// Local provider private native query, not a standard OpenXR extension. It
++// describes only optical eye geometry; it is not a tracked pose or frame.
++#[repr(C)]
++#[derive(Copy, Clone)]
++struct StaticViewGeometry {
++    version: u32,
++    struct_size: u32,
++    geometry_id: u64,
++    head_from_eye: [xr::Posef; 2],
++    fov: [xr::Fovf; 2],
++}
++pub fn static_views(instance: &xr::Instance, system: xr::SystemId) -> xr::Result<[xr::View; 2]> {
++    type Get = unsafe extern "system" fn(sys::Instance, sys::SystemId, *mut StaticViewGeometry) -> sys::Result;
++    let mut raw = None;
++    let result = unsafe { (instance.entry().fp().get_instance_proc_addr)(instance.as_raw(), c"xrGetVxStaticViewGeometry".as_ptr(), &mut raw) };
++    if result != sys::Result::SUCCESS { return Err(result); }
++    let Some(raw) = raw else { return Err(sys::Result::ERROR_FUNCTION_UNSUPPORTED); };
++    let get: Get = unsafe { std::mem::transmute(raw) };
++    let mut geometry = StaticViewGeometry { version: 1, struct_size: std::mem::size_of::<StaticViewGeometry>() as u32,
++        geometry_id: 0, head_from_eye: [xr::Posef::IDENTITY; 2], fov: [xr::Fovf::default(); 2] };
++    let result = unsafe { get(instance.as_raw(), system, &mut geometry) };
++    if result != sys::Result::SUCCESS { return Err(result); }
++    if geometry.version != 1 || geometry.struct_size < std::mem::size_of::<StaticViewGeometry>() as u32 || geometry.geometry_id == 0 {
++        return Err(sys::Result::ERROR_RUNTIME_FAILURE);
++    }
++    for i in 0..2 {
++        let p = geometry.head_from_eye[i]; let f = geometry.fov[i];
++        let q = [p.orientation.x,p.orientation.y,p.orientation.z,p.orientation.w];
++        let norm: f32 = q.iter().map(|v| v*v).sum();
++        if !q.iter().all(|v| v.is_finite()) || !norm.is_finite() || (norm-1.0).abs()>0.001 ||
++            ![p.position.x,p.position.y,p.position.z,f.angle_left,f.angle_right,f.angle_up,f.angle_down].iter().all(|v| v.is_finite()) ||
++            f.angle_left>=f.angle_right || f.angle_down>=f.angle_up ||
++            f.angle_left<=-std::f32::consts::FRAC_PI_2 || f.angle_right>=std::f32::consts::FRAC_PI_2 ||
++            f.angle_down<=-std::f32::consts::FRAC_PI_2 || f.angle_up>=std::f32::consts::FRAC_PI_2 {
++            return Err(sys::Result::ERROR_RUNTIME_FAILURE);
++        }
++    }
++    Ok(std::array::from_fn(|i| xr::View { pose: geometry.head_from_eye[i], fov: geometry.fov[i] }))
 +}
 +
 +#[cfg(test)]
@@ -174,10 +214,10 @@ index 1590702..abdae64 100644
          fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
              f.write_fmt(format_args!(
 diff --git a/src/compositor.rs b/src/compositor.rs
-index 6eaebd6..6acd92d 100644
+index 6eaebd6..3fb3c97 100644
 --- a/src/compositor.rs
 +++ b/src/compositor.rs
-@@ -99,55 +99,55 @@ impl Compositor {
+@@ -99,55 +99,57 @@ impl Compositor {
          }
      }
  
@@ -210,6 +250,8 @@ index 6eaebd6..6acd92d 100644
 -        let (display_time, display_period) = ctrl.with_any_graphics_mut::<wait_frame>(());
 +        let Some((display_time, display_period)) = ctrl.with_any_graphics_mut::<wait_frame>(()) else { return false; };
          self.openxr.display_time.set(display_time);
++        #[cfg(target_vendor = "apple")]
++        self.openxr.frame_observed.store(true, Ordering::Release);
          self.openxr
              .display_period_nanos
              .store(display_period, Ordering::Relaxed);
@@ -252,7 +294,7 @@ index 6eaebd6..6acd92d 100644
      }
  
      pub fn initialize_real_session(
-@@ -169,7 +169,8 @@ impl Compositor {
+@@ -169,7 +171,8 @@ impl Compositor {
          {
              let b_texture =
                  G::get_texture(texture).ok_or(vr::EVRCompositorError::InvalidTexture)?;
@@ -262,7 +304,7 @@ index 6eaebd6..6acd92d 100644
              Ok(TempBackendData {
                  backend,
                  swapchain_create_info: Some(info),
-@@ -183,8 +184,15 @@ impl Compositor {
+@@ -183,8 +186,15 @@ impl Compositor {
          *self.tmp_backend.lock().unwrap() = Some(tmp_backend);
  
          info!("Creating real backend for texture type {:?}", texture.eType);
@@ -280,7 +322,7 @@ index 6eaebd6..6acd92d 100644
      }
  }
  
-@@ -293,10 +301,10 @@ impl openxr_data::Compositor for Compositor {
+@@ -293,10 +303,10 @@ impl openxr_data::Compositor for Compositor {
          trace!("returning to {old_state:?} frame state");
          match old_state {
              FrameState::Submitted => {}
@@ -294,7 +336,7 @@ index 6eaebd6..6acd92d 100644
              }
          }
      }
-@@ -359,8 +367,7 @@ impl vr::IVRCompositor029_Interface for Compositor {
+@@ -359,8 +369,7 @@ impl vr::IVRCompositor029_Interface for Compositor {
          }
  
          let session_data = self.openxr.session_data.get();
@@ -304,7 +346,7 @@ index 6eaebd6..6acd92d 100644
      }
      fn SetExplicitTimingMode(&self, timing_mode: vr::EVRCompositorTimingMode) {
          debug!("Setting timing mode to {timing_mode:?}");
-@@ -652,7 +659,7 @@ impl vr::IVRCompositor029_Interface for Compositor {
+@@ -652,7 +661,7 @@ impl vr::IVRCompositor029_Interface for Compositor {
              system: &System,
              display_time: xr::Time,
              overlays: Option<&OverlayMan>,
@@ -313,7 +355,7 @@ index 6eaebd6..6acd92d 100644
              for<'b> &'b crate::overlay::AnySwapchainMap:
                  TryInto<&'b crate::overlay::SwapchainMap<G::Api>, Error: std::fmt::Display>,
          {
-@@ -675,12 +682,12 @@ impl vr::IVRCompositor029_Interface for Compositor {
+@@ -675,12 +684,12 @@ impl vr::IVRCompositor029_Interface for Compositor {
          let display_time = self.openxr.display_time.get();
          let overlays = self.overlays.get();
  
@@ -328,7 +370,7 @@ index 6eaebd6..6acd92d 100644
  
          self.frame_state
              .lock()
-@@ -820,7 +827,9 @@ impl vr::IVRCompositor029_Interface for Compositor {
+@@ -820,7 +829,9 @@ impl vr::IVRCompositor029_Interface for Compositor {
              return vr::EVRCompositorError::RequestFailed;
          }
  
@@ -339,7 +381,7 @@ index 6eaebd6..6acd92d 100644
  
          let Some(pose) = input.get_device_pose(device_index, None) else {
              return vr::EVRCompositorError::RequestFailed;
-@@ -844,24 +853,24 @@ impl vr::IVRCompositor029_Interface for Compositor {
+@@ -844,24 +855,24 @@ impl vr::IVRCompositor029_Interface for Compositor {
          game_pose_count: u32,
      ) -> vr::EVRCompositorError {
          tracy_span!("GetLastPoses impl");
@@ -378,7 +420,7 @@ index 6eaebd6..6acd92d 100644
          }
  
          vr::EVRCompositorError::None
-@@ -875,6 +884,22 @@ impl vr::IVRCompositor029_Interface for Compositor {
+@@ -875,6 +886,22 @@ impl vr::IVRCompositor029_Interface for Compositor {
          game_pose_count: u32,
      ) -> vr::EVRCompositorError {
          tracy_span!("WaitGetPoses impl");
@@ -401,7 +443,7 @@ index 6eaebd6..6acd92d 100644
          // This should be called every frame - we must regularly poll events
          self.openxr.poll_events();
          self.focused.call_once(|| {});
-@@ -892,19 +917,19 @@ impl vr::IVRCompositor029_Interface for Compositor {
+@@ -892,19 +919,19 @@ impl vr::IVRCompositor029_Interface for Compositor {
  
              if *self.frame_state.lock().unwrap() == FrameState::Waited {
                  // discard frame
@@ -425,7 +467,7 @@ index 6eaebd6..6acd92d 100644
          }
  
          self.GetLastPoses(
-@@ -1025,12 +1050,48 @@ struct SwapchainData<G: xr::Graphics> {
+@@ -1025,12 +1052,48 @@ struct SwapchainData<G: xr::Graphics> {
      initial_format: G::Format,
  }
  
@@ -474,7 +516,7 @@ index 6eaebd6..6acd92d 100644
      should_render: bool,
      app_suspend_render: bool,
      app_fade_grid: bool,
-@@ -1045,39 +1106,21 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1045,39 +1108,21 @@ impl<G: GraphicsBackend> FrameController<G> {
          session_data: &SessionData,
          create_info: &mut xr::SwapchainCreateInfo<G::Api>,
          backend: &mut G,
@@ -519,7 +561,7 @@ index 6eaebd6..6acd92d 100644
  
          backend.store_swapchain_images(images, create_info.format);
          debug!(
-@@ -1085,7 +1128,7 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1085,7 +1130,7 @@ impl<G: GraphicsBackend> FrameController<G> {
              create_info.width, create_info.height, create_info.format
          );
  
@@ -528,7 +570,7 @@ index 6eaebd6..6acd92d 100644
      }
  
      fn new(
-@@ -1103,7 +1146,7 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1103,7 +1148,7 @@ impl<G: GraphicsBackend> FrameController<G> {
          let swapchain_data = if let Some(mut info) = create_info {
              is_valid_swapchain_info(&info).then(|| {
                  let (swapchain, initial_format) =
@@ -537,7 +579,7 @@ index 6eaebd6..6acd92d 100644
                  SwapchainData {
                      swapchain,
                      info,
-@@ -1120,6 +1163,7 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1120,6 +1165,7 @@ impl<G: GraphicsBackend> FrameController<G> {
              swapchain_data,
              image_index: 0,
              image_acquired: false,
@@ -545,7 +587,7 @@ index 6eaebd6..6acd92d 100644
              should_render: false,
              app_suspend_render: false,
              app_fade_grid: false,
-@@ -1133,79 +1177,86 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1133,79 +1179,86 @@ impl<G: GraphicsBackend> FrameController<G> {
          &mut self,
          session_data: &SessionData,
          mut create_info: xr::SwapchainCreateInfo<G::Api>,
@@ -655,7 +697,7 @@ index 6eaebd6..6acd92d 100644
      }
  
      fn submit_impl(
-@@ -1223,48 +1274,39 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1223,48 +1276,39 @@ impl<G: GraphicsBackend> FrameController<G> {
              TryInto<&'b openxr_data::Session<G::Api>, Error: std::fmt::Display>,
          <G::Api as xr::Graphics>::Format: PartialEq + std::fmt::Debug,
      {
@@ -731,7 +773,7 @@ index 6eaebd6..6acd92d 100644
          } else {
              Some(Default::default())
          };
-@@ -1272,11 +1314,12 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1272,11 +1316,12 @@ impl<G: GraphicsBackend> FrameController<G> {
          trace!("submitted {eye:?}");
          if self.eyes_submitted.iter().all(|eye| eye.is_some()) {
              let mut swapchain_data = self.swapchain_data.as_mut();
@@ -746,7 +788,7 @@ index 6eaebd6..6acd92d 100644
          }
  
          Ok(())
-@@ -1288,10 +1331,11 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1288,10 +1333,11 @@ impl<G: GraphicsBackend> FrameController<G> {
          system: &System,
          display_time: xr::Time,
          overlays: Option<&OverlayMan>,
@@ -759,7 +801,7 @@ index 6eaebd6..6acd92d 100644
          let mut proj_layer_views = Vec::new();
  
          if self.should_render
-@@ -1305,6 +1349,10 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1305,6 +1351,10 @@ impl<G: GraphicsBackend> FrameController<G> {
  
              let crate::system::ViewData { flags, views } =
                  system.get_views(session_data.current_origin_as_reference_space());
@@ -770,7 +812,7 @@ index 6eaebd6..6acd92d 100644
              proj_layer_views = views
                  .into_iter()
                  .enumerate()
-@@ -1368,11 +1416,10 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1368,11 +1418,10 @@ impl<G: GraphicsBackend> FrameController<G> {
              layers.extend(overlay_layers.iter().map(Deref::deref));
          }
  
@@ -1864,7 +1906,7 @@ index 0000000..e5ec4bf
 +    }
 +}
 diff --git a/src/openxr_data.rs b/src/openxr_data.rs
-index e3e9eff..0a6dd49 100644
+index e3e9eff..a3fbfca 100644
 --- a/src/openxr_data.rs
 +++ b/src/openxr_data.rs
 @@ -5,6 +5,7 @@ use crate::{
@@ -1875,8 +1917,12 @@ index e3e9eff..0a6dd49 100644
  use openvr as vr;
  use openxr as xr;
  use std::mem::ManuallyDrop;
-@@ -43,6 +44,8 @@ pub struct OpenXrData<C: Compositor> {
+@@ -41,8 +42,12 @@ pub struct OpenXrData<C: Compositor> {
+     pub system_id: xr::SystemId,
+     pub session_data: SessionReadGuard,
      pub display_time: AtomicXrTime,
++    #[cfg(target_vendor = "apple")]
++    pub frame_observed: std::sync::atomic::AtomicBool,
      pub display_period_nanos: AtomicI64,
      pub enabled_extensions: xr::ExtensionSet,
 +    #[cfg(target_vendor = "apple")]
@@ -1884,7 +1930,7 @@ index e3e9eff..0a6dd49 100644
  
      /// should only be externally accessed for testing
      pub(crate) input: Injected<crate::input::Input<C>>,
-@@ -52,7 +55,11 @@ pub struct OpenXrData<C: Compositor> {
+@@ -52,7 +57,11 @@ pub struct OpenXrData<C: Compositor> {
  impl<C: Compositor> Drop for OpenXrData<C> {
      fn drop(&mut self) {
          let mut data = unsafe { ManuallyDrop::take(&mut *self.session_data.0.get_mut().unwrap()) };
@@ -1897,7 +1943,7 @@ index e3e9eff..0a6dd49 100644
      }
  }
  
-@@ -60,7 +67,10 @@ impl<C: Compositor> Drop for OpenXrData<C> {
+@@ -60,7 +69,10 @@ impl<C: Compositor> Drop for OpenXrData<C> {
  #[allow(dead_code)] // Results aren't used, but they're printed
  #[allow(clippy::enum_variant_names)]
  pub enum InitError {
@@ -1908,7 +1954,7 @@ index e3e9eff..0a6dd49 100644
      InstanceCreationFailed(xr::sys::Result),
      SystemCreationFailed(xr::sys::Result),
      SessionCreationFailed(SessionCreationError),
-@@ -106,25 +116,41 @@ fn make_version() -> u32 {
+@@ -106,25 +118,41 @@ fn make_version() -> u32 {
  }
  
  impl<C: Compositor> OpenXrData<C> {
@@ -1955,7 +2001,7 @@ index e3e9eff..0a6dd49 100644
          exts.khr_convert_timespec_time = supported_exts.khr_convert_timespec_time;
          exts.ext_hand_tracking = supported_exts.ext_hand_tracking;
          exts.khr_visibility_mask = supported_exts.khr_visibility_mask;
-@@ -166,15 +192,27 @@ impl<C: Compositor> OpenXrData<C> {
+@@ -166,15 +194,28 @@ impl<C: Compositor> OpenXrData<C> {
              .system(xr::FormFactor::HEAD_MOUNTED_DISPLAY)
              .map_err(InitError::SystemCreationFailed)?;
  
@@ -1971,6 +2017,7 @@ index e3e9eff..0a6dd49 100644
 +            if views.len() != 2 || views.iter().any(|v| v.recommended_image_rect_width == 0 || v.recommended_image_rect_height == 0) {
 +                return Err(InitError::RequiredViewConfiguration(xr::sys::Result::ERROR_RUNTIME_FAILURE));
 +            }
++            crate::apple_provider::static_views(&instance,system_id).map_err(InitError::RequiredViewConfiguration)?;
 +        }
 +
 +        let (initial_session, initial_waiter, initial_stream) = SessionData::new(
@@ -1988,8 +2035,12 @@ index e3e9eff..0a6dd49 100644
  
          let display_time = if exts.khr_convert_timespec_time {
              instance.now().map(|t| t.as_nanos()).unwrap_or(1i64)
-@@ -190,6 +228,8 @@ impl<C: Compositor> OpenXrData<C> {
+@@ -188,8 +229,12 @@ impl<C: Compositor> OpenXrData<C> {
+             system_id,
+             session_data,
              display_time: AtomicXrTime(display_time.into()), // This will get replaced on the first WaitGetPoses
++            #[cfg(target_vendor = "apple")]
++            frame_observed: std::sync::atomic::AtomicBool::new(false),
              display_period_nanos: 11111111.into(), // This will get replaced on the first WaitGetPoses
              enabled_extensions: exts,
 +            #[cfg(target_vendor = "apple")]
@@ -1997,7 +2048,7 @@ index e3e9eff..0a6dd49 100644
              input: injector.inject(),
              compositor: injector.inject(),
          })
-@@ -226,9 +266,22 @@ impl<C: Compositor> OpenXrData<C> {
+@@ -226,9 +271,22 @@ impl<C: Compositor> OpenXrData<C> {
          state
      }
  
@@ -2022,7 +2073,7 @@ index e3e9eff..0a6dd49 100644
  
          let origin = session_guard.current_origin;
          let comp = self
-@@ -252,6 +305,19 @@ impl<C: Compositor> OpenXrData<C> {
+@@ -252,6 +310,19 @@ impl<C: Compositor> OpenXrData<C> {
          }
  
          *session_guard = ManuallyDrop::new(session);
@@ -2042,7 +2093,7 @@ index e3e9eff..0a6dd49 100644
      }
  
      pub fn set_tracking_space(&self, space: vr::ETrackingUniverseOrigin) {
-@@ -347,7 +413,8 @@ impl<C: Compositor> OpenXrData<C> {
+@@ -347,7 +418,8 @@ impl<C: Compositor> OpenXrData<C> {
              .unwrap_or_else(|_| get_fallback_rate())
      }
  
@@ -2052,7 +2103,7 @@ index e3e9eff..0a6dd49 100644
          session_data.session.request_exit().unwrap();
          let mut state = session_data.state;
          while state != xr::SessionState::STOPPING {
-@@ -365,6 +432,46 @@ impl<C: Compositor> OpenXrData<C> {
+@@ -365,6 +437,46 @@ impl<C: Compositor> OpenXrData<C> {
                  state = s;
              }
          }
@@ -2099,7 +2150,7 @@ index e3e9eff..0a6dd49 100644
      }
  }
  
-@@ -398,6 +505,9 @@ impl std::fmt::Display for GraphicalSession {
+@@ -398,6 +510,9 @@ impl std::fmt::Display for GraphicalSession {
      fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
          match self {
              GraphicalSession::Vulkan(_) => f.write_str("GraphicalSession::Vulkan"),
@@ -2109,7 +2160,7 @@ index e3e9eff..0a6dd49 100644
              GraphicalSession::OpenGL(_) => f.write_str("GraphicalSession::OpenGL"),
              #[cfg(test)]
              GraphicalSession::Fake(_) => f.write_str("GraphicalSession::Fake"),
-@@ -449,6 +559,7 @@ pub struct SessionData {
+@@ -449,6 +564,7 @@ pub struct SessionData {
      /// \- structs are dropped in declaration order, and if we drop our temporary Vulkan data
      /// before the session, the runtime will likely be very unhappy.
      temp_vulkan: Option<VulkanData>,
@@ -2117,7 +2168,7 @@ index e3e9eff..0a6dd49 100644
  }
  
  #[derive(Debug)]
-@@ -468,18 +579,28 @@ impl SessionData {
+@@ -468,18 +584,28 @@ impl SessionData {
          create_info: Option<&SessionCreateInfo>,
      ) -> Result<(Self, xr::FrameWaiter, FrameStream), SessionCreationError> {
          let info;
@@ -2151,7 +2202,7 @@ index e3e9eff..0a6dd49 100644
          };
  
          #[macros::any_graphics(SessionCreateInfo)]
-@@ -501,24 +622,13 @@ impl SessionData {
+@@ -501,24 +627,13 @@ impl SessionData {
                  "Creating OpenXR session with graphics API {}",
                  std::any::type_name::<G>()
              );
@@ -2183,7 +2234,7 @@ index e3e9eff..0a6dd49 100644
          }
  
          let (session, session_graphics, waiter, stream) = info
-@@ -526,28 +636,31 @@ impl SessionData {
+@@ -526,28 +641,31 @@ impl SessionData {
              .map_err(SessionCreationError::SessionCreationFailed)?;
  
          info!("New session created!");
@@ -2233,7 +2284,7 @@ index e3e9eff..0a6dd49 100644
              }
          }
  
-@@ -563,6 +676,7 @@ impl SessionData {
+@@ -563,6 +681,7 @@ impl SessionData {
          Ok((
              SessionData {
                  temp_vulkan,
@@ -2241,7 +2292,7 @@ index e3e9eff..0a6dd49 100644
                  session,
                  session_graphics,
                  state: xr::SessionState::READY,
-@@ -668,7 +782,7 @@ impl SessionData {
+@@ -668,7 +787,7 @@ impl SessionData {
      /// Returns true if this session is not using a temporary graphics setup.
      #[inline]
      pub fn is_real_session(&self) -> bool {
@@ -2266,10 +2317,71 @@ index 5c72a06..98c5c5a 100644
              log::warn!("Unsupported texture type: {:?}", texture.eType);
              return Err(vr::EVROverlayError::InvalidTexture);
 diff --git a/src/system.rs b/src/system.rs
-index c12c23e..e704f56 100644
+index c12c23e..d78b953 100644
 --- a/src/system.rs
 +++ b/src/system.rs
-@@ -332,6 +332,9 @@ impl vr::IVRSystem026_Interface for System {
+@@ -192,6 +192,21 @@ impl System {
+         let mut views = self.views.lock().unwrap();
+         views.get_views(&session, self.openxr.display_time.get(), ty)
+     }
++
++    fn optical_views(&self) -> Option<[xr::View; 2]> {
++        #[cfg(target_vendor = "apple")]
++        if !self.openxr.frame_observed.load(std::sync::atomic::Ordering::Acquire) {
++            match crate::apple_provider::static_views(&self.openxr.instance,self.openxr.system_id) {
++                Ok(mut views) => {
++                    // Match xrizer's existing parallel-view convention.
++                    for view in &mut views { view.pose.orientation=xr::Quaternionf::IDENTITY; }
++                    return Some(views);
++                }
++                Err(error) => { warn!("Static view geometry unavailable: {error}"); return None; }
++            }
++        }
++        Some(self.get_views(xr::ReferenceSpaceType::VIEW).views)
++    }
+ }
+ 
+ impl vr::IVRSystem026_Interface for System {
+@@ -218,6 +233,10 @@ impl vr::IVRSystem026_Interface for System {
+         let [mut left, mut right, mut up, mut down] = [0.0; 4];
+         self.GetProjectionRaw(eye, &mut left, &mut right, &mut down, &mut up);
+ 
++        if !near_z.is_finite() || !far_z.is_finite() || far_z==near_z || right<=left || up<=down {
++            return Default::default();
++        }
++
+         let idx = 1.0 / (right - left);
+         let idy = 1.0 / (up - down);
+         let idz = 1.0 / (far_z - near_z);
+@@ -241,12 +260,12 @@ impl vr::IVRSystem026_Interface for System {
+         top: *mut f32,
+         bottom: *mut f32,
+     ) {
+-        let ty = self
+-            .openxr
+-            .session_data
+-            .get()
+-            .current_origin_as_reference_space();
+-        let view = self.get_views(ty).views[eye as usize];
++        let Some(views) = self.optical_views() else {
++            unsafe { if let Some(p)=left.as_mut(){*p=0.0;} if let Some(p)=right.as_mut(){*p=0.0;}
++                if let Some(p)=top.as_mut(){*p=0.0;} if let Some(p)=bottom.as_mut(){*p=0.0;} }
++            return;
++        };
++        let view = views[eye as usize];
+ 
+         // Top and bottom are flipped, for some reason
+         unsafe {
+@@ -279,7 +298,7 @@ impl vr::IVRSystem026_Interface for System {
+         false
+     }
+     fn GetEyeToHeadTransform(&self, eye: vr::EVREye) -> vr::HmdMatrix34_t {
+-        let views = self.get_views(xr::ReferenceSpaceType::VIEW).views;
++        let Some(views) = self.optical_views() else { return Default::default(); };
+         let view = views[eye as usize];
+         let view_rot = view.pose.orientation;
+ 
+@@ -332,6 +351,9 @@ impl vr::IVRSystem026_Interface for System {
          todo!()
      }
      fn IsInputAvailable(&self) -> bool {
@@ -2279,7 +2391,7 @@ index c12c23e..e704f56 100644
          true
      }
      fn GetControllerAxisTypeNameFromEnum(
-@@ -353,9 +356,9 @@ impl vr::IVRSystem026_Interface for System {
+@@ -353,9 +375,9 @@ impl vr::IVRSystem026_Interface for System {
          axis_id: u32,
          duration_us: std::ffi::c_ushort,
      ) {
@@ -2292,7 +2404,7 @@ index c12c23e..e704f56 100644
      }
      fn GetControllerStateWithPose(
          &self,
-@@ -365,7 +368,10 @@ impl vr::IVRSystem026_Interface for System {
+@@ -365,7 +387,10 @@ impl vr::IVRSystem026_Interface for System {
          state_size: u32,
          pose: *mut vr::TrackedDevicePose_t,
      ) -> bool {
@@ -2304,7 +2416,7 @@ index c12c23e..e704f56 100644
  
          let Some(hand) = input.device_index_to_hand(device_index) else {
              return false;
-@@ -373,12 +379,7 @@ impl vr::IVRSystem026_Interface for System {
+@@ -373,12 +398,7 @@ impl vr::IVRSystem026_Interface for System {
  
          if self.GetControllerState(device_index, state, state_size) {
              unsafe {
@@ -2318,7 +2430,7 @@ index c12c23e..e704f56 100644
              }
              true
          } else {
-@@ -391,9 +392,10 @@ impl vr::IVRSystem026_Interface for System {
+@@ -391,9 +411,10 @@ impl vr::IVRSystem026_Interface for System {
          state: *mut vr::VRControllerState_t,
          state_size: u32,
      ) -> bool {
@@ -2332,7 +2444,7 @@ index c12c23e..e704f56 100644
      }
      fn GetHiddenAreaMesh(
          &self,
-@@ -524,7 +526,7 @@ impl vr::IVRSystem026_Interface for System {
+@@ -524,7 +545,7 @@ impl vr::IVRSystem026_Interface for System {
          if got_event && !pose.is_null() {
              unsafe {
                  let index = (&raw const (*event).trackedDeviceIndex).read();
@@ -2341,7 +2453,19 @@ index c12c23e..e704f56 100644
              }
          }
          got_event
-@@ -832,12 +834,12 @@ impl vr::IVRSystem026_Interface for System {
+@@ -710,7 +731,10 @@ impl vr::IVRSystem026_Interface for System {
+ 
+         match prop {
+             vr::ETrackedDeviceProperty::UserIpdMeters_Float => {
+-                let views = self.get_views(xr::ReferenceSpaceType::VIEW).views;
++                let Some(views) = self.optical_views() else {
++                    if let Some(error)=unsafe { error.as_mut() } { *error=vr::ETrackedPropertyError::UnknownProperty; }
++                    return 0.0;
++                };
+                 views[1].pose.position.x - views[0].pose.position.x
+             }
+             vr::ETrackedDeviceProperty::DisplayFrequency_Float => self.openxr.get_refresh_rate(),
+@@ -832,12 +856,12 @@ impl vr::IVRSystem026_Interface for System {
          pose_array: *mut vr::TrackedDevicePose_t,
          pose_count: u32,
      ) {

@@ -3,6 +3,17 @@
 #include <assert.h>
 #include <stdio.h>
 static int mode;
+static int geometry_mode;
+static XrResult geometry(void *ctx, KlNativeViewGeometry *out) {
+    (void)ctx;
+    if (geometry_mode==2) return XR_ERROR_RUNTIME_FAILURE;
+    *out=(KlNativeViewGeometry){.version=KL_NATIVE_VIEW_GEOMETRY_VERSION,.struct_size=sizeof(*out),.geometry_id=7,
+        .head_from_eye={{{0,0,0,1},{-.032f,0,0}},{{0,0,0,1},{.032f,0,0}}},
+        .fov={{-.7f,.8f,.9f,-.6f},{-.73f,.82f,.9f,-.6f}}};
+    if (geometry_mode==1) out->head_from_eye[0].orientation.w=0;
+    if (geometry_mode==3) out->fov[0].angleRight=out->fov[0].angleLeft;
+    return XR_SUCCESS;
+}
 static XrResult available(void *ctx) { (void)ctx; return XR_SUCCESS; }
 static XrResult config(void *ctx, KlNativeViewConfiguration *out) {
     (void)ctx;
@@ -26,6 +37,8 @@ int main(void) {
     KlNativeViewHost views = { KL_NATIVE_VIEW_HOST_VERSION, sizeof(views), NULL, config };
     assert(kl_native_configure(&system) == XR_SUCCESS);
     assert(kl_native_configure_views(&views) == XR_SUCCESS);
+    KlNativeViewGeometryHost geometry_host={KL_NATIVE_VIEW_GEOMETRY_VERSION,sizeof(geometry_host),NULL,geometry};
+    assert(kl_native_configure_view_geometry(&geometry_host)==XR_SUCCESS);
     GET(PFN_xrCreateInstance, create, XR_NULL_HANDLE, "xrCreateInstance");
     XrInstanceCreateInfo ci = { .type = XR_TYPE_INSTANCE_CREATE_INFO };
     ci.applicationInfo.apiVersion = XR_MAKE_VERSION(1,0,0);
@@ -34,6 +47,14 @@ int main(void) {
     GET(PFN_xrEnumerateEnvironmentBlendModes, blends, inst, "xrEnumerateEnvironmentBlendModes");
     GET(PFN_xrGetViewConfigurationProperties, properties, inst, "xrGetViewConfigurationProperties");
     GET(PFN_xrDestroyInstance, destroy, inst, "xrDestroyInstance");
+    GET(PFN_xrGetVxStaticViewGeometry, get_geometry, inst, "xrGetVxStaticViewGeometry");
+    KlNativeViewGeometry actual={.version=KL_NATIVE_VIEW_GEOMETRY_VERSION,.struct_size=sizeof(actual)};
+    assert(get_geometry(inst,1,&actual)==XR_SUCCESS && actual.geometry_id==7 && actual.head_from_eye[0].position.x==-.032f && actual.head_from_eye[1].position.x==.032f);
+    assert(get_geometry(inst,1,NULL)==XR_ERROR_VALIDATION_FAILURE);
+    geometry_mode=1; assert(get_geometry(inst,1,&actual)==XR_ERROR_VALIDATION_FAILURE);
+    geometry_mode=2; assert(get_geometry(inst,1,&actual)==XR_ERROR_RUNTIME_FAILURE);
+    geometry_mode=3; assert(get_geometry(inst,1,&actual)==XR_ERROR_VALIDATION_FAILURE);
+    geometry_mode=0;
     uint32_t count = 0;
     assert(enumerate(inst, 1, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &count, NULL) == XR_SUCCESS && count == 2);
     XrViewConfigurationView v[2] = { { .type = XR_TYPE_VIEW_CONFIGURATION_VIEW }, { .type = XR_TYPE_VIEW_CONFIGURATION_VIEW } };
@@ -48,5 +69,11 @@ int main(void) {
     mode = 2; assert(enumerate(inst, 1, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &count, NULL) == XR_ERROR_VIEW_CONFIGURATION_TYPE_UNSUPPORTED);
     mode = 3; assert(enumerate(inst, 1, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &count, NULL) == XR_ERROR_RUNTIME_FAILURE);
     assert(destroy(inst) == XR_SUCCESS);
+    assert(kl_native_configure_view_geometry(NULL)==XR_SUCCESS);
+    assert(create(&ci,&inst)==XR_SUCCESS);
+    GET(PFN_xrGetVxStaticViewGeometry, no_geometry, inst, "xrGetVxStaticViewGeometry");
+    actual.version=KL_NATIVE_VIEW_GEOMETRY_VERSION; actual.struct_size=sizeof(actual);
+    assert(no_geometry(inst,1,&actual)==XR_ERROR_FUNCTION_UNSUPPORTED);
+    assert(destroy(inst)==XR_SUCCESS);
     puts("Host stereo view metadata: pass; injected values, no frame or tracking");
 }

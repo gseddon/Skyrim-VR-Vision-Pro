@@ -31,6 +31,8 @@ static KlNativeFrameHost frame_host;
 static int frame_configured;
 static KlNativeViewHost view_host;
 static int view_configured;
+static KlNativeViewGeometryHost view_geometry_host;
+static int view_geometry_configured;
 static KlNativeInputHost input_host;
 static int input_configured;
 static int metal_extension_available(void) {
@@ -188,6 +190,30 @@ XrResult kl_native_configure_views(const KlNativeViewHost *host) {
     if (host->version != KL_NATIVE_VIEW_HOST_VERSION || host->struct_size < sizeof(*host) || !host->get_configuration) return XR_ERROR_VALIDATION_FAILURE;
     view_host = *host; view_configured = 1;
     return XR_SUCCESS;
+}
+XrResult kl_native_configure_view_geometry(const KlNativeViewGeometryHost *host) {
+    for (unsigned i = 0; i < INSTANCE_LIMIT; ++i) if (instances[i].live) return XR_ERROR_CALL_ORDER_INVALID;
+    if (!host) { memset(&view_geometry_host,0,sizeof view_geometry_host); view_geometry_configured=0; return XR_SUCCESS; }
+    if (host->version!=KL_NATIVE_VIEW_GEOMETRY_VERSION || host->struct_size<sizeof(*host) || !host->get_geometry) return XR_ERROR_VALIDATION_FAILURE;
+    view_geometry_host=*host; view_geometry_configured=1; return XR_SUCCESS;
+}
+static XrResult XRAPI_CALL klxr_GetVxStaticViewGeometry(XrInstance instance, XrSystemId system, KlNativeViewGeometry *out) {
+    if (!valid_instance(instance)) return XR_ERROR_HANDLE_INVALID;
+    if (system!=KLXR_SYSTEM_ID) return XR_ERROR_SYSTEM_INVALID;
+    if (!out || out->version!=KL_NATIVE_VIEW_GEOMETRY_VERSION || out->struct_size<sizeof(*out)) return XR_ERROR_VALIDATION_FAILURE;
+    if (!view_geometry_configured) return XR_ERROR_FUNCTION_UNSUPPORTED;
+    KlNativeViewGeometry value={.version=KL_NATIVE_VIEW_GEOMETRY_VERSION,.struct_size=sizeof(value)};
+    XrResult result=view_geometry_host.get_geometry(view_geometry_host.context,&value);
+    if (result!=XR_SUCCESS) return XR_FAILED(result) ? result : XR_ERROR_RUNTIME_FAILURE;
+    if (value.version!=KL_NATIVE_VIEW_GEOMETRY_VERSION || value.struct_size<sizeof(value) || !value.geometry_id) return XR_ERROR_VALIDATION_FAILURE;
+    for (unsigned i=0;i<2;++i) {
+        XrFovf f=value.fov[i];
+        if (!kl_native_pose_valid(value.head_from_eye[i]) || !isfinite(f.angleLeft) || !isfinite(f.angleRight) ||
+            !isfinite(f.angleUp) || !isfinite(f.angleDown) || f.angleLeft>=f.angleRight || f.angleDown>=f.angleUp ||
+            f.angleLeft<=-1.5707963267948966f || f.angleRight>=1.5707963267948966f ||
+            f.angleDown<=-1.5707963267948966f || f.angleUp>=1.5707963267948966f) return XR_ERROR_VALIDATION_FAILURE;
+    }
+    *out=value; return XR_SUCCESS;
 }
 
 XrResult kl_native_configure_input(const KlNativeInputHost *host) {
@@ -1206,6 +1232,7 @@ XRAPI_ATTR XrResult XRAPI_CALL kl_native_get_instance_proc_addr(XrInstance insta
     INSTANCE("xrGetInstanceProcAddr", kl_native_get_instance_proc_addr)
     INSTANCE("xrDestroyInstance", klxr_DestroyInstance)
     INSTANCE("xrGetSystem", klxr_GetSystem)
+    INSTANCE("xrGetVxStaticViewGeometry", klxr_GetVxStaticViewGeometry)
     INSTANCE("xrGetInstanceProperties", klxr_GetInstanceProperties)
     INSTANCE("xrGetSystemProperties", klxr_GetSystemProperties)
     INSTANCE("xrStringToPath", klxr_StringToPath)
