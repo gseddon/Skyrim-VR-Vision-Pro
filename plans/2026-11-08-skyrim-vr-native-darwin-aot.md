@@ -65,8 +65,12 @@ non-Terra implementation worker was introduced.
   an actual native xrizer/Metal fixture with two stereo pairs, held/repeated
   reader leases, two no-render zero-layer frames and clean drain (`xFA4vt`).
   Real host clock/tracking, connected input and physical presentation remain
-  unproven; isolated simulator static archives/link probe now passes; existing-app
-  integration and actual simulator execution are next.
+  unproven; isolated simulator static archives/link probe passes. Existing-app simulator
+  integration now executes an explicitly injected offscreen guest: 43 AOT
+  entries, zero fallback, two source-pair pixel/ID checks and clean lifecycle.
+  The actual simulator drawable supplies one view/texture; real stereo optics
+  readiness refuses, and stereo presentation remains unproven. Review and
+  corrected optional packaging-target verification are in progress.
 - Native-fault diagnostics: an owned real-SIGBUS control verifies raw fault
   registers plus cached native stack bounds/thread ID before logging/unwind.
   Shallow/deep callback controls pass. This is observability, not a fix for the
@@ -80,7 +84,7 @@ non-Terra implementation worker was introduced.
 
 ### Actual game follow-up in this round
 
-Nine bounded native-backend probes are sealed in C's local ledger. They have
+Ten bounded native-backend probes are sealed in C's local ledger. They have
 advanced through real xrizer initialization, both pre-Wait eye transforms,
 the documented unavailable DXGI index -1, successful D3D11 device/swapchain
 creation, real Compositor022 acquisition and **WaitGetPoses returning 0**.
@@ -105,7 +109,12 @@ bytes below it. This strongly supports native stack/guard exhaustion as the
 immediate mechanism; the stack-consuming call path and root cause remain
 under investigation. Do not fix this by guessing a larger stack.
 Probes001/002/004/006/009 lack AOT summaries; their entry/fallback totals remain
-unknown. Probe005 used an explicit callback-depth
+unknown. Probe010, with explicit depth limit4 after a managed-worker control,
+stops at depth5 and exposes repeated null-target callback entry after an
+original vtable call. It reports 3,053,700 entries and zero fallback up to the
+diagnostic stop. Source triage identifies an uninitialized AOT-cache hit at
+RIP0; an owned null-vtable/Windows execute-AV fix is in progress. Why the
+original object supplied a null target remains separate and unknown. Probe005 used an explicit callback-depth
 diagnostic and is not normal-depth acceptance. No compositor Submit, game
 stereo frame, menu, scene or physical headset playability has been established.
 See `research/2026-11-08-skyrim-native-bootstrap-round2.md` for exact identities,
