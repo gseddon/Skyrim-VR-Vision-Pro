@@ -24,10 +24,6 @@ static XrResult XRAPI_CALL refuse_xrSuggestInteractionProfileBindings(XrInstance
     (void)suggestedBindings;
     return valid_instance(instance) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
 }
-static XrResult XRAPI_CALL refuse_xrAttachSessionActionSets(XrSession session, const XrSessionActionSetsAttachInfo* attachInfo) {
-    (void)attachInfo;
-    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
-}
 static XrResult XRAPI_CALL refuse_xrGetCurrentInteractionProfile(XrSession session, XrPath topLevelUserPath, XrInteractionProfileState* interactionProfile) {
     (void)topLevelUserPath;
     (void)interactionProfile;
@@ -51,10 +47,6 @@ static XrResult XRAPI_CALL refuse_xrGetActionStateVector2f(XrSession session, co
 static XrResult XRAPI_CALL refuse_xrGetActionStatePose(XrSession session, const XrActionStateGetInfo* getInfo, XrActionStatePose* state) {
     (void)getInfo;
     (void)state;
-    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
-}
-static XrResult XRAPI_CALL refuse_xrSyncActions(XrSession session, const XrActionsSyncInfo* syncInfo) {
-    (void)syncInfo;
     return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
 }
 static XrResult XRAPI_CALL refuse_xrEnumerateBoundSourcesForAction(XrSession session, const XrBoundSourcesForActionEnumerateInfo* enumerateInfo, uint32_t sourceCapacityInput, uint32_t* sourceCountOutput, XrPath* sources) {

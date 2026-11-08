@@ -6,6 +6,7 @@
 #include "image_sync_host.h"
 #include "frame_host.h"
 #include "view_host.h"
+#include "input_host.h"
 #include "pose_math.h"
 #define XR_USE_GRAPHICS_API_METAL 1
 #include <openxr/openxr_platform.h>
@@ -30,6 +31,8 @@ static KlNativeFrameHost frame_host;
 static int frame_configured;
 static KlNativeViewHost view_host;
 static int view_configured;
+static KlNativeInputHost input_host;
+static int input_configured;
 static int metal_extension_available(void) {
 #ifdef KL_NATIVE_TEST_METAL_PARTIAL
     return metal_configured;
@@ -75,6 +78,11 @@ struct XrSession_T {
     uint64_t last_frame_id;
     XrTime last_predicted_time;
     KlNativeFrameSample sample;
+    XrActionSet attached[ACTION_SET_LIMIT];
+    uint32_t attached_count;
+    uint64_t last_input_id;
+    XrTime last_input_time;
+    unsigned input_valid;
 };
 struct XrSwapchain_T {
     unsigned used, live;
@@ -177,6 +185,14 @@ XrResult kl_native_configure_views(const KlNativeViewHost *host) {
     if (host->version != KL_NATIVE_VIEW_HOST_VERSION || host->struct_size < sizeof(*host) || !host->get_configuration) return XR_ERROR_VALIDATION_FAILURE;
     view_host = *host; view_configured = 1;
     return XR_SUCCESS;
+}
+
+XrResult kl_native_configure_input(const KlNativeInputHost *host) {
+    for (unsigned i = 0; i < INSTANCE_LIMIT; ++i)
+        if (instances[i].live) return XR_ERROR_CALL_ORDER_INVALID;
+    if (!host) { memset(&input_host, 0, sizeof input_host); input_configured = 0; return XR_SUCCESS; }
+    if (host->version != KL_NATIVE_INPUT_HOST_VERSION || host->struct_size < sizeof(*host) || !host->sample) return XR_ERROR_VALIDATION_FAILURE;
+    input_host = *host; input_configured = 1; return XR_SUCCESS;
 }
 
 /* Klepton enumeration two-call behavior; no extensions or API layers are
@@ -375,8 +391,8 @@ static XrResult XRAPI_CALL klxr_DestroyActionSet(XrActionSet set) {
     }
     return XR_ERROR_HANDLE_INVALID;
 }
-/* Adapted from upstream CreateAction/DestroyAction lines 3361-3384; this
- * first owned slice stores pose/boolean action identity only, with no input claim. */
+/* Adapted from upstream CreateAction/DestroyAction lines 3361-3384. Action
+ * identity does not imply bindings, state, connected controllers or haptics. */
 static XrResult XRAPI_CALL klxr_CreateAction(XrActionSet set, const XrActionCreateInfo *info, XrAction *out) {
     XrInstance owner = XR_NULL_HANDLE;
     for (unsigned i = 0; i < ACTION_SET_LIMIT; ++i)
@@ -384,7 +400,9 @@ static XrResult XRAPI_CALL klxr_CreateAction(XrActionSet set, const XrActionCrea
     if (!owner) return XR_ERROR_HANDLE_INVALID;
     if (!info || !out || info->type != XR_TYPE_ACTION_CREATE_INFO || info->next) return XR_ERROR_VALIDATION_FAILURE;
     *out = XR_NULL_HANDLE;
-    if (info->actionType != XR_ACTION_TYPE_POSE_INPUT && info->actionType != XR_ACTION_TYPE_BOOLEAN_INPUT) return XR_ERROR_FEATURE_UNSUPPORTED;
+    if (info->actionType != XR_ACTION_TYPE_POSE_INPUT && info->actionType != XR_ACTION_TYPE_BOOLEAN_INPUT &&
+        info->actionType != XR_ACTION_TYPE_FLOAT_INPUT && info->actionType != XR_ACTION_TYPE_VECTOR2F_INPUT &&
+        info->actionType != XR_ACTION_TYPE_VIBRATION_OUTPUT) return XR_ERROR_FEATURE_UNSUPPORTED;
     if (!memchr(info->actionName, 0, sizeof info->actionName) || !info->actionName[0]) return XR_ERROR_NAME_INVALID;
     if (!memchr(info->localizedActionName, 0, sizeof info->localizedActionName) || !info->localizedActionName[0]) return XR_ERROR_LOCALIZED_NAME_INVALID;
     char path[XR_MAX_ACTION_NAME_SIZE + 2]; path[0] = '/';
@@ -497,6 +515,50 @@ static int valid_session(XrSession session) {
     for (unsigned i = 0; i < SESSION_LIMIT; ++i)
         if (session == &sessions[i]) return sessions[i].live && valid_instance(sessions[i].owner);
     return 0;
+}
+static int valid_action_set_for(XrActionSet set, XrInstance owner) {
+    for (unsigned i = 0; i < ACTION_SET_LIMIT; ++i)
+        if (set == &action_sets[i]) return action_sets[i].live && action_sets[i].owner == owner;
+    return 0;
+}
+static int attached_action_set(XrSession session, XrActionSet set) {
+    for (uint32_t i = 0; i < session->attached_count; ++i) if (session->attached[i] == set) return 1;
+    return 0;
+}
+static XrResult XRAPI_CALL klxr_AttachSessionActionSets(XrSession session, const XrSessionActionSetsAttachInfo *info) {
+    if (!valid_session(session)) return XR_ERROR_HANDLE_INVALID;
+    if (!info || info->type != XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO || info->next || !info->countActionSets || !info->actionSets) return XR_ERROR_VALIDATION_FAILURE;
+    if (session->attached_count) return XR_ERROR_ACTIONSETS_ALREADY_ATTACHED;
+    if (info->countActionSets > ACTION_SET_LIMIT) return XR_ERROR_LIMIT_REACHED;
+    for (uint32_t i = 0; i < info->countActionSets; ++i) {
+        if (!valid_action_set_for(info->actionSets[i], session->owner)) return XR_ERROR_HANDLE_INVALID;
+        for (uint32_t j = 0; j < i; ++j) if (info->actionSets[i] == info->actionSets[j]) return XR_ERROR_VALIDATION_FAILURE;
+    }
+    memcpy(session->attached, info->actionSets, info->countActionSets * sizeof(*info->actionSets));
+    session->attached_count = info->countActionSets;
+    return XR_SUCCESS;
+}
+static XrResult XRAPI_CALL klxr_SyncActions(XrSession session, const XrActionsSyncInfo *info) {
+    if (!valid_session(session)) return XR_ERROR_HANDLE_INVALID;
+    session->input_valid = 0; /* a failed sync cannot leave stale input observable */
+    if (!info || info->type != XR_TYPE_ACTIONS_SYNC_INFO || info->next || (info->countActiveActionSets && !info->activeActionSets)) return XR_ERROR_VALIDATION_FAILURE;
+    if (!session->attached_count) return XR_ERROR_ACTIONSET_NOT_ATTACHED;
+    for (uint32_t i = 0; i < info->countActiveActionSets; ++i) {
+        XrActionSet set = info->activeActionSets[i].actionSet;
+        if (!valid_action_set_for(set, session->owner)) return XR_ERROR_HANDLE_INVALID;
+        if (!attached_action_set(session, set)) return XR_ERROR_ACTIONSET_NOT_ATTACHED;
+        if (info->activeActionSets[i].subactionPath != XR_NULL_PATH) return XR_ERROR_PATH_UNSUPPORTED;
+    }
+    if (!session->running) return XR_ERROR_SESSION_NOT_RUNNING;
+    if (session->state != XR_SESSION_STATE_FOCUSED) return XR_SESSION_NOT_FOCUSED;
+    if (!input_configured) return XR_ERROR_FUNCTION_UNSUPPORTED;
+    KlNativeInputSample sample = {0};
+    XrResult result = input_host.sample(input_host.context, &sample);
+    if (result != XR_SUCCESS) return XR_FAILED(result) ? result : XR_ERROR_RUNTIME_FAILURE;
+    if (!sample.sample_id || sample.sample_id < session->last_input_id || sample.sample_time <= 0 || sample.sample_time < session->last_input_time || (sample.sample_id == session->last_input_id && sample.sample_time != session->last_input_time) || sample.hand_connected[0] > XR_TRUE || sample.hand_connected[1] > XR_TRUE) return XR_ERROR_VALIDATION_FAILURE;
+    if (sample.hand_connected[0] || sample.hand_connected[1]) return XR_ERROR_FEATURE_UNSUPPORTED;
+    session->last_input_id = sample.sample_id; session->last_input_time = sample.sample_time; session->input_valid = 1;
+    return XR_SUCCESS;
 }
 static int valid_swapchain(XrSwapchain swapchain) {
     for (unsigned i = 0; i < SWAPCHAIN_LIMIT; ++i)
@@ -1026,6 +1088,8 @@ XRAPI_ATTR XrResult XRAPI_CALL kl_native_get_instance_proc_addr(XrInstance insta
     INSTANCE("xrRequestExitSession", klxr_RequestExitSession)
     INSTANCE("xrCreateSession", klxr_CreateSession)
     INSTANCE("xrDestroySession", klxr_DestroySession)
+    INSTANCE("xrAttachSessionActionSets", klxr_AttachSessionActionSets)
+    INSTANCE("xrSyncActions", klxr_SyncActions)
     INSTANCE("xrEnumerateSwapchainFormats", klxr_EnumerateSwapchainFormats)
     INSTANCE("xrCreateSwapchain", klxr_CreateSwapchain)
     INSTANCE("xrDestroySwapchain", klxr_DestroySwapchain)

@@ -100,6 +100,7 @@ pub fn run_for_all_profiles(runner: &mut impl RunWithProfile) {
 
 pub struct InputToXrPath<'a, P: InteractionProfile> {
     instance: &'a xr::Instance,
+    error: Option<std::cell::Cell<Option<xr::sys::Result>>>,
     _marker: std::marker::PhantomData<P>,
 }
 
@@ -108,7 +109,23 @@ impl<'a, P: InteractionProfile> InputToXrPath<'a, P> {
     pub fn new(instance: &'a xr::Instance) -> InputToXrPath<'a, P> {
         Self {
             instance,
+            error: None,
             _marker: Default::default(),
+        }
+    }
+    pub fn new_fallible(instance: &'a xr::Instance) -> InputToXrPath<'a, P> {
+        Self { instance, error: Some(Default::default()), _marker: Default::default() }
+    }
+    pub fn error(&self) -> Option<xr::sys::Result> {
+        self.error.as_ref().and_then(|error| error.get())
+    }
+    fn path(&self, name: &str) -> xr::Path {
+        match self.instance.string_to_path(name) {
+            Ok(path) => path,
+            Err(error) => match &self.error {
+                Some(slot) => { if slot.get().is_none() { slot.set(Some(error)); } xr::Path::NULL }
+                None => panic!("Failed to intern input path {name}: {error}"),
+            },
         }
     }
     pub fn into<T, M>(&self) -> Vec<xr::Path>
@@ -116,7 +133,7 @@ impl<'a, P: InteractionProfile> InputToXrPath<'a, P> {
         T: InputPath,
         P::LegalPaths: ContainsPath<T, M>,
     {
-        vec![self.instance.string_to_path(&T::DYN.to_string()).unwrap()]
+        vec![self.path(&T::DYN.to_string())]
     }
 
     pub fn leftright<Subpath, Component, M1, M2>(&self) -> Vec<xr::Path>
@@ -127,34 +144,22 @@ impl<'a, P: InteractionProfile> InputToXrPath<'a, P> {
         P::LegalPaths: ContainsPath<Right<Subpath, Component>, M2>,
     {
         vec![
-            self.instance
-                .string_to_path(&Left::<Subpath, Component>::DYN.to_string())
-                .unwrap(),
-            self.instance
-                .string_to_path(&Right::<Subpath, Component>::DYN.to_string())
-                .unwrap(),
+            self.path(&Left::<Subpath, Component>::DYN.to_string()),
+            self.path(&Right::<Subpath, Component>::DYN.to_string()),
         ]
     }
 
     pub fn haptics(&self) -> Vec<xr::Path> {
         vec![
-            self.instance
-                .string_to_path("/user/hand/left/output/haptic")
-                .unwrap(),
-            self.instance
-                .string_to_path("/user/hand/right/output/haptic")
-                .unwrap(),
+            self.path("/user/hand/left/output/haptic"),
+            self.path("/user/hand/right/output/haptic"),
         ]
     }
 
     pub fn pose(&self) -> Vec<xr::Path> {
         vec![
-            self.instance
-                .string_to_path("/user/hand/left/input/grip/pose")
-                .unwrap(),
-            self.instance
-                .string_to_path("/user/hand/right/input/grip/pose")
-                .unwrap(),
+            self.path("/user/hand/left/input/grip/pose"),
+            self.path("/user/hand/right/input/grip/pose"),
         ]
     }
 }

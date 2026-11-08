@@ -3,6 +3,7 @@
 #include "session_host.h"
 #include "image_sync_host.h"
 #include "frame_host.h"
+#include "input_host.h"
 #define XR_USE_GRAPHICS_API_METAL 1
 #include <openxr/openxr_platform.h>
 #include <assert.h>
@@ -16,6 +17,9 @@ static XrResult image_wait_result = XR_SUCCESS, image_write_result = XR_SUCCESS;
 static unsigned waits, completions, frame_waits, cancelled, published;
 static KlNativeFrameSample next_sample;
 static KlNativeFramePair last_pair;
+static KlNativeInputSample input_sample;
+static XrResult input_result = XR_SUCCESS;
+static XrResult sample_input(void *ctx, KlNativeInputSample *out) { (void)ctx; *out = input_sample; return input_result; }
 static XrResult publish_result = XR_SUCCESS;
 static XrResult cancel_result = XR_SUCCESS;
 static XrResult host_wait_frame(void *ctx, KlNativeFrameSample *out) { (void)ctx; *out = next_sample; ++frame_waits; return XR_SUCCESS; }
@@ -66,6 +70,8 @@ int main(void) {
     assert(kl_native_configure_image_sync(&sync) == XR_SUCCESS);
     KlNativeFrameHost frame_host = { KL_NATIVE_FRAME_HOST_VERSION, sizeof(frame_host), NULL, host_wait_frame, host_publish, host_cancel };
     assert(kl_native_configure_frame(&frame_host) == XR_SUCCESS);
+    KlNativeInputHost input = { KL_NATIVE_INPUT_HOST_VERSION, sizeof(input), NULL, sample_input };
+    assert(kl_native_configure_input(&input) == XR_SUCCESS);
     GET(PFN_xrEnumerateInstanceExtensionProperties, enum_ext, XR_NULL_HANDLE, "xrEnumerateInstanceExtensionProperties");
     uint32_t count = 0;
     assert(enum_ext(NULL, 0, &count, NULL) == XR_SUCCESS && count == 1);
@@ -98,6 +104,9 @@ int main(void) {
     GET(PFN_xrAcquireSwapchainImage, acquire, instance, "xrAcquireSwapchainImage");
     GET(PFN_xrWaitSwapchainImage, wait_image, instance, "xrWaitSwapchainImage");
     GET(PFN_xrReleaseSwapchainImage, release_image, instance, "xrReleaseSwapchainImage");
+    GET(PFN_xrCreateActionSet, create_set, instance, "xrCreateActionSet");
+    GET(PFN_xrAttachSessionActionSets, attach_sets, instance, "xrAttachSessionActionSets");
+    GET(PFN_xrSyncActions, sync_actions, instance, "xrSyncActions");
     XrGraphicsBindingMetalKHR binding = { .type = XR_TYPE_GRAPHICS_BINDING_METAL_KHR, .commandQueue = &queue };
     XrSessionCreateInfo si = { .type = XR_TYPE_SESSION_CREATE_INFO, .next = &binding, .systemId = 1 };
     XrSession session;
@@ -108,6 +117,17 @@ int main(void) {
     assert(new_session(instance, &si, &session) == XR_ERROR_GRAPHICS_DEVICE_INVALID);
     binding.commandQueue = &queue;
     assert(new_session(instance, &si, &session) == XR_SUCCESS);
+    assert(kl_native_configure_input(NULL) == XR_ERROR_CALL_ORDER_INVALID);
+    XrActionSetCreateInfo asi = { .type = XR_TYPE_ACTION_SET_CREATE_INFO };
+    strcpy(asi.actionSetName, "input"); strcpy(asi.localizedActionSetName, "Input");
+    XrActionSet set; assert(create_set(instance, &asi, &set) == XR_SUCCESS);
+    XrSessionActionSetsAttachInfo attach = { .type = XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO, .countActionSets = 1, .actionSets = &set };
+    XrActiveActionSet active = { .actionSet = set };
+    XrActionsSyncInfo action_sync = { .type = XR_TYPE_ACTIONS_SYNC_INFO, .countActiveActionSets = 1, .activeActionSets = &active };
+    assert(sync_actions(session, &action_sync) == XR_ERROR_ACTIONSET_NOT_ATTACHED);
+    assert(attach_sets(session, &attach) == XR_SUCCESS);
+    assert(attach_sets(session, &attach) == XR_ERROR_ACTIONSETS_ALREADY_ATTACHED);
+    assert(sync_actions(session, &action_sync) == XR_ERROR_SESSION_NOT_RUNNING);
     XrSessionBeginInfo bi = { .type = XR_TYPE_SESSION_BEGIN_INFO, .primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO };
     XrEventDataBuffer b = { .type = XR_TYPE_EVENT_DATA_BUFFER };
     assert(poll_event(instance, &b) == XR_EVENT_UNAVAILABLE);
@@ -128,6 +148,20 @@ int main(void) {
     assert(poll_state(poll_event, instance) == XR_SESSION_STATE_VISIBLE);
     injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_FOCUSED, 22 };
     assert(poll_state(poll_event, instance) == XR_SESSION_STATE_FOCUSED);
+    input_sample = (KlNativeInputSample){ .sample_id = 1, .sample_time = 23 };
+    assert(sync_actions(session, &action_sync) == XR_SUCCESS);
+    assert(sync_actions(session, &action_sync) == XR_SUCCESS); /* unchanged observation */
+    input_sample.sample_time = 24;
+    assert(sync_actions(session, &action_sync) == XR_ERROR_VALIDATION_FAILURE); /* same ID, conflicting time */
+    input_sample.sample_id = 2; input_sample.sample_time = 22;
+    assert(sync_actions(session, &action_sync) == XR_ERROR_VALIDATION_FAILURE);
+    input_sample.sample_time = 24; input_sample.hand_connected[0] = XR_TRUE;
+    assert(sync_actions(session, &action_sync) == XR_ERROR_FEATURE_UNSUPPORTED);
+    input_sample.hand_connected[0] = XR_FALSE;
+    input_result = XR_ERROR_RUNTIME_FAILURE;
+    assert(sync_actions(session, &action_sync) == XR_ERROR_RUNTIME_FAILURE);
+    input_result = XR_SUCCESS;
+    assert(sync_actions(session, &action_sync) == XR_SUCCESS);
     XrReferenceSpaceCreateInfo rs = { .type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO,
         .referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL, .poseInReferenceSpace.orientation.w = 1 };
     XrSpace local, stage, view;
