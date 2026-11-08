@@ -546,7 +546,13 @@ typedef struct { DWORD attrs, created[2], accessed[2], written[2], size_high, si
 static WINAPI BOOL GetFileAttributesExA(const char *name, int level, FILE_ATTRIBUTE_DATA *d) {
     (void)level;
     struct stat st;
-    if (stat_windows(name, &st)) return 0;
+    if (stat_windows(name, &st)) {
+        static int trace = -1;                               // VXRT_TRACE_FILES: a failed attribute query, with the path
+        if (trace < 0) trace = getenv("VXRT_TRACE_FILES") != NULL;
+        if (trace) vx_log("GetFileAttributesEx(%s): error %lu", name, (unsigned long)vx_get_last_error());
+        return 0;
+    }
+    if (trace_opens_all()) vx_log("GetFileAttributesEx(%s): found", name);
     d->attrs = attributes(&st, base_name(name));
     filetime(&st.st_birthtimespec, d->created); filetime(&st.st_atimespec, d->accessed); filetime(&st.st_mtimespec, d->written);
     d->size_high = S_ISDIR(st.st_mode) ? 0 : (DWORD)((uint64_t)st.st_size >> 32);
