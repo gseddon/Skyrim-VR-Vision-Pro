@@ -3,6 +3,9 @@
 #define KL_NATIVE_INPUT_HOST_H
 #include <openxr/openxr.h>
 #include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
 #define KL_NATIVE_INPUT_HOST_VERSION 1u
 /* This first version represents only the explicitly observed absence of both
  * hands. A connected hand is rejected until its profile, controls and poses
@@ -22,4 +25,7 @@ typedef struct KlNativeInputHost {
     XrResult (*sample)(void *context, KlNativeInputSample *out);
 } KlNativeInputHost;
 XrResult kl_native_configure_input(const KlNativeInputHost *host);
+#ifdef __cplusplus
+}
+#endif
 #endif

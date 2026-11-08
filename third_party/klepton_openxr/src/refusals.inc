@@ -20,35 +20,6 @@ static XrResult XRAPI_CALL refuse_xrCreateActionSpace(XrSession session, const X
     (void)space;
     return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
 }
-static XrResult XRAPI_CALL refuse_xrSuggestInteractionProfileBindings(XrInstance instance, const XrInteractionProfileSuggestedBinding* suggestedBindings) {
-    (void)suggestedBindings;
-    return valid_instance(instance) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
-}
-static XrResult XRAPI_CALL refuse_xrGetCurrentInteractionProfile(XrSession session, XrPath topLevelUserPath, XrInteractionProfileState* interactionProfile) {
-    (void)topLevelUserPath;
-    (void)interactionProfile;
-    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
-}
-static XrResult XRAPI_CALL refuse_xrGetActionStateBoolean(XrSession session, const XrActionStateGetInfo* getInfo, XrActionStateBoolean* state) {
-    (void)getInfo;
-    (void)state;
-    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
-}
-static XrResult XRAPI_CALL refuse_xrGetActionStateFloat(XrSession session, const XrActionStateGetInfo* getInfo, XrActionStateFloat* state) {
-    (void)getInfo;
-    (void)state;
-    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
-}
-static XrResult XRAPI_CALL refuse_xrGetActionStateVector2f(XrSession session, const XrActionStateGetInfo* getInfo, XrActionStateVector2f* state) {
-    (void)getInfo;
-    (void)state;
-    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
-}
-static XrResult XRAPI_CALL refuse_xrGetActionStatePose(XrSession session, const XrActionStateGetInfo* getInfo, XrActionStatePose* state) {
-    (void)getInfo;
-    (void)state;
-    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
-}
 static XrResult XRAPI_CALL refuse_xrEnumerateBoundSourcesForAction(XrSession session, const XrBoundSourcesForActionEnumerateInfo* enumerateInfo, uint32_t sourceCapacityInput, uint32_t* sourceCountOutput, XrPath* sources) {
     (void)enumerateInfo;
     (void)sourceCapacityInput;
