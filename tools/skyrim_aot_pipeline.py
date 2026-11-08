@@ -212,9 +212,13 @@ def classify(result):
     if result.get('status') != 'observed':
         return {'category': 'precondition', 'evidence': result.get('preconditions', [])}
     facts = {o['metric']: o['value'] for o in result.get('observed', [])}
+    if facts.get('xrizer_bridge_stops'):
+        return {'category': 'unsupported_xrizer_bridge_slot', 'evidence': facts['xrizer_bridge_stops'],
+                'aot_summaries': facts.get('aot_summaries', [])}
     if facts.get('native_signals'):
         return {'category': 'native_signal', 'evidence': facts['native_signals'],
-                'backtrace': facts.get('native_backtrace', [])}
+                'backtrace': facts.get('native_backtrace', []),
+                'xrizer_unsupported_interfaces_observed': facts.get('xrizer_unsupported_interfaces', [])}
     lines = facts.get('problem_lines', [])
     patterns = [('has no recompiled code', 'missing_aot_code'), ('unimplemented function', 'missing_api'), ('dll not found', 'missing_dependency'), ('dll not loaded', 'missing_dependency'), ('could not load', 'loader'), ('cannot load', 'loader')]
     for line in lines:
@@ -223,6 +227,10 @@ def classify(result):
                 return {'category': category, 'evidence': [line]}
     if facts.get('missing_code'):
         return {'category': 'missing_aot_code', 'evidence': facts['missing_code']}
+    if facts.get('xrizer_unsupported_interfaces'):
+        return {'category': 'unsupported_xrizer_interface_observed', 'evidence': facts['xrizer_unsupported_interfaces'],
+                'causality': 'unknown; an application may handle an unsupported interface',
+                'aot_summaries': facts.get('aot_summaries', [])}
     return {'category': 'unknown', 'evidence': {'returncode': facts.get('returncode'), 'timed_out': facts.get('timed_out'), 'problem_lines': lines,
                                                 'aot_summaries': facts.get('aot_summaries', [])}}
 

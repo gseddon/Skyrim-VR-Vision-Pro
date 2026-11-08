@@ -44,6 +44,8 @@ def inspect_log(content, version=1):
         'could not load', 'cannot load', 'unhandled', 'messagebox:', 'not used', '[vxrt] abort:')
     if version >= 2:
         patterns += ('signal ', 'native backtrace:', 'callback depth limit', 'callback_depth_limit', 'openvr-init:')
+    if version >= 3:
+        patterns += ('xrizer_guest_bridge: unsupported ', 'xrizer openvr: getgenericinterface ')
     candidates = [line for line in content.splitlines() if any(x in line.lower() for x in patterns)]
     facts = dict(aot_summaries=summaries, missing_code=missing, problem_lines=candidates[:30],
                 aot_executed=any(s['entries'] > 0 for s in summaries),
@@ -53,6 +55,11 @@ def inspect_log(content, version=1):
             for sig, pc, address, detail in re.findall(
                 r'\bsignal (\d+) at (0x[0-9a-fA-F]+) \(address (0x[0-9a-fA-F]+|0)\)([^\n]*)', content)]
         facts['native_backtrace'] = re.findall(r'^\d+\s+\S+\s+0x[0-9a-fA-F]+\s+[^\n]*', content, re.MULTILINE)[:64]
+    if version >= 3:
+        facts['xrizer_bridge_stops'] = [dict(interface=name, slot=int(slot)) for name, slot in re.findall(
+            r'xrizer_guest_bridge: unsupported ([A-Za-z0-9_:]+) slot (\d+)', content)]
+        facts['xrizer_unsupported_interfaces'] = re.findall(
+            r'xrizer OpenVR: GetGenericInterface ([^\s]+) = (?:0x0|\(nil\)) error 106\b', content)
     return facts
 
 
@@ -142,7 +149,7 @@ def capture(args):
     wine = subprocess.run(['pgrep', '-fl', '[w]ine.*(vrserver|hlvr|SkyrimVR)'], capture_output=True, text=True)
     idle = busy.returncode == 1 and wine.returncode == 1
     out.mkdir(parents=True)
-    result = dict(kind='native_aot_startup', schema_version=2, level=None, status='refused' if not idle else 'observed',
+    result = dict(kind='native_aot_startup', schema_version=3 if getattr(args, 'experimental_xrizer', False) else 2, level=None, status='refused' if not idle else 'observed',
                   appid=getattr(args, 'appid', None),
                   scope='startup checkpoint only; no VR compatibility, frame, gameplay or performance claim',
                   source_commit=subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip(),

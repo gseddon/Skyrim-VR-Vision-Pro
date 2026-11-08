@@ -155,5 +155,17 @@ class ProbeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'absolute'):
             probe.capture(self.args)
 
+    def test_xrizer_stops_are_versioned_and_missing_counters_remain_unknown(self):
+        log = ('[vxrt] xrizer OpenVR: GetGenericInterface IVROverlay_018 = 0x0 error 106\n'
+               '[vxrt] xrizer_guest_bridge: unsupported IVRSystem_019 slot 12\n'
+               '[vxrt] signal 6 at 0x1234 (address 0) in this runtime\n')
+        old = probe.inspect_log(log, 2)
+        self.assertNotIn('xrizer_bridge_stops', old)
+        facts = probe.inspect_log(log, 3)
+        self.assertEqual(facts['xrizer_bridge_stops'], [{'interface': 'IVRSystem_019', 'slot': 12}])
+        self.assertEqual(facts['xrizer_unsupported_interfaces'], ['IVROverlay_018'])
+        self.assertEqual(facts['aot_summaries'], [])
+        self.assertFalse(facts['zero_fallback_reported'])
+
 
 if __name__=='__main__':unittest.main()

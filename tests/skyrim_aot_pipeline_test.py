@@ -145,5 +145,20 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(category['evidence'], [{'signal':10,'pc':'0x10146b130'}])
         self.assertTrue(category['backtrace'])
 
+    def test_explicit_xrizer_slot_stop_precedes_signal_and_keeps_unknown_counters(self):
+        result = {'status':'observed', 'observed':[
+            {'metric':'xrizer_bridge_stops','value':[{'interface':'IVRSystem_019','slot':12}]},
+            {'metric':'native_signals','value':[{'signal':6,'pc':'0x1234'}]}]}
+        category = p.classify(result)
+        self.assertEqual(category['category'], 'unsupported_xrizer_bridge_slot')
+        self.assertEqual(category['aot_summaries'], [])
+
+    def test_unsupported_interface_is_observed_without_assuming_cause(self):
+        result = {'status':'observed', 'observed':[
+            {'metric':'xrizer_unsupported_interfaces','value':['IVROverlay_018']}]}
+        category = p.classify(result)
+        self.assertEqual(category['category'], 'unsupported_xrizer_interface_observed')
+        self.assertIn('unknown', category['causality'])
+
 
 if __name__ == '__main__': unittest.main()
