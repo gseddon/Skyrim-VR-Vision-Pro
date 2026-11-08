@@ -1,7 +1,7 @@
 # Skyrim VR native Darwin AOT implementation plan
 
 Date: 8 November 2026 (Europe/London)
-Status: source checkpoint published; original game reaches OpenVR initialization failure; owned native xrizer/provider stereo and separate Windows ABI proofs pass; joined guest/provider initialization and matrices pass; next round approved; Terra implementation starting; guest stereo, game scene and physical headset unproven
+Status: supervised Terra round active; exact game-facing owned Mac stereo/pose path passes strict AOT; normal-host configuration control and required regressions in progress; new actual Skyrim probe pending; physical headset and game scene unproven
 
 ## Overview
 
@@ -15,7 +15,7 @@ The user selected the Android-style preparation/discovery/translation workflow a
 
 Pinned Steamless successfully prepared a private image: unexplained executable-section bytes fell from 78.98% to 0.86%. Actual strict native probes now reach the original OpenVR initialization. `probe-skyrim-009` transparently observed Valve token0/error110 (`Init_PathRegistryNotFound`), followed by NULL compositor/error109; the game later dereferences the uninitialized `BSOpenVR` member. The earlier no-image address was classified as a missing import stub. Original inputs remain unchanged. A menu, scene and complete game-code semantics remain unproven. See the focused plan for evidence and the systematic build/probe workflow.
 
-The confirmed XR revision reuses selected Klepton OpenXR and visionOS host code behind native xrizer, adding the missing Metal binding while retaining D3D11→Metal. See [the xrizer/Klepton workstream](2026-11-08-xrizer-klepton-native-openxr.md). The user confirmed this boundary; Phase A provider extraction has begun under supervised Terra ownership.
+The confirmed XR revision reuses selected Klepton OpenXR and visionOS host code behind native xrizer, adding the missing Metal binding while retaining D3D11→Metal. See [the xrizer/Klepton workstream](2026-11-08-xrizer-klepton-native-openxr.md). The user confirmed this boundary; the experimental frontend/provider now passes owned guest integration, while connected input and the physical host remain incomplete.
 
 ## Source control and active checkout
 
@@ -44,6 +44,38 @@ session limit did not recur; no non-Terra implementation workers were resumed.
 First checkpoints established the reusable guest bridge, unchanged frame-host
 contract and a separate coherent input snapshot. A has the first runtime test
 slot; B/C source and isolated CPU work proceed in parallel.
+
+### Verified round progress
+
+- Guest graphics/ABI: real guest-created D3D11 textures, distinct producer/provider
+  queues, checked producer and destination completion, two changing pixel pairs,
+  unique balanced source leases, failed-producer retry, and shared/wrapped/DXGI
+  backbuffer refusals pass. Combined nonzero-pose/stereo fixture passes with
+  **67 AOT entries and zero fallback** (`terra-combined-check`).
+- Pose/input: focused native xrizer tests cover changing valid/invalid head poses,
+  all three pose-query APIs, disconnected legacy role/state calls, explicit
+  inactive input snapshots, and balanced cancellation. Ordinary Apple init still
+  refuses; connected-controller state/profile/provider-v2 activation is absent.
+- Exact game-facing integration: owned Windows caller through the six real
+  OpenVR exports and the actual development host passes **73 AOT entries,
+  zero fallback**, exact cropped pixel pairs, reader/source lease balance and
+  clean lifecycle (`xrizer-candidate-04/joined-002`). A Standing-invalid sample
+  is explicitly cancelled before Seated/local samples publish IDs 2/2 and 3/3.
+  The host has no floor reference. The normal 1024 recommendation/consumer path
+  is being tested with a passive observer before a game run; the earlier test
+  changed recommendation and consumer behavior for its audit.
+- Preserved failures: missing adjacent VM dylib prevented bootstrap001 execution;
+  bootstrap002 revealed a real synthetic shutdown-event bug; joined001 exposed
+  a test/host origin mismatch. Corrected candidates passed their owned tests.
+  These are not game or physical-device results and earlier logs remain intact.
+- Platform preparation: device/simulator unsigned app builds and raw Sense
+  observation/mapping controls pass; no physical launch and no connected input
+  routed into the provider. Simulator static-link/no-JIT dispatch integration is
+  being investigated separately, retaining the existing Apple host.
+- Required regression batch is active on frozen default-off Rosetta/ARM64
+  candidates. Previously recorded broad failures remain unresolved until this
+  batch is examined. The actual game is still at probe009/error110; do not
+  advance its claimed checkpoint from these fixture successes.
 
 ### Outcome
 
@@ -151,10 +183,10 @@ Updated after the xrizer decision and Apple cross-builds on 8 November 2026. The
 | Area | Established | Still to prove |
 | --- | --- | --- |
 | AOT / Windows compatibility | Owned CPU/D3D11 suite passes strict AOT on Mac and in visionOS simulator; actual MSVC guest scalar/float/matrix static-wrapper tests pass with zero fallback | Complete observed interface coverage, guest/provider stereo and clean broad runtime baseline |
-| D3D11 / Metal / native frame exchange | Owned native xrizer/provider stereo fixture passes real pixel, identity, ownership and four failure/retry checks | Actual Windows D3D11 guest handles through xrizer, full lifecycle and physical presentation/input |
-| xrizer Apple port | Owned native frontend initializes and submits Metal stereo through the adapted provider; ordinary initialization remains disabled | Real host tracking, fallible nonzero pose/input setup, complete restart/shutdown and connected Windows guest graphics |
+| D3D11 / Metal / native frame exchange | Owned Windows guest D3D11 → xrizer/provider stereo passes real pixels, poses, identity, ownership and failure controls | Normal development-host configuration, physical presentation/input and unsupported formats/origins |
+| xrizer Apple port | Owned guest path initializes, queries nonzero poses and submits stereo through the provider; ordinary initialization remains disabled | Real Apple-host integration, connected input, broader interface coverage and recoverable session replacement |
 | Skyrim VR | Private prepared code and guest modules built; actual native AOT probes reach genuine OpenVR error110 | Connect the proven native XR path; no menu, stereo frame, scene, controller or performance result |
-| Physical Vision Pro | Unsigned owned-fixture device app built | Signing/install/launch, available address space/memory, local stereo/tracking/input/audio and sustained operation |
+| Physical Vision Pro | Unsigned device/simulator apps and raw spatial-controller collector compile | Integrated xrizer execution, signing/install/launch, resource budgets, local stereo/tracking/input/audio and sustained operation |
 
 Do not report a completion percentage: these are risk-reduction milestones, and the largest game-specific uncertainty is still untested.
 
