@@ -2,9 +2,11 @@
  * are the game's GetProjectionMatrix arguments. The drawable depth range, far
  * 10000 m, is a separate compositor plane and is not this matrix. */
 #include "xrizer_xros_optics.h"
+#include <mach/mach_time.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 static int near(float got, float want) {
     float scale = fabsf(want) > 1.f ? fabsf(want) : 1.f;
@@ -57,7 +59,37 @@ int main(void) {
     if (!vx_xros_pose_is_current(10, 10, 1) || !vx_xros_pose_is_current(11, 10, 1) || !vx_xros_pose_is_current(9.9, 10, 1)) return 12;
     if (vx_xros_pose_is_current(11.2, 10, 1) || vx_xros_pose_is_current(9.8, 10, 1)) return 13;
     if (vx_xros_pose_is_current(10, 10, 0) || vx_xros_pose_is_current(NAN, 10, 1)) return 14;
-    const char msg[] = "xrizer_xros_optics_golden: 64 mm separation, ±pi/4 fields, OpenVR near 0.1 far 100, 1 m origin, stale pose rejected -> ok\n";
+    /* Provider XrTime is Mach absolute time. CLOCK_UPTIME_RAW matches it.
+     * CLOCK_MONOTONIC includes sleep, so it is not a frame or session time. */
+    mach_timebase_info_data_t info;
+    if (mach_timebase_info(&info) != KERN_SUCCESS || !info.numer || !info.denom) return 15;
+    uint64_t before = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    double mach = (double)mach_absolute_time() * ((double)info.numer / (double)info.denom) * 1e-9;
+    uint64_t after = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    double low = (double)before * 1e-9, high = (double)after * 1e-9;
+    if (mach < low - 0.002 || mach > high + 0.002) return 16;
+    double now = high;
+    if (!vx_xros_host_time_is_current(now, 0.25) || !vx_xros_host_time_is_current(now + 0.2, 0.25)) return 17;
+    if (vx_xros_host_time_is_current(now + 2.0, 0.25) || vx_xros_host_time_is_current(now - 2.0, 0.25)) return 18;
+    struct timespec monotonic;
+    if (clock_gettime(CLOCK_MONOTONIC, &monotonic)) return 19;
+    double slept = (double)monotonic.tv_sec + (double)monotonic.tv_nsec * 1e-9 - now;
+    if (slept > 0.25 && vx_xros_host_time_is_current((double)monotonic.tv_sec + (double)monotonic.tv_nsec * 1e-9, 0.25)) return 19;
+    if (vx_xros_host_time_is_current(NAN, 0.25) || (VX_XROS_INJECTED_HEAD_FLAGS & VX_XROS_TRACKED_HEAD_FLAGS) != 0) return 20;
+    if (VX_XROS_INJECTED_HEAD_FLAGS != (UINT64_C(0x1) | UINT64_C(0x2))) return 21;
+    float head_q[4], head_p[3], standing[16] = {0};
+    uint64_t head_flags = 0;
+    for (int i = 0; i < 4; i++) standing[i * 5] = 1.f;
+    standing[13] = 1.7f;
+    if (vx_xros_head_pose(NULL, 1, head_q, head_p, &head_flags)) return 22;
+    if (head_flags != VX_XROS_INJECTED_HEAD_FLAGS || !near(head_q[3], 1.f) || !near(head_p[0], 0)) return 23;
+    if (vx_xros_head_pose(standing, 0, head_q, head_p, &head_flags)) return 24;
+    if (head_flags != VX_XROS_INJECTED_HEAD_FLAGS || !near(head_p[1], 1.7f)) return 25;
+    if (vx_xros_head_pose(standing, 1, head_q, head_p, &head_flags)) return 26;
+    if (head_flags != (VX_XROS_INJECTED_HEAD_FLAGS | VX_XROS_TRACKED_HEAD_FLAGS) || !near(head_p[1], 1.7f) || !near(head_q[3], 1.f)) return 27;
+    standing[0] = NAN;
+    if (!vx_xros_head_pose(standing, 1, head_q, head_p, &head_flags)) return 28;
+    const char msg[] = "xrizer_xros_optics_golden: 64 mm separation, ±pi/4 fields, OpenVR near 0.1 far 100, 1 m origin, stale pose rejected, host clock shared, tracked head only when observed -> ok\n";
     if (fwrite(msg, 1, sizeof msg - 1, stdout) != sizeof msg - 1) return 9;
     return 0;
 }

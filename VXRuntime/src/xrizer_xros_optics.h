@@ -3,6 +3,7 @@
  * This does not observe an ARKit head or a two-view compositor drawable. */
 #pragma once
 #include <math.h>
+#include <stdint.h>
 /* orientation_xyzw[eye] is x,y,z,w. position[eye] is metres.
  * fov_angles[eye] is OpenXR order: left, right, up, down, radians. */
 int vx_xros_optics_from_tangents(const float eyes[32], const float tangents[8],
@@ -20,3 +21,14 @@ static inline int vx_xros_pose_is_current(double display_time, double pose_time,
     double age = display_time - pose_time;
     return tracking_valid && isfinite(age) && age >= -0.1 && age <= 1.0;
 }
+/* OpenXR location bits. Injected eyes and the identity head are valid positions.
+ * They omit the tracked bits, so an identity head is not an ARKit tracking result. */
+#define VX_XROS_INJECTED_HEAD_FLAGS (UINT64_C(0x1) | UINT64_C(0x2))
+#define VX_XROS_TRACKED_HEAD_FLAGS (UINT64_C(0x4) | UINT64_C(0x8))
+/* True when seconds is within slack of Mach absolute time (CLOCK_UPTIME_RAW).
+ * Compositor and ARKit presentation use that clock. CLOCK_MONOTONIC includes
+ * sleep and is a different epoch, so it must not become an XrTime. */
+int vx_xros_host_time_is_current(double seconds, double slack_seconds);
+/* Column-major origin-from-head. A null matrix is identity and untracked.
+ * Tracked bits are set only when the caller observed a device anchor. */
+int vx_xros_head_pose(const float head[16], int tracked, float orientation_xyzw[4], float position[3], uint64_t *flags);

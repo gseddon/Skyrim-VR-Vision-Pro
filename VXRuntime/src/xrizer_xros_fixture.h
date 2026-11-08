@@ -8,10 +8,10 @@ extern "C" {
 int vx_xros_fixture_enabled(void);
 int vx_xros_fixture_start(void *device, void *queue);
 /* Drawables supply their actual optical transforms and tangents; prediction is
- * in the verified compositor/Mach seconds epoch. The head is explicitly
- * injected for this owned simulator fixture, not a platform tracking claim. */
+ * in the verified compositor/Mach seconds epoch. A null head is identity and
+ * untracked. Tracked bits require the caller's observed device anchor. */
 int vx_xros_fixture_offer(uint32_t width, uint32_t height, const float eyes[32],
-                          const float tangents[8], double prediction);
+                          const float tangents[8], double prediction, const float head[16], int tracked);
 /* One-way surface loss; no restart or re-registration in this process. */
 int vx_xros_fixture_surface_lost(void);
 int vx_xros_fixture_wait_ready(void);
