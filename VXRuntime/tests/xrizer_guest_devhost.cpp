@@ -62,6 +62,23 @@ extern "C" void mainCRTStartup() {
     comp->SetTrackingSpace(vr::TrackingUniverseSeated);
     auto system=(vr::IVRSystem *)get(vr::IVRSystem_Version,&error);
     check(system && !error,26);
+    vr::ETrackedPropertyError property_error=(vr::ETrackedPropertyError)-1;
+    char property_value[12]; for (unsigned i=0;i<sizeof property_value;++i) property_value[i]='?';
+    unsigned needed=system->GetStringTrackedDeviceProperty(0,vr::Prop_SerialNumber_String,nullptr,0,&property_error);
+    check(needed==10 && property_error==vr::TrackedProp_BufferTooSmall,45);
+    check(system->GetStringTrackedDeviceProperty(0,vr::Prop_SerialNumber_String,property_value,9,&property_error)==10 &&
+          property_error==vr::TrackedProp_BufferTooSmall && property_value[0]=='?' && property_value[9]=='?',46);
+    check(system->GetStringTrackedDeviceProperty(0,vr::Prop_SerialNumber_String,property_value,10,&property_error)==10 &&
+          property_error==vr::TrackedProp_Success && property_value[0]=='<' && property_value[8]=='>' && property_value[9]==0 && property_value[10]=='?',47);
+    const char expected_serial[]="<unknown>";
+    for (unsigned i=0;i<sizeof expected_serial;++i) check(property_value[i]==expected_serial[i],51);
+    check(system->GetStringTrackedDeviceProperty(0,vr::Prop_SerialNumber_String,property_value,10,nullptr)==10,48);
+    property_error=(vr::ETrackedPropertyError)-1;
+    char tracking_name[256]; for (unsigned i=0;i<sizeof tracking_name;++i) tracking_name[i]='?';
+    check(system->GetStringTrackedDeviceProperty(0,vr::Prop_TrackingSystemName_String,tracking_name,256,&property_error)==0 &&
+          property_error==vr::TrackedProp_UnknownProperty && tracking_name[0]=='?',49);
+    check(system->GetStringTrackedDeviceProperty(17,vr::Prop_SerialNumber_String,property_value,10,&property_error)==0 &&
+          property_error==vr::TrackedProp_InvalidDevice,50);
     check(system->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand)==vr::k_unTrackedDeviceIndexInvalid &&
           system->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_RightHand)==vr::k_unTrackedDeviceIndexInvalid,27);
     void *device=nullptr,*context=nullptr; check(create(nullptr,1,nullptr,0,nullptr,0,7,&device,nullptr,&context)==0 && device && context,5);

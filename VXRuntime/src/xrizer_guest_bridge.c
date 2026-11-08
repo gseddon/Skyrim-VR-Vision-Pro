@@ -13,6 +13,7 @@ typedef uint8_t (*native_present_fn)(void *);
 typedef const char *(*native_error_fn)(void *, int);
 typedef int (*native_version_fn)(void *, const char *);
 typedef uint32_t (*native_role_fn)(void *, int);
+typedef uint32_t (*native_string_property_fn)(void *, uint32_t, int, char *, uint32_t, int *);
 typedef void (*native_size_fn)(void *, uint32_t *, uint32_t *);
 typedef matrix44 (*native_projection_fn)(void *, int, float, float);
 typedef matrix34 (*native_transform_fn)(void *, int);
@@ -242,6 +243,14 @@ static WINAPI int one_pose(guest_object *self, uint32_t index, void *render, voi
 static WINAPI uint32_t controller_index(guest_object *self, int role) {
     require(self == &system_object); native_role_fn fn = (native_role_fn)native_table(self)[18]; return fn(self->native, role);
 }
+static WINAPI uint32_t string_property(guest_object *self, uint32_t device, int property, char *value, uint32_t capacity, int *error) {
+    require(self == &system_object);
+    native_string_property_fn fn = (native_string_property_fn)native_table(self)[28];
+    uint32_t result=fn(self->native, device, property, value, capacity, error);
+    vx_log("xrizer_guest_bridge: System019 slot28 device %u property %d capacity %u result %u error %d",
+           device,property,capacity,result,error ? *error : -1);
+    return result;
+}
 static WINAPI uint8_t input_available(guest_object *self) {
     require(self == &system_object); native_present_fn fn = (native_present_fn)native_table(self)[39]; return fn(self->native);
 }
@@ -406,7 +415,7 @@ void *vx_xrizer_guest_core(void *native_core) {
     system_fns[46] = unsupported_fns_46;
     core_table[0] = core_init; core_table[1] = core_cleanup; core_table[2] = core_version; core_table[3] = core_interface; core_table[4] = core_present;
     system_table[0] = render_size; system_table[1] = member_projection; system_table[4] = member_transform;
-    system_table[18] = controller_index; system_table[39] = input_available;
+    system_table[18] = controller_index; system_table[28] = string_property; system_table[39] = input_available;
     compositor_table[0] = tracking_space; compositor_table[2] = wait_poses; compositor_table[3] = last_poses; compositor_table[4] = one_pose; compositor_table[5] = submit; compositor_table[7] = handoff;
     system_fns[1] = fntable_projection; system_fns[4] = fntable_transform;
     cleaned = 0; core.native = native_core; return &core;
