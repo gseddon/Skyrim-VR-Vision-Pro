@@ -72,6 +72,10 @@ def inspect_log(content, version=1):
             r'xrizer_guest_bridge: unsupported ([A-Za-z0-9_:]+) slot (\d+)', content)]
         facts['xrizer_unsupported_interfaces'] = re.findall(
             r'xrizer OpenVR: GetGenericInterface ([^\s]+) = (?:0x0|\(nil\)) error 106\b', content)
+    if version >= 4:
+        facts['xrizer_panics'] = [dict(source=source, line=int(line), column=int(column), message=message)
+            for source, line, column, message in re.findall(
+                r'\bERROR xrizer\b[^\n]*panicked at ([^\s:]+):(\d+):(\d+):\n([^\n]+)', content)]
     return facts
 
 
@@ -168,7 +172,7 @@ def capture(args):
     wine = subprocess.run(['pgrep', '-fl', '[w]ine.*(vrserver|hlvr|SkyrimVR)'], capture_output=True, text=True)
     idle = busy.returncode == 1 and wine.returncode == 1
     out.mkdir(parents=True)
-    result = dict(kind='native_aot_startup', schema_version=3 if getattr(args, 'experimental_xrizer', False) else 2, level=None, status='refused' if not idle else 'observed',
+    result = dict(kind='native_aot_startup', schema_version=4 if getattr(args, 'experimental_xrizer', False) else 2, level=None, status='refused' if not idle else 'observed',
                   appid=getattr(args, 'appid', None),
                   scope='startup checkpoint only; no VR compatibility, frame, gameplay or performance claim',
                   source_commit=subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip(),
