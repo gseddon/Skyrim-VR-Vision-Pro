@@ -235,6 +235,10 @@ def capture(args):
         if getattr(args, 'wait_dump', None):
             env['VXRT_WAIT_DUMP'] = args.wait_dump
             result.setdefault('diagnostic', {})['wait_dump'] = args.wait_dump
+        if getattr(args, 'aot_splits', None):
+            splits = os.path.abspath(args.aot_splits)
+            env['VXRT_AOT_SPLITS'] = splits
+            result.setdefault('diagnostic', {})['aot_splits'] = splits
         if getattr(args, 'fault_objects', False):
             env['VXRT_FAULT_OBJECTS'] = '1'
             result.setdefault('diagnostic', {})['fault_objects'] = 'register pointee dump at an unhandled fault'
@@ -313,6 +317,7 @@ def main():
     ap.add_argument('--trace-null-target', action='store_true', help='diagnostic only: capture a null AOT target snapshot')
     ap.add_argument('--dev-synthetic-stage', action='store_true', help='diagnostic only: the experimental dev host declares its synthetic local origin to be the floor, so Standing tracking space is valid; no physical floor is claimed')
     ap.add_argument('--dump-eyes', action='store_true', help='diagnostic only: the experimental dev host writes raw RGBA of the published eyes for frames 1, 2, 60, 300 and 600 under <out>/eyes')
+    ap.add_argument('--aot-splits', default=None, metavar='FILE', help='diagnostic only: VXRT_AOT_SPLITS file the runtime writes with the x86 instructions whose ordered access crossed 16 bytes (input for vxrt-aot)')
     ap.add_argument('--wait-dump', default=None, help='diagnostic only: VXRT_WAIT_DUMP seconds list, e.g. 30,50: log threads blocked in waits, with their guest return addresses')
     ap.add_argument('--fault-objects', action='store_true', help='diagnostic only: at an unhandled fault, log what each register points at (VXRT_FAULT_OBJECTS=1)')
     ap.add_argument('--trace-files', action='store_true', help='diagnostic only: log guest file opens that fail, with the path (VXRT_TRACE_FILES=1)')
