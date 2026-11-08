@@ -2,6 +2,8 @@
 // refused (certificates, stores and chains are crypt32.c's), random numbers through bcrypt, common controls, in-memory
 // fonts, and other processes' module names.
 #include <stdint.h>
+#include <stdio.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -107,13 +109,177 @@ static WINAPI BOOL GetVolumeNameForVolumeMountPointW(const WCHAR *mount, WCHAR *
     vx_set_last_error(1);                                          // ERROR_INVALID_FUNCTION: no volume GUIDs here
     return 0;
 }
-static WINAPI DWORD GetPrivateProfileStringA(const char *app, const char *key, const char *def, char *out, DWORD cap, const char *file) {
-    (void)app; (void)key; (void)file;                              // .ini files are not read: the default comes back
-    if (!out || !cap) return 0;
-    DWORD n = (DWORD)strlen(def ? def : "");
-    if (n >= cap) n = cap - 1;
-    memcpy(out, def ? def : "", n); out[n] = 0;
+// ---- .ini files (GetPrivateProfile*) -----------------------------------------------------------------------------------
+// Read for real: a program's settings (Skyrim's [Archive] list, ...) come from its .ini files. Read only here: writes
+// (WritePrivateProfileString) are still not kept. A name without a directory is the Windows directory's, as on Windows.
+// Sections and keys compare case-insensitively; ';' lines are comments; a value's surrounding blanks are dropped and one
+// pair of matching quotes around it too.
+static char *ini_read(const char *name) {
+    if (!name || !*name) return NULL;
+    char win[1024], path[1024];
+    if (!strpbrk(name, "\\/:")) snprintf(win, sizeof win, "C:\\windows\\%s", name); else snprintf(win, sizeof win, "%s", name);
+    if (!vx_unix_path(win, path, sizeof path)) return NULL;
+    FILE *f = fopen(path, "rb");
+    static int trace = -1;                                          // VXRT_TRACE_FILES: which .ini files are read
+    if (trace < 0) trace = getenv("VXRT_TRACE_FILES") != NULL;
+    if (trace) vx_log("GetPrivateProfile(%s): %s", name, f ? "read" : "not found");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    char *t = n >= 0 ? malloc((size_t)n + 1) : NULL;
+    if (t && fread(t, 1, (size_t)n, f) != (size_t)n) { free(t); t = NULL; }
+    fclose(f);
+    if (t) {
+        t[n] = 0;
+        if (n >= 3 && !memcmp(t, "\xef\xbb\xbf", 3)) memmove(t, t + 3, (size_t)n - 2);   // (a UTF-8 byte-order mark)
+    }
+    return t;
+}
+// One pass over the text: for each "[section]" (key == NULL, line == NULL) or each key line of the section being read.
+typedef struct { const char *text, *p; char section[256], key[256], value[2048]; int in_section; } ini_cursor;
+static void ini_trim(char *s) {
+    size_t n = strlen(s), i = 0;
+    while (n && (s[n - 1] == ' ' || s[n - 1] == '\t')) s[--n] = 0;
+    while (s[i] == ' ' || s[i] == '\t') i++;
+    if (i) memmove(s, s + i, strlen(s + i) + 1);
+}
+// Next entry: returns 1 with a section header in c->section and c->key[0] == 0, or a key/value in c->key and c->value.
+static int ini_next(ini_cursor *c) {
+    while (*c->p) {
+        const char *e = c->p; while (*e && *e != '\n') e++;
+        char line[2400]; size_t n = (size_t)(e - c->p); if (n >= sizeof line) n = sizeof line - 1;
+        memcpy(line, c->p, n); line[n] = 0;
+        c->p = *e ? e + 1 : e;
+        while (n && (line[n - 1] == '\r')) line[--n] = 0;
+        ini_trim(line);
+        if (!line[0] || line[0] == ';') continue;
+        if (line[0] == '[') {
+            char *r = strchr(line, ']'); if (!r) continue;
+            *r = 0; snprintf(c->section, sizeof c->section, "%s", line + 1); c->key[0] = 0; c->value[0] = 0; c->in_section = 1;
+            return 1;
+        }
+        char *eq = strchr(line, '='); if (!eq) continue;
+        *eq = 0; snprintf(c->key, sizeof c->key, "%s", line); ini_trim(c->key);
+        snprintf(c->value, sizeof c->value, "%s", eq + 1); ini_trim(c->value);
+        size_t vn = strlen(c->value);
+        if (vn >= 2 && (c->value[0] == '"' || c->value[0] == '\'') && c->value[vn - 1] == c->value[0]) { memmove(c->value, c->value + 1, vn - 2); c->value[vn - 2] = 0; }
+        return 1;
+    }
+    return 0;
+}
+static int ini_find(const char *text, const char *app, const char *key, char *value, size_t cap) {
+    ini_cursor c = { text, text, "", "", "", 0 };
+    int in = 0;
+    while (ini_next(&c)) {
+        if (!c.key[0]) { in = !strcasecmp(c.section, app); continue; }
+        if (in && !strcasecmp(c.key, key)) { snprintf(value, cap, "%s", c.value); return 1; }
+    }
+    return 0;
+}
+// "name\0name\0\0" of the section names (app == NULL), the keys (keys_only) or the "key=value" lines of a section: the
+// Windows result is the length without the final terminator, cap - 2 when the list is cut.
+static DWORD ini_list(const char *text, const char *app, int keys_only, char *out, DWORD cap) {
+    if (!out || cap < 2) return 0;
+    ini_cursor c = { text, text, "", "", "", 0 };
+    DWORD n = 0; int in = 0, cut = 0;
+    while (text && ini_next(&c)) {
+        char item[4400]; const char *s;
+        if (!c.key[0]) {
+            in = app && !strcasecmp(c.section, app);
+            if (app) continue;
+            s = c.section;
+        } else if (app && in) {
+            if (keys_only) s = c.key; else { snprintf(item, sizeof item, "%s=%s", c.key, c.value); s = item; }
+        } else continue;
+        size_t l = strlen(s);
+        if (n + l + 2 > cap) { cut = 1; l = cap > n + 2 ? cap - n - 2 : 0; }
+        memcpy(out + n, s, l); n += (DWORD)l; if (cut) break;
+        out[n++] = 0;
+    }
+    if (cut) { out[cap - 2] = 0; out[cap - 1] = 0; return cap - 2; }
+    if (n == 0) { out[0] = 0; out[1] = 0; return 0; }
+    out[n] = 0;
     return n;
+}
+static DWORD ini_string(const char *app, const char *key, const char *def, char *out, DWORD cap, const char *file) {
+    char *text = ini_read(file);
+    if (!app) { DWORD r = ini_list(text, NULL, 0, out, cap); free(text); return r; }
+    if (!key) { DWORD r = ini_list(text, app, 1, out, cap); free(text); return r; }
+    if (!out || !cap) { free(text); return 0; }
+    char value[2048];
+    int found = text && ini_find(text, app, key, value, sizeof value);
+    free(text);
+    const char *s = found ? value : (def ? def : "");
+    DWORD n = (DWORD)strlen(s);
+    if (n >= cap) n = cap - 1;
+    memcpy(out, s, n); out[n] = 0;
+    return n;
+}
+static WINAPI DWORD GetPrivateProfileStringA(const char *app, const char *key, const char *def, char *out, DWORD cap, const char *file) {
+    return ini_string(app, key, def, out, cap, file);
+}
+static DWORD ini_wide_list(const char *u8, DWORD len, WCHAR *out, DWORD cap) {   // a UTF-8 "a\0b\0\0" list into UTF-16 (cut to cap); the
+    DWORD o = 0;                                                              // result is the length without the final terminator
+    for (DWORD i = 0; i < len && u8[i] && o + 2 < cap;) {
+        WCHAR *w = vx_utf16_dup(u8 + i);
+        size_t wl = w ? vx_wcslen(w) : 0;
+        if (o + wl + 2 > cap) wl = cap > o + 2 ? cap - o - 2 : 0;
+        if (wl) memcpy(out + o, w, wl * 2);
+        o += (DWORD)wl; out[o++] = 0; free(w);
+        i += (DWORD)strlen(u8 + i) + 1;
+    }
+    out[o] = 0;
+    if (!o && cap > 1) out[1] = 0;
+    return o;
+}
+static WINAPI DWORD GetPrivateProfileStringW(const WCHAR *app, const WCHAR *key, const WCHAR *def, WCHAR *out, DWORD cap, const WCHAR *file) {
+    char *a = app ? vx_utf8_dup(app) : NULL, *k = key ? vx_utf8_dup(key) : NULL, *d = def ? vx_utf8_dup(def) : NULL, *f = file ? vx_utf8_dup(file) : NULL;
+    DWORD r = 0;
+    if (out && cap) {
+        char *buf = malloc((size_t)cap * 4 + 4);
+        if (buf) {
+            DWORD n = ini_string(a, k, d, buf, cap * 4 > 4096 ? 4096 : cap * 4, f);
+            if (!a || !k) r = ini_wide_list(buf, n + 1, out, cap);
+            else { WCHAR *w = vx_utf16_dup(buf); r = w ? (DWORD)vx_wcslen(w) : 0; if (r >= cap) r = cap - 1; if (w) memcpy(out, w, r * 2); out[r] = 0; free(w); }
+            free(buf);
+        }
+    }
+    free(a); free(k); free(d); free(f);
+    return r;
+}
+static WINAPI unsigned GetPrivateProfileIntA(const char *app, const char *key, int def, const char *file) {
+    if (!app || !key) return (unsigned)def;
+    char *text = ini_read(file), v[64];
+    int found = text && ini_find(text, app, key, v, sizeof v);
+    free(text);
+    if (!found) return (unsigned)def;
+    char *e; long x = strtol(v, &e, 10);
+    return e == v ? 0u : (unsigned)x;                               // (text that is not a number reads as 0, a missing key as the default)
+}
+static WINAPI unsigned GetPrivateProfileIntW(const WCHAR *app, const WCHAR *key, int def, const WCHAR *file) {
+    char *a = app ? vx_utf8_dup(app) : NULL, *k = key ? vx_utf8_dup(key) : NULL, *f = file ? vx_utf8_dup(file) : NULL;
+    unsigned r = (unsigned)def;
+    if (a && k) r = GetPrivateProfileIntA(a, k, def, f);
+    free(a); free(k); free(f);
+    return r;
+}
+static WINAPI DWORD GetPrivateProfileSectionA(const char *app, char *out, DWORD cap, const char *file) {
+    char *text = ini_read(file);
+    DWORD r = app ? ini_list(text, app, 0, out, cap) : 0;
+    if (!app && out && cap >= 2) out[0] = out[1] = 0;
+    free(text);
+    return r;
+}
+static WINAPI DWORD GetPrivateProfileSectionW(const WCHAR *app, WCHAR *out, DWORD cap, const WCHAR *file) {
+    if (!out || cap < 2) return 0;
+    char *a = app ? vx_utf8_dup(app) : NULL, *f = file ? vx_utf8_dup(file) : NULL;
+    char *buf = malloc(4096); DWORD r = 0;
+    if (buf) {
+        DWORD n = a ? GetPrivateProfileSectionA(a, buf, 4096, f) : 0;
+        r = ini_wide_list(buf, n + 1, out, cap);
+        free(buf);
+    }
+    free(a); free(f);
+    return r;
 }
 static WINAPI int FoldStringW(DWORD flags, const WCHAR *src, int n, WCHAR *out, int cap) {
     (void)flags;
@@ -448,15 +614,6 @@ static WINAPI BOOL GetVolumeInformationW(const WCHAR *root, WCHAR *name, DWORD n
     if (fs && fs_cap) vx_return_string_w("NTFS", fs, fs_cap);
     return 1;
 }
-static WINAPI DWORD GetPrivateProfileStringW(const WCHAR *app, const WCHAR *key, const WCHAR *def, WCHAR *out, DWORD cap, const WCHAR *file) {
-    (void)app; (void)key; (void)file;
-    if (!out || !cap) return 0;
-    size_t n = def ? vx_wcslen(def) : 0;
-    if (n >= cap) n = cap - 1;
-    if (n) memcpy(out, def, n * 2);
-    out[n] = 0;
-    return (DWORD)n;
-}
 // QueueUserWorkItem: on the thread pool's one-off callbacks (system.c), which pass (instance, context).
 typedef struct { DWORD (WINAPI *fn)(void *); void *ctx; } work_item;
 static WINAPI void run_work_item(void *instance, void *arg) { (void)instance; work_item w = *(work_item *)arg; free(arg); w.fn(w.ctx); }
@@ -523,7 +680,7 @@ static const vx_export k32[] = {
     { "K32GetModuleFileNameExW", (void *)GetModuleFileNameExW }, { "K32GetModuleFileNameExA", (void *)GetModuleFileNameExA },
     VX_EXPORT(SetProcessShutdownParameters), VX_EXPORT(SetThreadErrorMode), VX_EXPORT(IsWow64Process), VX_EXPORT(GetBinaryTypeW),
     VX_EXPORT(GetVolumeInformationA), VX_EXPORT(GetVolumePathNameW), VX_EXPORT(GetVolumeNameForVolumeMountPointW),
-    VX_EXPORT(GetPrivateProfileStringA), VX_EXPORT(FoldStringW), VX_EXPORT(EnumResourceNamesW),
+    VX_EXPORT(GetPrivateProfileStringA), VX_EXPORT(GetPrivateProfileIntA), VX_EXPORT(GetPrivateProfileIntW), VX_EXPORT(GetPrivateProfileSectionA), VX_EXPORT(GetPrivateProfileSectionW), VX_EXPORT(FoldStringW), VX_EXPORT(EnumResourceNamesW),
     { "DebugActiveProcess", (void *)no_debugging }, { "DebugActiveProcessStop", (void *)no_debugging }, VX_EXPORT(GenerateConsoleCtrlEvent),
     { "K32EnumProcessModules", (void *)EnumProcessModules }, { "K32EnumProcessModulesEx", (void *)EnumProcessModulesEx },
     { "K32GetModuleBaseNameW", (void *)GetModuleBaseNameW }, { "K32GetModuleBaseNameA", (void *)GetModuleBaseNameA },
