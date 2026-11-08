@@ -33,6 +33,8 @@ static void fill(unsigned frame,unsigned eye) {
         p[3]=255;
     }
 }
+static_assert(sizeof(vr::VREvent_t)==64 && __builtin_offsetof(vr::VREvent_t,data)==16 && sizeof(vr::VREvent_Controller_t)==4,
+              "System019 Windows event layout");
 static void near_value(float got,float expected) {
     float d=got-expected; check(d > -0.00003f && d < 0.00003f,52);
 }
@@ -89,6 +91,12 @@ extern "C" void mainCRTStartup() {
     check(system->GetStringTrackedDeviceProperty(17,vr::Prop_SerialNumber_String,property_value,10,&property_error)==0 &&
           property_error==vr::TrackedProp_InvalidDevice,50);
     geometry(system); // Actual game ordering: property query then geometry before Wait.
+    struct { unsigned long long before; unsigned char bytes[48]; unsigned long long after; }
+        event={0x123456789abcdef0ull,{},0xfedcba9876543210ull};
+    for (unsigned i=0;i<sizeof event.bytes;++i) event.bytes[i]=0x5a;
+    check(!system->PollNextEvent(nullptr,48) && !system->PollNextEvent((vr::VREvent_t *)event.bytes,19),58);
+    check(event.before==0x123456789abcdef0ull && event.after==0xfedcba9876543210ull,59);
+    for (unsigned i=0;i<sizeof event.bytes;++i) check(event.bytes[i]==0x5a,60);
     struct { unsigned before; int value; unsigned after; } adapter={0x12345678u,123,0x87654321u};
     system->GetDXGIOutputInfo(&adapter.value);
     check(adapter.before==0x12345678u && adapter.after==0x87654321u && adapter.value==-1,55);
@@ -106,6 +114,14 @@ extern "C" void mainCRTStartup() {
     struct { unsigned long long before; vr::TrackedDevicePose_t values[3]; unsigned long long after; }
         standing={0x123456789abcdef0ull,{},0xfedcba9876543210ull};
     check(comp->WaitGetPoses(standing.values,3,nullptr,0)==0,40);
+    check(system->PollNextEvent((vr::VREvent_t *)event.bytes,48),61);
+    check(event.before==0x123456789abcdef0ull && event.after==0xfedcba9876543210ull,62);
+    unsigned event_type=0, event_index=0, event_data=0;
+    for (unsigned i=0;i<4;++i) { event_type|=(unsigned)event.bytes[i]<<(8*i); event_index|=(unsigned)event.bytes[4+i]<<(8*i); event_data|=(unsigned)event.bytes[16+i]<<(8*i); }
+    check(event_type==vr::VREvent_TrackedDeviceActivated && event_index==0 && event_data==0,63);
+    for (unsigned i=12;i<16;++i) check(event.bytes[i]==0x5a,64);
+    for (unsigned i=20;i<48;++i) check(event.bytes[i]==0x5a,65);
+    check(!system->PollNextEvent(nullptr,48),66);
     check(standing.before==0x123456789abcdef0ull && standing.after==0xfedcba9876543210ull,41);
     check(!standing.values[0].bPoseIsValid,42);
     vr::TrackedDevicePose_t standing_last={};
