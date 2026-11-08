@@ -93,6 +93,13 @@ extern "C" void mainCRTStartup() {
     system->GetDXGIOutputInfo(&adapter.value);
     check(adapter.before==0x12345678u && adapter.after==0x87654321u && adapter.value==-1,55);
     system->GetDXGIOutputInfo(nullptr);
+    for (int eye=0;eye<2;++eye) for (int kind=0;kind<=3;++kind) {
+        struct { unsigned long long before; vr::HiddenAreaMesh_t value; unsigned long long after; }
+            mesh={0x123456789abcdef0ull,{},0xfedcba9876543210ull};
+        mesh.value=system->GetHiddenAreaMesh((vr::EVREye)eye,(vr::EHiddenAreaMeshType)kind);
+        check(mesh.before==0x123456789abcdef0ull && mesh.after==0xfedcba9876543210ull &&
+              mesh.value.pVertexData==nullptr && mesh.value.unTriangleCount==0,57);
+    }
     check(preframe()==0,56);
     auto comp=(vr::IVRCompositor *)get(vr::IVRCompositor_Version,&error);
     check(comp && !error,4);

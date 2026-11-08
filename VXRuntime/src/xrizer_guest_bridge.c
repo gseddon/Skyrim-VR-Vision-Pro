@@ -5,6 +5,7 @@
 #include <string.h>
 typedef struct { float m[4][4]; } matrix44;
 typedef struct { float m[3][4]; } matrix34;
+typedef struct { const void *vertices; uint32_t triangles; } hidden_mesh;
 typedef struct { void **vtable; void *native; } guest_object;
 typedef int (*native_init_fn)(void *, int, const char *);
 typedef void (*native_cleanup_fn)(void *);
@@ -17,6 +18,7 @@ typedef void (*native_dxgi_output_fn)(void *, int32_t *);
 typedef uint32_t (*native_string_property_fn)(void *, uint32_t, int, char *, uint32_t, int *);
 typedef void (*native_size_fn)(void *, uint32_t *, uint32_t *);
 typedef matrix44 (*native_projection_fn)(void *, int, float, float);
+typedef hidden_mesh (*native_hidden_mesh_fn)(void *, int, int);
 typedef matrix34 (*native_transform_fn)(void *, int);
 typedef matrix44 (*native_projection_c_fn)(int, float, float);
 typedef matrix34 (*native_transform_c_fn)(int);
@@ -251,6 +253,16 @@ static WINAPI int one_pose(guest_object *self, uint32_t index, void *render, voi
 static WINAPI uint32_t controller_index(guest_object *self, int role) {
     require(self == &system_object); native_role_fn fn = (native_role_fn)native_table(self)[18]; return fn(self->native, role);
 }
+static WINAPI hidden_mesh *hidden_area_mesh(guest_object *self, hidden_mesh *out, int eye, int kind) {
+    require(self == &system_object && out);
+    native_hidden_mesh_fn fn=(native_hidden_mesh_fn)native_table(self)[33];
+    hidden_mesh result=fn(self->native,eye,kind);
+    vx_log("xrizer_guest_bridge: System019 slot33 eye %d type %d native vertices %p triangles %u",
+           eye,kind,result.vertices,result.triangles);
+    // A native pointer has no established guest-addressability or lifetime.
+    if (result.vertices || result.triangles) unsupported_slot("IVRSystem_019 nonempty hidden mesh",33);
+    *out=result; return out;
+}
 static WINAPI void dxgi_output(guest_object *self, int32_t *adapter) {
     require(self == &system_object);
     native_dxgi_output_fn fn=(native_dxgi_output_fn)native_table(self)[7];
@@ -429,7 +441,7 @@ void *vx_xrizer_guest_core(void *native_core) {
     system_fns[46] = unsupported_fns_46;
     core_table[0] = core_init; core_table[1] = core_cleanup; core_table[2] = core_version; core_table[3] = core_interface; core_table[4] = core_present;
     system_table[0] = render_size; system_table[1] = member_projection; system_table[4] = member_transform;
-    system_table[7] = dxgi_output; system_table[18] = controller_index; system_table[28] = string_property; system_table[39] = input_available;
+    system_table[7] = dxgi_output; system_table[18] = controller_index; system_table[28] = string_property; system_table[33] = hidden_area_mesh; system_table[39] = input_available;
     compositor_table[0] = tracking_space; compositor_table[2] = wait_poses; compositor_table[3] = last_poses; compositor_table[4] = one_pose; compositor_table[5] = submit; compositor_table[7] = handoff;
     system_fns[1] = fntable_projection; system_fns[4] = fntable_transform;
     cleaned = 0; core.native = native_core; return &core;
