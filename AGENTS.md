@@ -6,7 +6,7 @@ Read [the current implementation plan](plans/2026-11-08-skyrim-vr-native-darwin-
 
 Read [the xrizer port investigation](research/2026-11-08-avp-play-xrizer.md) and the implementation checkout's `third_party/xrizer/README.md` and `SOURCE.md` when working on VR integration. In that checkout, the research report is under `research/` directly. Verify the actual source and target before relying on a document's capability claims.
 
-This is the standalone source repository. Read `MIGRATION.md` for active checkouts: during the initial import the agents and private artifacts remain in the original VeRantyx integration worktree. Do not reset or move those checkouts to make this source import. Run new builds in this checkout only when their inputs/toolchains are configured; preserve original evidence identities.
+This is the standalone source repository. Read `MIGRATION.md` for active checkouts. New Terra implementation runs in this repository’s dedicated worktrees; the previous VeRantyx checkout is a read-only reference for pinned private artifacts, toolchains and immutable evidence. Keep builds and evidence isolated, and preserve original identities when reusing artifacts.
 
 ## Direction and useful context
 
