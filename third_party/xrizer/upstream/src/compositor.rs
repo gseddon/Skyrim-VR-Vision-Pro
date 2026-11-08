@@ -823,13 +823,6 @@ impl vr::IVRCompositor029_Interface for Compositor {
         output_pose: *mut vr::TrackedDevicePose_t,
         output_game_pose: *mut vr::TrackedDevicePose_t,
     ) -> vr::EVRCompositorError {
-        #[cfg(all(target_vendor = "apple", feature = "owned-apple-test"))]
-        {
-            let _ = (device_index, output_pose, output_game_pose);
-            return vr::EVRCompositorError::RequestFailed;
-        }
-
-        #[allow(unreachable_code)]
         if output_pose.is_null() && output_game_pose.is_null() {
             return vr::EVRCompositorError::RequestFailed;
         }
@@ -860,10 +853,6 @@ impl vr::IVRCompositor029_Interface for Compositor {
         game_pose_count: u32,
     ) -> vr::EVRCompositorError {
         tracy_span!("GetLastPoses impl");
-        #[cfg(all(target_vendor = "apple", feature = "owned-apple-test"))]
-        if render_pose_count != 0 || game_pose_count != 0 {
-            return vr::EVRCompositorError::RequestFailed;
-        }
         if (render_pose_count != 0 && render_pose_array.is_null()) || (game_pose_count != 0 && game_pose_array.is_null()) {
             return vr::EVRCompositorError::RequestFailed;
         }
@@ -895,13 +884,6 @@ impl vr::IVRCompositor029_Interface for Compositor {
         game_pose_count: u32,
     ) -> vr::EVRCompositorError {
         tracy_span!("WaitGetPoses impl");
-        // This partial provider does not yet implement the action lifecycle
-        // used by Input::new. Refuse before acquiring a frame ticket instead
-        // of unwrapping XR_ERROR_FUNCTION_UNSUPPORTED across the native ABI.
-        #[cfg(all(target_vendor = "apple", feature = "owned-apple-test"))]
-        if render_pose_count != 0 || game_pose_count != 0 {
-            return vr::EVRCompositorError::RequestFailed;
-        }
         #[cfg(target_vendor = "apple")]
         {
             let needs_promotion = !self.openxr.session_data.get().is_real_session();

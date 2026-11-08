@@ -235,7 +235,7 @@ int main(int argc,char **argv){
         error=-1;auto display=(vr::IVRSystem *)get_interface(core,vr::IVRSystem_Version,&error);assert(display && error==0);
         uint32_t w=0,hh=0;display->GetRecommendedRenderTargetSize(&w,&hh);assert(w==8 && hh==8);
         if(pose_probe){
-            puts("DIAGNOSTIC ONLY: snapshot guard bypass; injected focus/head and disconnected controllers");
+            puts("owned-apple-test: injected focus/head and disconnected controllers");
             float first=0, second=0; unsigned successes=0;
             for(unsigned n=1;n<=4;++n){
                 vr::TrackedDevicePose_t poses[3]; memset(poses,0xff,sizeof poses);

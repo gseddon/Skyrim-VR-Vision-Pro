@@ -174,7 +174,7 @@ index 1590702..abdae64 100644
          fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
              f.write_fmt(format_args!(
 diff --git a/src/compositor.rs b/src/compositor.rs
-index 6eaebd6..147315e 100644
+index 6eaebd6..6acd92d 100644
 --- a/src/compositor.rs
 +++ b/src/compositor.rs
 @@ -99,55 +99,55 @@ impl Compositor {
@@ -328,18 +328,7 @@ index 6eaebd6..147315e 100644
  
          self.frame_state
              .lock()
-@@ -816,11 +823,20 @@ impl vr::IVRCompositor029_Interface for Compositor {
-         output_pose: *mut vr::TrackedDevicePose_t,
-         output_game_pose: *mut vr::TrackedDevicePose_t,
-     ) -> vr::EVRCompositorError {
-+        #[cfg(all(target_vendor = "apple", feature = "owned-apple-test"))]
-+        {
-+            let _ = (device_index, output_pose, output_game_pose);
-+            return vr::EVRCompositorError::RequestFailed;
-+        }
-+
-+        #[allow(unreachable_code)]
-         if output_pose.is_null() && output_game_pose.is_null() {
+@@ -820,7 +827,9 @@ impl vr::IVRCompositor029_Interface for Compositor {
              return vr::EVRCompositorError::RequestFailed;
          }
  
@@ -350,15 +339,11 @@ index 6eaebd6..147315e 100644
  
          let Some(pose) = input.get_device_pose(device_index, None) else {
              return vr::EVRCompositorError::RequestFailed;
-@@ -844,24 +860,28 @@ impl vr::IVRCompositor029_Interface for Compositor {
+@@ -844,24 +853,24 @@ impl vr::IVRCompositor029_Interface for Compositor {
          game_pose_count: u32,
      ) -> vr::EVRCompositorError {
          tracy_span!("GetLastPoses impl");
 -        if render_pose_count == 0 {
-+        #[cfg(all(target_vendor = "apple", feature = "owned-apple-test"))]
-+        if render_pose_count != 0 || game_pose_count != 0 {
-+            return vr::EVRCompositorError::RequestFailed;
-+        }
 +        if (render_pose_count != 0 && render_pose_array.is_null()) || (game_pose_count != 0 && game_pose_array.is_null()) {
 +            return vr::EVRCompositorError::RequestFailed;
 +        }
@@ -393,17 +378,10 @@ index 6eaebd6..147315e 100644
          }
  
          vr::EVRCompositorError::None
-@@ -875,6 +895,29 @@ impl vr::IVRCompositor029_Interface for Compositor {
+@@ -875,6 +884,22 @@ impl vr::IVRCompositor029_Interface for Compositor {
          game_pose_count: u32,
      ) -> vr::EVRCompositorError {
          tracy_span!("WaitGetPoses impl");
-+        // This partial provider does not yet implement the action lifecycle
-+        // used by Input::new. Refuse before acquiring a frame ticket instead
-+        // of unwrapping XR_ERROR_FUNCTION_UNSUPPORTED across the native ABI.
-+        #[cfg(all(target_vendor = "apple", feature = "owned-apple-test"))]
-+        if render_pose_count != 0 || game_pose_count != 0 {
-+            return vr::EVRCompositorError::RequestFailed;
-+        }
 +        #[cfg(target_vendor = "apple")]
 +        {
 +            let needs_promotion = !self.openxr.session_data.get().is_real_session();
@@ -423,7 +401,7 @@ index 6eaebd6..147315e 100644
          // This should be called every frame - we must regularly poll events
          self.openxr.poll_events();
          self.focused.call_once(|| {});
-@@ -892,19 +935,19 @@ impl vr::IVRCompositor029_Interface for Compositor {
+@@ -892,19 +917,19 @@ impl vr::IVRCompositor029_Interface for Compositor {
  
              if *self.frame_state.lock().unwrap() == FrameState::Waited {
                  // discard frame
@@ -447,7 +425,7 @@ index 6eaebd6..147315e 100644
          }
  
          self.GetLastPoses(
-@@ -1025,12 +1068,48 @@ struct SwapchainData<G: xr::Graphics> {
+@@ -1025,12 +1050,48 @@ struct SwapchainData<G: xr::Graphics> {
      initial_format: G::Format,
  }
  
@@ -496,7 +474,7 @@ index 6eaebd6..147315e 100644
      should_render: bool,
      app_suspend_render: bool,
      app_fade_grid: bool,
-@@ -1045,39 +1124,21 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1045,39 +1106,21 @@ impl<G: GraphicsBackend> FrameController<G> {
          session_data: &SessionData,
          create_info: &mut xr::SwapchainCreateInfo<G::Api>,
          backend: &mut G,
@@ -541,7 +519,7 @@ index 6eaebd6..147315e 100644
  
          backend.store_swapchain_images(images, create_info.format);
          debug!(
-@@ -1085,7 +1146,7 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1085,7 +1128,7 @@ impl<G: GraphicsBackend> FrameController<G> {
              create_info.width, create_info.height, create_info.format
          );
  
@@ -550,7 +528,7 @@ index 6eaebd6..147315e 100644
      }
  
      fn new(
-@@ -1103,7 +1164,7 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1103,7 +1146,7 @@ impl<G: GraphicsBackend> FrameController<G> {
          let swapchain_data = if let Some(mut info) = create_info {
              is_valid_swapchain_info(&info).then(|| {
                  let (swapchain, initial_format) =
@@ -559,7 +537,7 @@ index 6eaebd6..147315e 100644
                  SwapchainData {
                      swapchain,
                      info,
-@@ -1120,6 +1181,7 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1120,6 +1163,7 @@ impl<G: GraphicsBackend> FrameController<G> {
              swapchain_data,
              image_index: 0,
              image_acquired: false,
@@ -567,7 +545,7 @@ index 6eaebd6..147315e 100644
              should_render: false,
              app_suspend_render: false,
              app_fade_grid: false,
-@@ -1133,79 +1195,86 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1133,79 +1177,86 @@ impl<G: GraphicsBackend> FrameController<G> {
          &mut self,
          session_data: &SessionData,
          mut create_info: xr::SwapchainCreateInfo<G::Api>,
@@ -677,7 +655,7 @@ index 6eaebd6..147315e 100644
      }
  
      fn submit_impl(
-@@ -1223,48 +1292,39 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1223,48 +1274,39 @@ impl<G: GraphicsBackend> FrameController<G> {
              TryInto<&'b openxr_data::Session<G::Api>, Error: std::fmt::Display>,
          <G::Api as xr::Graphics>::Format: PartialEq + std::fmt::Debug,
      {
@@ -753,7 +731,7 @@ index 6eaebd6..147315e 100644
          } else {
              Some(Default::default())
          };
-@@ -1272,11 +1332,12 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1272,11 +1314,12 @@ impl<G: GraphicsBackend> FrameController<G> {
          trace!("submitted {eye:?}");
          if self.eyes_submitted.iter().all(|eye| eye.is_some()) {
              let mut swapchain_data = self.swapchain_data.as_mut();
@@ -768,7 +746,7 @@ index 6eaebd6..147315e 100644
          }
  
          Ok(())
-@@ -1288,10 +1349,11 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1288,10 +1331,11 @@ impl<G: GraphicsBackend> FrameController<G> {
          system: &System,
          display_time: xr::Time,
          overlays: Option<&OverlayMan>,
@@ -781,7 +759,7 @@ index 6eaebd6..147315e 100644
          let mut proj_layer_views = Vec::new();
  
          if self.should_render
-@@ -1305,6 +1367,10 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1305,6 +1349,10 @@ impl<G: GraphicsBackend> FrameController<G> {
  
              let crate::system::ViewData { flags, views } =
                  system.get_views(session_data.current_origin_as_reference_space());
@@ -792,7 +770,7 @@ index 6eaebd6..147315e 100644
              proj_layer_views = views
                  .into_iter()
                  .enumerate()
-@@ -1368,11 +1434,10 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1368,11 +1416,10 @@ impl<G: GraphicsBackend> FrameController<G> {
              layers.extend(overlay_layers.iter().map(Deref::deref));
          }
  
