@@ -24,6 +24,7 @@ class Child:
     def __init__(self, cmd, **kwargs):
         self.calls = 0
         self.env = kwargs['env']
+        Child.last_env = self.env.copy()
         kwargs['stdout'].write(self.log)
 
     def wait(self, timeout=None):
@@ -131,6 +132,43 @@ class ProbeTest(unittest.TestCase):
         self.assertEqual(result['environment']['VXRT_AOT_STRICT'], '1')
         self.assertNotIn('VXRT_TRACE_OPENVR', result['environment'])
         self.assertTrue(result['diagnostic']['openvr_init_passthrough_trace'])
+
+    def test_null_target_trace_is_explicit_sealed_and_preserves_counters(self):
+        Child.log += b'[vxrt] unimplemented function\n' * 35
+        Child.log += b'[vxrt] aot-null-target: rip=0 caller=0x1234\n'
+        with patch.dict(probe.os.environ, {'VXRT_AOT_NULL_DIAGNOSTIC': '1',
+                                           'VXRT_UNRELATED': 'unsafe', 'VERANTYX_OTHER': 'unsafe'}):
+            ordinary = probe.capture(self.args)
+            self.assertNotIn('VXRT_AOT_NULL_DIAGNOSTIC', Child.last_env)
+            self.assertNotIn('VXRT_AOT_NULL_DIAGNOSTIC', ordinary['environment'])
+            self.assertNotIn('VXRT_UNRELATED', ordinary['environment'])
+            self.assertNotIn('VERANTYX_OTHER', ordinary['environment'])
+            self.args.out = str(self.root/'traced')
+            self.args.trace_null_target = True
+            traced = probe.capture(self.args)
+        self.assertEqual(Child.last_env['VXRT_AOT_NULL_DIAGNOSTIC'], '1')
+        self.assertNotIn('VXRT_UNRELATED', Child.last_env)
+        self.assertEqual(traced['environment']['VXRT_AOT_NULL_DIAGNOSTIC'], '1')
+        self.assertNotIn('VXRT_UNRELATED', traced['environment'])
+        self.assertEqual(traced['environment']['VXRT_AOT_STRICT'], '1')
+        self.assertTrue(traced['diagnostic']['null_target_trace'])
+        self.assertIn('diagnostic evidence only', traced['diagnostic']['null_target_scope'])
+        sealed = json.loads((Path(self.args.out)/'result.json').read_text())
+        self.assertEqual(sealed, traced)
+        self.assertEqual(probe.validate(sealed), [])
+        facts = {o['metric']: o['value'] for o in sealed['observed']}
+        self.assertTrue(any('aot-null-target:' in line for line in facts['problem_lines']))
+        self.assertEqual(facts['aot_summaries'], [{'entries': 4, 'fallback_requests': 0, 'missing_addresses': 0}])
+        self.assertTrue(facts['aot_executed'] and facts['zero_fallback_reported'])
+        self.assertEqual(sealed['derived'], [])
+        self.assertEqual(sealed['level'], None)
+
+    def test_null_target_cli_flag_reaches_capture(self):
+        args = ['probe', '--exe', 'x', '--runtime', 'r', '--aot-dir', 'a',
+                '--asset-root', 'assets', '--out', 'out', '--trace-null-target']
+        with patch.object(sys, 'argv', args), patch.object(probe, 'capture', return_value={'status': 'observed'}) as capture, patch('builtins.print'):
+            self.assertEqual(probe.main(), 0)
+        self.assertTrue(capture.call_args.args[0].trace_null_target)
 
     def test_xrizer_mode_confines_all_xdg_paths(self):
         self.args.experimental_xrizer = True

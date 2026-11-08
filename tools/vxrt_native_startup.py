@@ -55,11 +55,15 @@ def inspect_log(content, version=1):
         'has no recompiled code', 'unimplemented function', 'dll not found', 'dll not loaded',
         'could not load', 'cannot load', 'unhandled', 'messagebox:', 'not used', '[vxrt] abort:')
     if version >= 2:
-        patterns += ('signal ', 'native backtrace:', 'callback depth limit', 'callback_depth_limit', 'openvr-init:')
+        patterns += ('signal ', 'native backtrace:', 'callback depth limit', 'callback_depth_limit', 'openvr-init:', 'aot-null-target:')
     if version >= 3:
         patterns += ('xrizer_guest_bridge: unsupported ', 'xrizer openvr: getgenericinterface ')
     candidates = [line for line in content.splitlines() if any(x in line.lower() for x in patterns)]
-    facts = dict(aot_summaries=summaries, missing_code=missing, problem_lines=candidates[:30],
+    # Preserve bounded null-target snapshots even after earlier problem lines.
+    problem_lines = candidates[:30]
+    if version >= 2:
+        problem_lines += [line for line in candidates[30:] if 'aot-null-target:' in line.lower()][:30]
+    facts = dict(aot_summaries=summaries, missing_code=missing, problem_lines=problem_lines,
                 aot_executed=any(s['entries'] > 0 for s in summaries),
                 zero_fallback_reported=bool(summaries) and all(s['fallback_requests'] == 0 and s['missing_addresses'] == 0 for s in summaries))
     if version >= 2:
@@ -209,6 +213,10 @@ def capture(args):
         if getattr(args, 'trace_openvr_init', False):
             env['VXRT_TRACE_OPENVR_INIT'] = '1'
             result.setdefault('diagnostic', {})['openvr_init_passthrough_trace'] = True
+        if getattr(args, 'trace_null_target', False):
+            env['VXRT_AOT_NULL_DIAGNOSTIC'] = '1'
+            result.setdefault('diagnostic', {}).update(null_target_trace=True,
+                null_target_scope='opt-in null-target snapshot; diagnostic evidence only')
         inputs = [exe]
         original = assets / exe.name
         if original.is_file() and original.resolve() != exe:
@@ -271,6 +279,7 @@ def main():
     ap.add_argument('--out'); ap.add_argument('--seconds', type=float, default=20)
     ap.add_argument('--callback-depth-limit', type=int, help='diagnostic only: stop at nested callback depth 2..256')
     ap.add_argument('--trace-openvr-init', action='store_true', help='diagnostic only: transparently log real OpenVR initialization results')
+    ap.add_argument('--trace-null-target', action='store_true', help='diagnostic only: capture a null AOT target snapshot')
     ap.add_argument('--experimental-xrizer', action='store_true', help='select experimental native xrizer development host; requires a configured runtime')
     ap.add_argument('--xrizer-dylib', help='absolute path to the pinned native ARM64 xrizer dylib for experimental mode')
     ap.add_argument('--validate', metavar='RESULT_JSON')
