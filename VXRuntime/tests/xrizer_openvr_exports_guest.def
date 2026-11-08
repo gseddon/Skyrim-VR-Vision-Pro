@@ -1,0 +1,8 @@
+LIBRARY openvr_api.dll
+EXPORTS
+VR_InitInternal2
+VR_GetInitToken
+VR_IsInterfaceVersionValid
+VR_GetVRInitErrorAsEnglishDescription
+VR_ShutdownInternal
+VR_GetGenericInterface

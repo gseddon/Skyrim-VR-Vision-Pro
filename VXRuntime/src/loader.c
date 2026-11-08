@@ -21,6 +21,10 @@
 #include <pthread.h>
 #include "vx.h"
 #include "native_openvr.h"
+#ifdef VXRT_XRIZER_DEV_HOST
+#include "xrizer_openvr_exports.h"
+#include "xrizer_dev_host.h"
+#endif
 #include "pe.h"
 #ifdef __aarch64__
 #include "../translator/aot.h"
@@ -1578,6 +1582,21 @@ int main(int argc, char **argv, char **envp) {
     vx_dpapi_init();
     vx_client_init();
     vx_steambridge_init();
+#ifndef VXRT_XRIZER_DEV_HOST
+    if (getenv("VXRT_XRIZER_OPENVR") && !strcmp(getenv("VXRT_XRIZER_OPENVR"), "1")) {
+        vx_log("xrizer dev host: this runtime was built without experimental xrizer support");
+        exit(1);
+    }
+#endif
+#ifdef VXRT_XRIZER_DEV_HOST
+    if (vx_xrizer_openvr_enabled()) {
+        size_t count = 0;
+        const vx_export *exports = vx_xrizer_openvr_exports(&count);
+        if (vx_native_openvr_enabled() || vx_xrizer_dev_host_start(getenv("VXRT_XRIZER_DYLIB"), 1024, 1024))
+            vx_log("xrizer dev host: configuration unavailable or conflicting; OpenVR initialization fails closed");
+        vx_register_module("openvr_api.dll", exports, count);
+    } else
+#endif
     if (vx_native_openvr_enabled()) {
         static vx_export exports[8];
         static const char *const names[] = { "VR_InitInternal", "VR_InitInternal2", "VR_ShutdownInternal",
