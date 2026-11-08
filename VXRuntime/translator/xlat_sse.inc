@@ -198,6 +198,17 @@ static int xlat_sse(xlat_buf *b, const x86_insn *d, uint64_t next) {
         } else { mxcsr_sync(b); ea(b, d, next, 0); E(b, a64_str(4, T_A, T_ADDR, 0)); }   // STMXCSR
         return 0;
     }
+    // EMMS (legacy 0F 77): Intel SDM Vol. 3A, Table 14-2 sets every
+    // x87 tag empty and TOP to zero, preserving physical data and other state.
+    // https://cdrdv2-public.intel.com/835754/253668-sdm-vol-3a.pdf
+    // VEX 0F 77 is handled separately as VZEROUPPER/VZEROALL.
+    if (op == 0x77 && pf == 0 && !(d->prefixes & X86_P_VEX)) {
+        E(b, a64_str(1, XZR, XC, __builtin_offsetof(x86_ctx, ftag)));
+        E(b, a64_ldr(2, T_A, XC, __builtin_offsetof(x86_ctx, fsw)));
+        mov_imm(b, T_B, 0x3800); E(b, a64_bic(T_A, T_A, T_B));
+        E(b, a64_str(2, T_A, XC, __builtin_offsetof(x86_ctx, fsw)));
+        return 0;
+    }
     int sse_op = (op >= 0x10 && op <= 0x17) || (op >= 0x28 && op <= 0x2F) || (op >= 0x50 && op <= 0x7F) || op == 0xC2 ||
                  op == 0xC4 || op == 0xC5 || op == 0xC6 || op >= 0xD0;
     if (!sse_op) return 1;
