@@ -19,6 +19,7 @@ typedef void (*native_dxgi_output_fn)(void *, int32_t *);
 typedef uint32_t (*native_string_property_fn)(void *, uint32_t, int, char *, uint32_t, int *);
 typedef void (*native_size_fn)(void *, uint32_t *, uint32_t *);
 typedef matrix44 (*native_projection_fn)(void *, int, float, float);
+typedef void (*native_raw_fn)(void *, int, float *, float *, float *, float *);
 typedef hidden_mesh (*native_hidden_mesh_fn)(void *, int, int);
 typedef matrix34 (*native_transform_fn)(void *, int);
 typedef matrix44 (*native_projection_c_fn)(int, float, float);
@@ -227,6 +228,12 @@ static WINAPI matrix44 *member_projection(guest_object *self, matrix44 *out, int
     require(self == &system_object && out); native_projection_fn fn = (native_projection_fn)native_table(self)[1];
     *out = fn(self->native, eye, near_z, far_z); return out;
 }
+// OpenVR slot 2. The native method writes the four tangents; top and bottom stay in its order.
+static WINAPI void projection_raw(guest_object *self, int eye, float *left, float *right, float *top, float *bottom) {
+    require(self == &system_object);
+    native_raw_fn fn = (native_raw_fn)native_table(self)[2];
+    fn(self->native, eye, left, right, top, bottom);
+}
 static WINAPI matrix34 *member_transform(guest_object *self, matrix34 *out, int eye) {
     require(self == &system_object && out); native_transform_fn fn = (native_transform_fn)native_table(self)[4];
     *out = fn(self->native, eye); return out;
@@ -234,6 +241,11 @@ static WINAPI matrix34 *member_transform(guest_object *self, matrix34 *out, int 
 static WINAPI matrix44 *fntable_projection(matrix44 *out, int eye, float near_z, float far_z) {
     require(native_system_fns && out); native_projection_c_fn fn = (native_projection_c_fn)native_system_fns[1];
     *out = fn(eye, near_z, far_z); return out;
+}
+static WINAPI void fntable_raw(int eye, float *left, float *right, float *top, float *bottom) {
+    require(native_system_fns != NULL);
+    void (*fn)(int, float *, float *, float *, float *) = (void (*)(int, float *, float *, float *, float *))native_system_fns[2];
+    fn(eye, left, right, top, bottom);
 }
 static WINAPI matrix34 *fntable_transform(matrix34 *out, int eye) {
     require(native_system_fns && out); native_transform_c_fn fn = (native_transform_c_fn)native_system_fns[4];
@@ -300,12 +312,32 @@ static WINAPI void tracking_space(guest_object *self, int origin) {
     require(self == &compositor); native_tracking_fn fn = (native_tracking_fn)native_table(self)[0];
     fn(self->native, origin);
 }
+typedef struct { void *handle; int32_t type, color; } guest_texture;
+typedef struct { float u0, v0, u1, v1; } guest_bounds;
 static WINAPI int submit(guest_object *self, int eye, const void *texture, const void *bounds, int flags) {
-    require(self == &compositor); native_submit_fn fn = (native_submit_fn)native_table(self)[5];
-    return fn(self->native, eye, texture, bounds, flags);
+    require(self == &compositor);
+    static unsigned noted;
+    int note = noted < 4;
+    if (note) {
+        const guest_texture *t = texture ? VX_LOW(texture) : NULL;
+        const guest_bounds *b = bounds ? VX_LOW(bounds) : NULL;
+        vx_log("xrizer_guest_bridge: Submit eye %d flags %#x handle %p type %d color %d bounds %s%.3f %.3f %.3f %.3f",
+               eye, flags, t ? t->handle : NULL, t ? t->type : -1, t ? t->color : -1, b ? "" : "(none) ",
+               b ? b->u0 : 0.f, b ? b->v0 : 0.f, b ? b->u1 : 0.f, b ? b->v1 : 0.f);
+        noted++;
+    }
+    native_submit_fn fn = (native_submit_fn)native_table(self)[5];
+    int result = fn(self->native, eye, texture, bounds, flags);
+    if (note) vx_log("xrizer_guest_bridge: Submit result %d", result);
+    return result;
 }
 static WINAPI void handoff(guest_object *self) {
     require(self == &compositor); native_handoff_fn fn = (native_handoff_fn)native_table(self)[7]; fn(self->native);
+}
+static WINAPI uint8_t can_render_scene(guest_object *self) {
+    require(self == &compositor);
+    native_present_fn fn = (native_present_fn)native_table(self)[24];
+    return fn(self->native);
 }
 void *vx_xrizer_guest_core(void *native_core) {
     if (!native_core || core.native || initialized || consumed) return NULL;
@@ -456,10 +488,10 @@ void *vx_xrizer_guest_core(void *native_core) {
     system_fns[45] = unsupported_fns_45;
     system_fns[46] = unsupported_fns_46;
     core_table[0] = core_init; core_table[1] = core_cleanup; core_table[2] = core_version; core_table[3] = core_interface; core_table[4] = core_present;
-    system_table[0] = render_size; system_table[1] = member_projection; system_table[4] = member_transform;
+    system_table[0] = render_size; system_table[1] = member_projection; system_table[2] = projection_raw; system_table[4] = member_transform;
     system_table[7] = dxgi_output; system_table[18] = controller_index; system_table[28] = string_property; system_table[30] = poll_event; system_table[33] = hidden_area_mesh; system_table[39] = input_available;
-    compositor_table[0] = tracking_space; compositor_table[2] = wait_poses; compositor_table[3] = last_poses; compositor_table[4] = one_pose; compositor_table[5] = submit; compositor_table[7] = handoff;
-    system_fns[1] = fntable_projection; system_fns[4] = fntable_transform;
+    compositor_table[0] = tracking_space; compositor_table[2] = wait_poses; compositor_table[3] = last_poses; compositor_table[4] = one_pose; compositor_table[5] = submit; compositor_table[7] = handoff; compositor_table[24] = can_render_scene;
+    system_fns[1] = fntable_projection; system_fns[2] = fntable_raw; system_fns[4] = fntable_transform;
     cleaned = 0; core.native = native_core; return &core;
 }
 int vx_xrizer_guest_init(int type, const char *startup) {

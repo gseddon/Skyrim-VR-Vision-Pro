@@ -19,10 +19,12 @@ impl MetalData {
         metal_host_bridge::with_host(|host| {
             let bridge = unsafe { Bridge::new(host) }.map_err(|_| ())?;
             let info = bridge.describe(texture as *mut c_void).map_err(|_| ())?;
-            // Conservative first slice: the declared colour interpretation
-            // must already agree with the Metal texture; no implicit conversion.
+            // No implicit conversion. Gamma and Auto accept an sRGB texture, and
+            // also an UNORM texture whose texels are already gamma-encoded
+            // (the D3D11 R8G8B8A8_UNORM submission). Those texels are copied
+            // as stored. Linear stays UNORM-only.
             let format_ok = match color {
-                vr::EColorSpace::Auto | vr::EColorSpace::Gamma => matches!(info.format, 71 | 81),
+                vr::EColorSpace::Auto | vr::EColorSpace::Gamma => matches!(info.format, 70 | 80 | 71 | 81),
                 vr::EColorSpace::Linear => matches!(info.format, 70 | 80),
             };
             if !format_ok { return Err(()); }
@@ -116,7 +118,10 @@ mod tests {
         let bounds = vr::VRTextureBounds_t { uMin: 0.25, vMin: 0., uMax: 0.75, vMax: 1. };
         let info = backend.try_swapchain_info_for_texture(10, bounds, vr::EColorSpace::Linear).unwrap();
         assert_eq!((info.width, info.height, info.array_size, info.format), (32, 32, 2, 80));
-        assert!(backend.try_swapchain_info_for_texture(10, bounds, vr::EColorSpace::Gamma).is_err());
+        let gamma = backend.try_swapchain_info_for_texture(10, bounds, vr::EColorSpace::Gamma).unwrap();
+        assert_eq!((gamma.width, gamma.height, gamma.format), (32, 32, 80));
+        let auto = backend.try_swapchain_info_for_texture(10, bounds, vr::EColorSpace::Auto).unwrap();
+        assert_eq!(auto.format, 80);
         assert!(backend.try_swapchain_info_for_texture(9, bounds, vr::EColorSpace::Linear).is_err());
         backend.store_swapchain_images(vec![p(14)], 80);
         let result = backend.try_copy_texture_to_swapchain(vr::EVREye::Right, 10, vr::EColorSpace::Linear, bounds, 0, vr::EVRSubmitFlags(0)).unwrap();

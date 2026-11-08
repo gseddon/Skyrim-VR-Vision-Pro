@@ -232,6 +232,7 @@ WINAPI uint64_t vx_trace_returned(uint64_t result) {
 int vx_tracing;
 __attribute__((constructor)) static void trace_init(void) { vx_tracing = vx_trace_calls_on(); }
 static __thread int t_skip[64], t_level;                             // (calls past the limit: their results unlogged)
+static __thread ring_entry *t_ring_at[64];
 static int count_call(const char *name) {
     enum { SLOTS = 8192 };
     static struct { const char *name; int calls; } slots[SLOTS];
@@ -243,17 +244,60 @@ static int count_call(const char *name) {
     }
     return g_limit;
 }
+// The ARM64 thunks log by name and do not pass through vx_trace_called, so the ring is filled here. Calls past the
+// log limit stay in the ring: that is the last-calls dump, and logging all of them would change the timing.
+static int ring_name(const char *name) {
+    enum { SLOTS = 8192 };
+    static struct { const char *name; int index; } slots[SLOTS];
+    uint32_t h = (uint32_t)(((uintptr_t)name >> 3) * 0x9E3779B1u) & (SLOTS - 1);
+    for (int n = 0; n < SLOTS; n++, h = (h + 1) & (SLOTS - 1)) {
+        const char *s = __atomic_load_n(&slots[h].name, __ATOMIC_ACQUIRE);
+        if (s == name) return __atomic_load_n(&slots[h].index, __ATOMIC_ACQUIRE);
+        if (s) continue;
+        pthread_mutex_lock(&g_lock);
+        int index = -1;
+        for (int i = 0; i < g_count; i++) if (g_traced[i].name == name) { index = i; break; }
+        if (index < 0 && g_count < MAX_TRACED) {
+            index = g_count;
+            g_traced[g_count++] = (traced){ "runtime", name, NULL, 0 };
+        }
+        pthread_mutex_unlock(&g_lock);
+        if (index < 0) return -1;
+        const char *none = NULL;
+        if (!__atomic_compare_exchange_n(&slots[h].name, &none, name, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) continue;
+        __atomic_store_n(&slots[h].index, index, __ATOMIC_RELEASE);
+        return index;
+    }
+    return -1;
+}
+static ring_entry *ring_arm_add(const char *name, const x86_ctx *c) {
+    int index = ring_name(name);
+    ring_entry *e = index < 0 ? NULL : ring_add();
+    if (!e) return NULL;
+    uint64_t from = c->gpr[4] ? *(const uint64_t *)(uintptr_t)c->gpr[4] : 0;
+    *e = (ring_entry){ clock_gettime_nsec_np(CLOCK_UPTIME_RAW), { vx_arg(c, 0), vx_arg(c, 1), vx_arg(c, 2), vx_arg(c, 3), 0, 0, 0 }, from, 0, index, 0, 0 };
+    return e;
+}
 void vx_trace_in(const char *name, const x86_ctx *c) {
-    int skip = left_alone(name) || count_call(name) >= g_limit;
-    if (t_level < 64) t_skip[t_level] = skip;
+    int alone = left_alone(name);
+    int n = alone ? g_limit : count_call(name);
+    int mode = alone || (!ring_on() && n >= g_limit) ? 1 : n < g_limit ? 0 : 2;   // 0 log, 1 skip, 2 ring only
+    if (t_level < 64) { t_skip[t_level] = mode; t_ring_at[t_level] = NULL; }
     t_level++;
-    if (skip) return;
-    vx_log("[%u] %s(%#llx, %#llx, %#llx, %#llx) from %#llx", vx_current_tid(), name, (unsigned long long)c->gpr[1], (unsigned long long)c->gpr[2],
-           (unsigned long long)c->gpr[8], (unsigned long long)c->gpr[9], (unsigned long long)*(const uint64_t *)(uintptr_t)c->gpr[4]);
+    if (mode == 1) return;
+    if (ring_on() && t_level <= 64) t_ring_at[t_level - 1] = ring_arm_add(name, c);
+    if (mode != 0) return;
+    vx_log("[%u] %s(%#llx, %#llx, %#llx, %#llx) from %#llx", vx_current_tid(), name, (unsigned long long)vx_arg(c, 0), (unsigned long long)vx_arg(c, 1),
+           (unsigned long long)vx_arg(c, 2), (unsigned long long)vx_arg(c, 3), (unsigned long long)(c->gpr[4] ? *(const uint64_t *)(uintptr_t)c->gpr[4] : 0));
 }
 void vx_trace_out(const char *name, const x86_ctx *c) {
     if (t_level > 0) t_level--;
-    if (t_level < 64 && t_skip[t_level]) return;
+    int mode = t_level < 64 ? t_skip[t_level] : 1;
+    if (t_level < 64 && t_ring_at[t_level]) {
+        ring_entry *e = t_ring_at[t_level];
+        e->result = c->gpr[0]; e->err = vx_get_last_error(); e->returned = 1;
+    }
+    if (mode != 0) return;
     vx_log("[%u]   %s = %#llx (last error %u)", vx_current_tid(), name, (unsigned long long)c->gpr[0], vx_get_last_error());
 }
 #include "thunks/calltrace.c.inc"
