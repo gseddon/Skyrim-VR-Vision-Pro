@@ -7,7 +7,7 @@
 | `/Users/gseddon/git/Skyrim-VR-Vision-Pro` | Integration checkout, branch `codex/standalone-import` |
 | `build/worktrees/terra-guest-stereo` in this repository | Terra A: guest graphics/ABI, branch `codex/terra-guest-stereo` |
 | `build/worktrees/terra-pose-input` in this repository | Terra B: poses/input, branch `codex/terra-pose-input` |
-| `build/worktrees/terra-skyrim-aot` in this repository | Terra C: actual Skyrim/AOT, branch `codex/terra-skyrim-aot` |
+| `build/worktrees/terra-skyrim-aot` in this repository | Actual Skyrim/AOT checkout (parent orchestration while Terra C is stopped), branch `codex/terra-skyrim-aot` |
 | `/Users/gseddon/git/VeRantyx/build/worktrees/native-darwin-aot` | Previous implementation checkout; read-only reference for private artifacts and earlier evidence |
 | `/Users/gseddon/git/VeRantyx/build/toolchains/xrizer-rust` | Existing repository-local Rust/Cargo installation; reused with separate output/XDG directories |
 
