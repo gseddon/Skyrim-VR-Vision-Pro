@@ -22,6 +22,18 @@ SUMMARY = re.compile(r'aot: (\d+) entries into recompiled code, .*?, (\d+) fallb
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
+def source_identity():
+    """Capture tracked patch and untracked source bytes, excluding ignored build artifacts."""
+    patch = subprocess.check_output(['git', '-C', str(REPO), 'diff', '--binary', 'HEAD', '--'])
+    names = subprocess.check_output(['git', '-C', str(REPO), 'ls-files', '--others', '--exclude-standard', '-z'])
+    h = hashlib.sha256(patch)
+    for name in sorted(filter(None, names.split(b'\0'))):
+        path = REPO / os.fsdecode(name)
+        if path.is_file() and not path.is_symlink():
+            h.update(name + b'\0' + digest(path).encode() + b'\0')
+    return {'commit': subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip(),
+            'patch_sha256': h.hexdigest()}
+
 
 def pe_hash(path):
     data = Path(path).read_bytes()
@@ -161,6 +173,8 @@ def capture(args):
                       'main-game code execution and scene initialization', 'VR connection and stereo frame delivery',
                       'headset input, audio and playability', 'code coverage outside observed startup path'])
     if idle:
+        if getattr(args, 'experimental_xrizer', False):
+            result['source_identity'] = source_identity()
         root, overlay, temp = out/'root', out/'overlay', out/'temp'
         for path in (root, overlay, temp):
             path.mkdir()
@@ -222,11 +236,14 @@ def capture(args):
         facts = inspect_log(log.read_text(errors='replace'), result['schema_version'])
         process = out/'process.json'
         unchanged = all(Path(p).is_file() and digest(p) == h for p,h in input_hashes.items())
-        process.write_text(json.dumps(dict(returncode=rc, timed_out=timed_out, read_only_inputs_unchanged=unchanged), indent=2)+'\n')
+        process_data = dict(returncode=rc, timed_out=timed_out, read_only_inputs_unchanged=unchanged)
+        if getattr(args, 'experimental_xrizer', False):
+            process_data['source_unchanged'] = source_identity() == result['source_identity']
+        process.write_text(json.dumps(process_data, indent=2)+'\n')
         result['log'] = str(log.relative_to(REPO))
         result['process'] = str(process.relative_to(REPO))
-        for key, value in [('returncode', rc), ('timed_out', timed_out), ('read_only_inputs_unchanged', unchanged), *facts.items()]:
-            art = process if key in ('returncode', 'timed_out', 'read_only_inputs_unchanged') else log
+        for key, value in [*process_data.items(), *facts.items()]:
+            art = process if key in process_data else log
             result['observed'].append(dict(id=f'o{len(result["observed"])+1}', metric=key, value=value,
                                            artifact=str(art.relative_to(REPO)), sha256=digest(art)))
     path = out/'result.json'
