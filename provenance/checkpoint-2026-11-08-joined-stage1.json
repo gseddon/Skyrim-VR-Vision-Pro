@@ -1,0 +1,42 @@
+{
+  "files": {
+    "VXRuntime/Makefile": "813593ed640082bd02c80d088f04c3811b614bd8922c3ac4ebed14c22c0ce202",
+    "VXRuntime/tests/xrizer_guest_join.cpp": "988e33249b2f526ca21a467533b0a560c2b95822d85752ab943d120b75e5caff",
+    "VXRuntime/tests/xrizer_guest_join_check.py": "9454ee41d990f6f3c64370c3db1516af1c29e32a999863ab116f47d824a44df7",
+    "VXRuntime/tests/xrizer_guest_join_host.m": "d07076870b150c7f60ee2a04601d12a016d157e1d17cb817fd20c3d6a289038d",
+    "VXRuntime/tools/vx_abi_scan.py": "57c070ec8dbba719f754a8e929e6663a43820eff78109f8a666f7cbe48068de8",
+    "research/2026-11-08-klepton-extraction.md": "6f5a3e1c0ebc45d86b4f165299ccda307a0a47dd94cac849d22aea570b9f7f6a",
+    "research/2026-11-08-klepton-metal-frame.md": "3ac22b7dd8ce6116cb31200e25e9e5dc73254ac6b4f55475eda8cb623e9ac48a",
+    "research/2026-11-08-xrizer-guest-abi.md": "3888ca1c3bcb52016a2bea36022ba214df607b6c6a31197fc33bc892fb661e05",
+    "research/2026-11-08-xrizer-metal-increment.md": "e7e9f4749cbb9259145afc3f18ca70472ee5f53b0e40686f552369dc36f74750",
+    "third_party/klepton_openxr/SOURCE.md": "d94740041b600a5b43f5eb31b8c54118f260551234f538c5d3b22d09546aaf7c",
+    "third_party/klepton_openxr/src/core.c": "033fccd1c18c31657438a2475641e1df2dd79551338d0e8f72d591b96c0b5345",
+    "third_party/klepton_openxr/tests/boot.c": "eb026b6a81d6929449f7acc471ca7a3938a30728945d1e9fcf19d1f0da892769",
+    "third_party/klepton_openxr/tests/metal_mock.c": "42ea07a03c363a0fd3656baaca53a1ec1651a63e04134c8ef3bf54fa17ab6d5c",
+    "third_party/klepton_openxr/tests/xrizer_guest_host.h": "1b10bd10babd68b896b496d4de33342a5d83b6ec0e9110e3fcf5fd914acf22a1",
+    "third_party/klepton_openxr/tests/xrizer_guest_host.m": "3eeb0e1fb57a9b118b4b3b953adf6dc1ff24f09cfd17660b9f6dd3a4cbd3e2bb",
+    "third_party/xrizer/SOURCE.md": "9d1cc812dc7c0aceeda56daa7b6be421ebfd863b6ce35fb2620ed5afded7f9c2",
+    "third_party/xrizer/apple-port.patch": "7dc631eaca2eb94ba4d61932482d47b3a9c06287955d5ad08bd3d70a9183f822",
+    "third_party/xrizer/upstream/src/clientcore.rs": "c83f42de4ea229542cf61e74cda832138dd87061bdc753efe0197b33f1c972e7",
+    "third_party/xrizer/upstream/src/compositor.rs": "ff06a7e0b0cb4bfadd085c01c64f57c722efbbe323cae435d681c1a655cd9d87",
+    "third_party/xrizer/upstream/src/input.rs": "62183d5f1252d84584da430f2673654adc0580faf653292213aea7723ff98386",
+    "third_party/xrizer/upstream/src/input/devices.rs": "6843450cfd6cf760ddf8b209da5d7f64a9a58f41d25268498bc8f7ff081f6dc4",
+    "third_party/xrizer/upstream/src/input/legacy.rs": "025bc22c4fc4d76b6fefe67922f208e7aee012d13ad2ecb22cdc88cc3c108fe2"
+  },
+  "joined_stage1": {
+    "aot_entries": 33,
+    "drawing": false,
+    "evidence_id": "guest-join-001-check",
+    "exit": 0,
+    "fallback": 0,
+    "native_calls": 33,
+    "runtime_sha256": "58c43686d034f91ad8ce8fffa546c22bfb8d1955605fc5c6db5a816d2976140c",
+    "xrizer_dylib_sha256": "7406e641d69943aa1263292ee2ea136856ed9e931aa058871e329a2eb361dcf2"
+  },
+  "limitations": [
+    "Stage1 used frozen component and xrizer snapshots retained in private local evidence. Later provider action-identity and xrizer failure-propagation changes have separate CPU/UBSan and cross-build evidence; Stage1 was not rerun against that later snapshot.",
+    "Nonzero pose calls remain guarded; controller binding/state unavailable.",
+    "Broad runtime checks remain unresolved; Windows D3D11 guest stereo is next."
+  ],
+  "subject": "Verified source increments at planning checkpoint; no game or physical headset acceptance"
+}

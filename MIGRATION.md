@@ -30,3 +30,16 @@ checkout, including the D3D12 native object release failure; see the plans.
 Imported upstream whitespace remains unchanged. This initial import excludes
 the unexecuted joined guest/provider experiment and its in-progress build
 hooks; verified increments will follow separately.
+
+## Planning checkpoint after initial import
+
+The follow-up source commit includes the executed joined guest Stage1 fixture,
+its helper and opt-in build/scanner hooks. Its frozen source and artifact
+identities are recorded in `provenance/checkpoint-2026-11-08-joined-stage1.json`.
+It passes with 33 AOT entries and zero fallback, including real provider
+initialization, matrix returns and cancellation/cleanup, without drawing.
+Later provider action identity and xrizer failure controls have separate test
+evidence; the artifact pins distinguish them from the frozen Stage1 build.
+The latest root Python suite has 20 passing tests. All three agents are paused
+at safe checkpoints for a planning review; Stage2 has not started. Next
+implementation assignments should use Terra for the user's cost preference.

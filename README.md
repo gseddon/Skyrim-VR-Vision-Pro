@@ -9,7 +9,8 @@ This is a development checkpoint, not a working game release.
 - A private prepared executable is available and mostly discoverable. Native strict-AOT startup reaches original game/OpenVR initialization; the observed blocker is Valve error110 (missing OpenVR runtime path registry). The separate native callback fault and broad runtime regression failures remain unresolved.
 - Owned native fixtures initialize actual xrizer, submit real Metal stereo images into the native frame queue and verify pixels, pose/frame identities, resource lifetime and four failure/retry paths. Host tracking/lifecycle are injected test data.
 - Actual Windows MSVC callers pass static thunk tests for scalar, float and large matrix returns; a separate guest control forwards into the actual native xrizer factory and preserves its default initialization failure.
-- Windows guest integration with the real provider, nonzero pose arrays/input, Sony PS VR2 Sense tracking, physical headset execution and an actual Skyrim scene remain open.
+- The joined real-provider Windows guest fixture passes initialization, actual System019 member/FnTable matrices, empty-frame cancellation and cleanup: 33 AOT entries, zero fallback. It does not draw.
+- Guest D3D11 stereo, nonzero pose arrays/input, Sony PS VR2 Sense tracking, physical headset execution and an actual Skyrim scene remain open.
 
 The plans are the source of truth: [main plan](plans/2026-11-08-skyrim-vr-native-darwin-aot.md), [AOT feasibility](plans/2026-11-08-skyrim-vr-prepared-input-aot-feasibility.md), [xrizer/Klepton](plans/2026-11-08-xrizer-klepton-native-openxr.md).
 

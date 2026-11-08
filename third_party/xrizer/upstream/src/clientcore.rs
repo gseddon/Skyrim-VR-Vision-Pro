@@ -336,6 +336,23 @@ impl<T: InterfaceImpl> Injected<T> {
             .downcast()
             .unwrap()
     }
+
+    /// Like force, but leaves the interface absent if initialization fails.
+    pub fn try_force<E>(&self, init: impl FnOnce(&Injector) -> Result<T, E>) -> Result<Arc<T>, E> {
+        if let Some(item) = self.get() { return Ok(item); }
+        let injector = Injector { store: self.store.clone() };
+        let mut store = self.store.lock().unwrap();
+        let item = match store.entry::<T>() {
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => {
+                let value: Arc<ErasedInterface> = Arc::new(init(&injector)?);
+                entry.insert(value.clone());
+                value
+            }
+        };
+        let _ = self.item.set(Arc::downgrade(&item));
+        Ok(item.downcast().unwrap())
+    }
 }
 
 #[cfg(test)]
@@ -372,6 +389,18 @@ mod tests {
     interface!(Interface2(Injected<Interface1>), c"two");
     interface!(Interface3(Injected<Interface1>), c"three");
     interface!(Interface4(Injected<Interface1>), c"four");
+
+    #[test]
+    fn try_force_failure_does_not_poison_or_insert_interface() {
+        let core = ClientCore::new(c"IVRClientCore_003").unwrap();
+        core.try_interface(c"two", |injector| Interface2(injector.inject()));
+        let interface = core.get_interface::<Interface2>().unwrap();
+        assert!(matches!(interface.0.try_force(|_| Err::<Interface1, _>("unavailable")), Err("unavailable")));
+        assert!(interface.0.get().is_none());
+        let first = interface.0.try_force(|_| Ok::<_, &str>(Interface1)).unwrap();
+        let second = interface.0.try_force(|_| Err::<Interface1, _>("must not run")).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+    }
 
     impl<T: std::fmt::Debug + InterfaceImpl> std::fmt::Debug for Injected<T> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

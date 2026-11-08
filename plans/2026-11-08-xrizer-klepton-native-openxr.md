@@ -116,3 +116,17 @@ The provider now passes native Rust Entry/Instance loading, property/path/action
 Actual `owned-apple-test` xrizer now initializes successfully through the real native provider/Metal binding in snapshot `xrizer-frontend-bwwk2x`: System019 reports the injected8x8 configuration, Compositor022 is retrieved, and host-acknowledged STOPPING/drain/EXITING cleanup succeeds. This is native ABI and injected lifecycle only, with no texture copies, Windows guest calls or physical headset. Earlier snapshots preserve actual view-metadata and session-readiness refusals. The next active task is a real stereo pair through xrizer; first fixture uses the legitimate zero-count WaitGetPoses form and therefore does not cover caller pose arrays or controllers. Generic/input-driven session restart and error retry remain explicit implementation risks; production Init is still disabled.
 
 The separate AOT lane now directly observes original Valve error110 (missing OpenVR path registry) and subsequent error109, explaining its `BSOpenVR` null member. It is preparing a Windows member/FnTable aggregate-return ABI proof before the real native frontend can be exposed to the game. No more unchanged SteamVR-style startup retries are scheduled.
+
+
+### Planning checkpoint: real guest/provider join
+
+The owned MSVC guest → static AOT wrappers → real xrizer → native provider
+Stage1 fixture now passes: actual initialization, System019 member/FnTable
+matrices, honest nonzero-pose/input refusals, empty-frame cancellation and
+cleanup, with 33 AOT entries and zero fallback. It performs no source texture
+submission or drawing. See `research/2026-11-08-xrizer-guest-abi.md` and the
+source checkpoint provenance. The next joined proof is actual guest-created
+D3D11 textures, real producer completion and verified stereo pixels. Nonzero
+poses/controllers, visionOS integration, broad runtime failures and actual
+Skyrim remain open. Agents paused safely for the user's planning session;
+new implementation work should prioritize Terra for cost.

@@ -43,9 +43,12 @@ ARM64_SRC = $(filter-out src/context.S,$(SRC)) src/arm64.c src/context_arm64.S t
 # Keep a measured runner intact while building a candidate for the next probe.
 VXRT_ARM64_TARGET ?= build/vxrt-arm64
 VXRT_ARM64_THUNKS_ROOT ?= build
+VXRT_ARM64_EXTRA_CFLAGS ?=
+VXRT_ARM64_EXTRA_OBJS ?=
+VXRT_ARM64_EXTRA_LDFLAGS ?=
 $(VXRT_ARM64_THUNKS_ROOT)/thunks/stamp: $(filter %.c %.m,$(SRC) $(VXRT_ARM64_EXTRA_SRC)) src/vx.h tools/vx_thunks.py tools/vx_abi_scan.py
 	@mkdir -p $(VXRT_ARM64_THUNKS_ROOT)/thunks
-	python3 tools/vx_thunks.py $(VXRT_ARM64_THUNKS_ROOT)/thunks $(filter %.c %.m,$(SRC) $(VXRT_ARM64_EXTRA_SRC))
+	VXRT_ABI_SCAN_EXTRA_CFLAGS="$(VXRT_ARM64_EXTRA_CFLAGS)" python3 tools/vx_thunks.py $(VXRT_ARM64_THUNKS_ROOT)/thunks $(filter %.c %.m,$(SRC) $(VXRT_ARM64_EXTRA_SRC))
 	@touch $@
 # The static recompiler's tool (RECOMP.md, tools/vxrt_aot.c): native ARM64, built from the translator's sources.
 AOT_TOOL_SRC = tools/vxrt_aot.c translator/xlat.c translator/x87.c translator/x86dec.c
@@ -243,9 +246,10 @@ build/guest.o: translator/guest.c translator/vcpu.h translator/xlat.h translator
 build/libvxrt_vm.dylib: src/vm_hooks.c translator/xvheap.h
 	@mkdir -p build
 	$(CC) -arch arm64 -O1 -mmacosx-version-min=14.0 -dynamiclib -install_name @executable_path/libvxrt_vm.dylib -Itranslator -o $@ $<
+$(VXRT_ARM64_TARGET): $(VXRT_ARM64_EXTRA_OBJS)
 $(VXRT_ARM64_TARGET): src/native_vr.h src/native_openvr.h $(ARM64_SRC) src/npu_interp.h src/npu_proto.h $(VXRT_ARM64_THUNKS_ROOT)/thunks/stamp build/libvxrt_vm.dylib build/guest.o src/arm64.h src/pe.h src/dotnet_metadata.h src/dotnet_resources.h src/dotnet_baml.h src/ui.h src/d3d_common.h src/d3d_format.h src/d3d12_view.h src/stereo.h src/d3d_tables.h src/d3d12_tables.h src/dxil.h src/dxil_msl.h src/dxil_ir.h src/gpu_ir.h src/gpu_ir_msl.h src/gpu_ir_metal.h src/spirv.h src/spirv_ir.h src/vx_vulkan.h src/directinput_buffer.h src/directinput_format.h src/audio_tables.h src/xaudio2_tables.h src/dwrite_tables.h src/dxbc.h translator/xlat.h translator/xlat_sse.inc translator/a64.h translator/engine.h translator/x87.h translator/cpuid_table.h translator/aot.h
 	@mkdir -p $(dir $@)
-	$(CC) -arch arm64 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -mmacosx-version-min=14.0 -Isrc -I$(VXRT_ARM64_THUNKS_ROOT) -Ibuild -Ithird_party/vulkan -fobjc-arc -o $@ $(ARM64_SRC) -framework Cocoa -framework CoreFoundation -framework CoreServices -framework CoreText -framework Metal -framework MetalFX -framework QuartzCore -framework GameController -framework CoreGraphics -framework IOSurface -framework AudioToolbox -framework CoreAudio -framework ImageIO -framework OpenGL -framework IOKit -framework SystemConfiguration -framework CFNetwork -framework Security -framework Hypervisor build/libvxrt_vm.dylib build/guest.o -licucore -lz
+	$(CC) -arch arm64 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -mmacosx-version-min=14.0 -Isrc -I$(VXRT_ARM64_THUNKS_ROOT) -Ibuild -Ithird_party/vulkan $(VXRT_ARM64_EXTRA_CFLAGS) -fobjc-arc -o $@ $(ARM64_SRC) $(VXRT_ARM64_EXTRA_OBJS) -framework Cocoa -framework CoreFoundation -framework CoreServices -framework CoreText -framework Metal -framework MetalFX -framework QuartzCore -framework GameController -framework CoreGraphics -framework IOSurface -framework AudioToolbox -framework CoreAudio -framework ImageIO -framework OpenGL -framework IOKit -framework SystemConfiguration -framework CFNetwork -framework Security -framework Hypervisor build/libvxrt_vm.dylib build/guest.o -licucore -lz $(VXRT_ARM64_EXTRA_LDFLAGS)
 	codesign -s - -f --entitlements translator/hypervisor.entitlements $@
 
 tests: build/hello_k32.exe build/hello_crt.exe build/threads.exe build/cxx_exceptions.exe build/hw_exceptions.exe build/seh_try.exe build/unwind.exe build/breakpoint.exe build/child_stdout.exe \

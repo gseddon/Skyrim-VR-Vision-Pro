@@ -5,7 +5,7 @@ build needs a thunk for it) and every call through an ms_abi function pointer (t
 x86: the ARM64 build must route it through the engine).
 
 usage: vx_abi_scan.py <source.c|.m> ...   prints JSON: {file: {"functions": [...], "callbacks": [...]}}"""
-import ctypes as C, json, os, subprocess, sys
+import ctypes as C, json, os, shlex, subprocess, sys
 
 LIB = "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libclang.dylib"
 lib = C.CDLL(LIB)
@@ -94,6 +94,7 @@ def offset(loc):                                         # (file name, byte offs
 
 def scan(path, index):
     args = [b"-target", b"x86_64-apple-macos14", b"-isysroot", SDK.encode(), b"-fobjc-arc", b"-Isrc", b"-Ithird_party/vulkan", b"-Wno-everything", b"-DVX_ABI_SCAN"]
+    args += [a.encode() for a in shlex.split(os.environ.get("VXRT_ABI_SCAN_EXTRA_CFLAGS", ""))]
     if path.endswith(".m"): args = [b"-x", b"objective-c"] + args
     argv = (C.c_char_p * len(args))(*args)
     tu = parseTU(index, path.encode(), argv, len(args), None, 0, 0x200)   # (KeepGoing)

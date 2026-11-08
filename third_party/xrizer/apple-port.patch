@@ -115,7 +115,7 @@ index 0000000..cf9e3e7
 +    }
 +}
 diff --git a/src/clientcore.rs b/src/clientcore.rs
-index 1590702..061acb5 100644
+index 1590702..abdae64 100644
 --- a/src/clientcore.rs
 +++ b/src/clientcore.rs
 @@ -202,7 +202,10 @@ impl IVRClientCore003_Interface for ClientCore {
@@ -130,8 +130,51 @@ index 1590702..061acb5 100644
      }
      fn GetGenericInterface(
          &self,
+@@ -333,6 +336,23 @@ impl<T: InterfaceImpl> Injected<T> {
+             .downcast()
+             .unwrap()
+     }
++
++    /// Like force, but leaves the interface absent if initialization fails.
++    pub fn try_force<E>(&self, init: impl FnOnce(&Injector) -> Result<T, E>) -> Result<Arc<T>, E> {
++        if let Some(item) = self.get() { return Ok(item); }
++        let injector = Injector { store: self.store.clone() };
++        let mut store = self.store.lock().unwrap();
++        let item = match store.entry::<T>() {
++            Entry::Occupied(entry) => entry.get().clone(),
++            Entry::Vacant(entry) => {
++                let value: Arc<ErasedInterface> = Arc::new(init(&injector)?);
++                entry.insert(value.clone());
++                value
++            }
++        };
++        let _ = self.item.set(Arc::downgrade(&item));
++        Ok(item.downcast().unwrap())
++    }
+ }
+ 
+ #[cfg(test)]
+@@ -370,6 +390,18 @@ mod tests {
+     interface!(Interface3(Injected<Interface1>), c"three");
+     interface!(Interface4(Injected<Interface1>), c"four");
+ 
++    #[test]
++    fn try_force_failure_does_not_poison_or_insert_interface() {
++        let core = ClientCore::new(c"IVRClientCore_003").unwrap();
++        core.try_interface(c"two", |injector| Interface2(injector.inject()));
++        let interface = core.get_interface::<Interface2>().unwrap();
++        assert!(matches!(interface.0.try_force(|_| Err::<Interface1, _>("unavailable")), Err("unavailable")));
++        assert!(interface.0.get().is_none());
++        let first = interface.0.try_force(|_| Ok::<_, &str>(Interface1)).unwrap();
++        let second = interface.0.try_force(|_| Err::<Interface1, _>("must not run")).unwrap();
++        assert!(Arc::ptr_eq(&first, &second));
++    }
++
+     impl<T: std::fmt::Debug + InterfaceImpl> std::fmt::Debug for Injected<T> {
+         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+             f.write_fmt(format_args!(
 diff --git a/src/compositor.rs b/src/compositor.rs
-index 6eaebd6..cce0335 100644
+index 6eaebd6..c892abc 100644
 --- a/src/compositor.rs
 +++ b/src/compositor.rs
 @@ -99,55 +99,55 @@ impl Compositor {
@@ -285,7 +328,7 @@ index 6eaebd6..cce0335 100644
  
          self.frame_state
              .lock()
-@@ -816,6 +823,13 @@ impl vr::IVRCompositor029_Interface for Compositor {
+@@ -816,11 +823,20 @@ impl vr::IVRCompositor029_Interface for Compositor {
          output_pose: *mut vr::TrackedDevicePose_t,
          output_game_pose: *mut vr::TrackedDevicePose_t,
      ) -> vr::EVRCompositorError {
@@ -299,7 +342,15 @@ index 6eaebd6..cce0335 100644
          if output_pose.is_null() && output_game_pose.is_null() {
              return vr::EVRCompositorError::RequestFailed;
          }
-@@ -844,6 +858,10 @@ impl vr::IVRCompositor029_Interface for Compositor {
+ 
+-        let input = self.input.force(|_| Input::new(self.openxr.clone()));
++        let Ok(input) = self.input.try_force(|_| Input::try_new(self.openxr.clone())) else {
++            return vr::EVRCompositorError::RequestFailed;
++        };
+ 
+         let Some(pose) = input.get_device_pose(device_index, None) else {
+             return vr::EVRCompositorError::RequestFailed;
+@@ -844,15 +860,20 @@ impl vr::IVRCompositor029_Interface for Compositor {
          game_pose_count: u32,
      ) -> vr::EVRCompositorError {
          tracy_span!("GetLastPoses impl");
@@ -310,7 +361,20 @@ index 6eaebd6..cce0335 100644
          if render_pose_count == 0 {
              return vr::EVRCompositorError::None;
          }
-@@ -875,6 +893,29 @@ impl vr::IVRCompositor029_Interface for Compositor {
+         let render_poses = unsafe {
+             std::slice::from_raw_parts_mut(render_pose_array, render_pose_count as usize)
+         };
+-        self.input
+-            .force(|_| Input::new(self.openxr.clone()))
+-            .get_poses(render_poses, None);
++        let Ok(input) = self.input.try_force(|_| Input::try_new(self.openxr.clone())) else {
++            return vr::EVRCompositorError::RequestFailed;
++        };
++        input.get_poses(render_poses, None);
+ 
+         // Not entirely sure how the game poses are supposed to differ from the render poses,
+         // but a lot of games use the game pose array for controller positions.
+@@ -875,6 +896,29 @@ impl vr::IVRCompositor029_Interface for Compositor {
          game_pose_count: u32,
      ) -> vr::EVRCompositorError {
          tracy_span!("WaitGetPoses impl");
@@ -340,7 +404,7 @@ index 6eaebd6..cce0335 100644
          // This should be called every frame - we must regularly poll events
          self.openxr.poll_events();
          self.focused.call_once(|| {});
-@@ -892,12 +933,12 @@ impl vr::IVRCompositor029_Interface for Compositor {
+@@ -892,19 +936,19 @@ impl vr::IVRCompositor029_Interface for Compositor {
  
              if *self.frame_state.lock().unwrap() == FrameState::Waited {
                  // discard frame
@@ -356,7 +420,15 @@ index 6eaebd6..cce0335 100644
              }
          }
          if let Some(system) = self.system.get() {
-@@ -1025,12 +1066,48 @@ struct SwapchainData<G: xr::Graphics> {
+             system.reset_views();
+         }
+         if let Some(input) = self.input.get() {
+-            input.frame_start_update();
++            if input.frame_start_update().is_err() { return vr::EVRCompositorError::RequestFailed; }
+         }
+ 
+         self.GetLastPoses(
+@@ -1025,12 +1069,48 @@ struct SwapchainData<G: xr::Graphics> {
      initial_format: G::Format,
  }
  
@@ -405,7 +477,7 @@ index 6eaebd6..cce0335 100644
      should_render: bool,
      app_suspend_render: bool,
      app_fade_grid: bool,
-@@ -1045,39 +1122,21 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1045,39 +1125,21 @@ impl<G: GraphicsBackend> FrameController<G> {
          session_data: &SessionData,
          create_info: &mut xr::SwapchainCreateInfo<G::Api>,
          backend: &mut G,
@@ -450,7 +522,7 @@ index 6eaebd6..cce0335 100644
  
          backend.store_swapchain_images(images, create_info.format);
          debug!(
-@@ -1085,7 +1144,7 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1085,7 +1147,7 @@ impl<G: GraphicsBackend> FrameController<G> {
              create_info.width, create_info.height, create_info.format
          );
  
@@ -459,7 +531,7 @@ index 6eaebd6..cce0335 100644
      }
  
      fn new(
-@@ -1103,7 +1162,7 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1103,7 +1165,7 @@ impl<G: GraphicsBackend> FrameController<G> {
          let swapchain_data = if let Some(mut info) = create_info {
              is_valid_swapchain_info(&info).then(|| {
                  let (swapchain, initial_format) =
@@ -468,7 +540,7 @@ index 6eaebd6..cce0335 100644
                  SwapchainData {
                      swapchain,
                      info,
-@@ -1120,6 +1179,7 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1120,6 +1182,7 @@ impl<G: GraphicsBackend> FrameController<G> {
              swapchain_data,
              image_index: 0,
              image_acquired: false,
@@ -476,7 +548,7 @@ index 6eaebd6..cce0335 100644
              should_render: false,
              app_suspend_render: false,
              app_fade_grid: false,
-@@ -1133,79 +1193,86 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1133,79 +1196,86 @@ impl<G: GraphicsBackend> FrameController<G> {
          &mut self,
          session_data: &SessionData,
          mut create_info: xr::SwapchainCreateInfo<G::Api>,
@@ -586,7 +658,7 @@ index 6eaebd6..cce0335 100644
      }
  
      fn submit_impl(
-@@ -1223,48 +1290,39 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1223,48 +1293,39 @@ impl<G: GraphicsBackend> FrameController<G> {
              TryInto<&'b openxr_data::Session<G::Api>, Error: std::fmt::Display>,
          <G::Api as xr::Graphics>::Format: PartialEq + std::fmt::Debug,
      {
@@ -662,7 +734,7 @@ index 6eaebd6..cce0335 100644
          } else {
              Some(Default::default())
          };
-@@ -1272,11 +1330,12 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1272,11 +1333,12 @@ impl<G: GraphicsBackend> FrameController<G> {
          trace!("submitted {eye:?}");
          if self.eyes_submitted.iter().all(|eye| eye.is_some()) {
              let mut swapchain_data = self.swapchain_data.as_mut();
@@ -677,7 +749,7 @@ index 6eaebd6..cce0335 100644
          }
  
          Ok(())
-@@ -1288,10 +1347,11 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1288,10 +1350,11 @@ impl<G: GraphicsBackend> FrameController<G> {
          system: &System,
          display_time: xr::Time,
          overlays: Option<&OverlayMan>,
@@ -690,7 +762,7 @@ index 6eaebd6..cce0335 100644
          let mut proj_layer_views = Vec::new();
  
          if self.should_render
-@@ -1305,6 +1365,10 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1305,6 +1368,10 @@ impl<G: GraphicsBackend> FrameController<G> {
  
              let crate::system::ViewData { flags, views } =
                  system.get_views(session_data.current_origin_as_reference_space());
@@ -701,7 +773,7 @@ index 6eaebd6..cce0335 100644
              proj_layer_views = views
                  .into_iter()
                  .enumerate()
-@@ -1368,11 +1432,10 @@ impl<G: GraphicsBackend> FrameController<G> {
+@@ -1368,11 +1435,10 @@ impl<G: GraphicsBackend> FrameController<G> {
              layers.extend(overlay_layers.iter().map(Deref::deref));
          }
  
@@ -960,10 +1032,53 @@ index 16f69ad..5cc692d 100644
          device: &ash::Device,
          source_format: vk::Format,
 diff --git a/src/input.rs b/src/input.rs
-index 77ab6ed..b91e1e9 100644
+index 77ab6ed..94702c9 100644
 --- a/src/input.rs
 +++ b/src/input.rs
-@@ -1205,7 +1205,10 @@ impl<C: openxr_data::Compositor> vr::IVRInput011_Interface for Input<C> {
+@@ -100,24 +100,28 @@ impl<T> Drop for WriteOnDrop<T> {
+ 
+ impl<C: openxr_data::Compositor> Input<C> {
+     pub fn new(openxr: Arc<OpenXrData<C>>) -> Self {
++        Self::try_new(openxr).expect("Failed to initialize OpenXR input")
++    }
++
++    pub fn try_new(openxr: Arc<OpenXrData<C>>) -> xr::Result<Self> {
+         let mut map = SlotMap::with_key();
+         let left_hand_key = map.insert(c"/user/hand/left".into());
+         let right_hand_key = map.insert(c"/user/hand/right".into());
+-        let subaction_paths = SubactionPaths::new(&openxr.instance);
+-        let pose_data = PoseData::new(
++        let subaction_paths = SubactionPaths::try_new(&openxr.instance)?;
++        let pose_data = PoseData::try_new(
+             &openxr.instance,
+             subaction_paths.left,
+             subaction_paths.right,
+-        );
++        )?;
+         openxr
+             .session_data
+             .get()
+             .input_data
+             .pose_data
+             .set(pose_data)
+-            .unwrap_or_else(|_| panic!("PoseData already setup"));
++            .map_err(|_| xr::sys::Result::ERROR_RUNTIME_FAILURE)?;
+ 
+-        Self {
++        Ok(Self {
+             openxr,
+             vtables: Default::default(),
+             input_source_map: RwLock::new(map),
+@@ -135,7 +139,7 @@ impl<C: openxr_data::Compositor> Input<C> {
+             subaction_paths,
+             events: Mutex::default(),
+             loading_actions: false.into(),
+-        }
++        })
+     }
+ 
+     fn get_subaction_path(&self, hand: Hand) -> xr::Path {
+@@ -1205,7 +1209,10 @@ impl<C: openxr_data::Compositor> vr::IVRInput011_Interface for Input<C> {
          let mut data = self.openxr.session_data.get();
          if data.input_data.get_legacy_actions().is_some() {
              drop(data);
@@ -974,6 +1089,194 @@ index 77ab6ed..b91e1e9 100644
 +            }
              data = self.openxr.session_data.get();
          }
+ 
+@@ -1460,7 +1467,7 @@ impl<C: openxr_data::Compositor> Input<C> {
+             .unwrap();
+     }
+ 
+-    pub fn frame_start_update(&self) {
++    pub fn frame_start_update(&self) -> xr::Result<()> {
+         tracy_span!();
+         let data = self.openxr.session_data.get();
+         let devices = data.input_data.devices.read().unwrap();
+@@ -1485,9 +1492,9 @@ impl<C: openxr_data::Compositor> Input<C> {
+                 debug!("no controllers connected - syncing info set");
+                 data.session
+                     .sync_actions(&[xr::ActiveActionSet::new(&loaded.info_set)])
+-                    .unwrap();
++                    ?;
+             }
+-            return;
++            return Ok(());
+         }
+ 
+         match input_data.get_legacy_actions() {
+@@ -1497,13 +1504,13 @@ impl<C: openxr_data::Compositor> Input<C> {
+                         xr::ActiveActionSet::new(&actions.set),
+                         xr::ActiveActionSet::new(&input_data.pose_data.get().unwrap().set),
+                     ])
+-                    .unwrap();
++                    ?;
+ 
+                 self.legacy_state.on_action_sync();
+             }
+             None => {
+                 if self.loading_actions.load(Ordering::Relaxed) {
+-                    return;
++                    return Ok(());
+                 }
+ 
+                 // If we haven't created our legacy actions yet but we're getting our per frame
+@@ -1523,11 +1530,12 @@ impl<C: openxr_data::Compositor> Input<C> {
+                     debug!(
+                         "Couldn't set up legacy actions because we're not in the real session yet."
+                     );
+-                    return;
++                    return Ok(());
+                 }
+-                self.setup_legacy_actions();
++                self.setup_legacy_actions()?;
+             }
+         }
++        Ok(())
+     }
+ 
+     pub fn post_session_restart(&self, data: &SessionData) {
+@@ -1678,13 +1686,16 @@ struct PoseData {
+ 
+ impl PoseData {
+     fn new(instance: &xr::Instance, left_path: xr::Path, right_path: xr::Path) -> Self {
++        Self::try_new(instance, left_path, right_path).expect("Failed to initialize pose action")
++    }
++    fn try_new(instance: &xr::Instance, left_path: xr::Path, right_path: xr::Path) -> xr::Result<Self> {
+         let set = instance
+             .create_action_set("xrizer-pose-data", "xrizer pose data", 0)
+-            .unwrap();
++            ?;
+         let grip = set
+             .create_action("grip-pose", "Grip Pose", &[left_path, right_path])
+-            .unwrap();
+-        Self {
++            ?;
++        Ok(Self {
+             set,
+             grip,
+             left_space: HandSpace {
+@@ -1697,7 +1708,7 @@ impl PoseData {
+                 hand_path: right_path,
+                 raw: RwLock::default(),
+             },
+-        }
++        })
+     }
+     fn reset_spaces(&self) {
+         self.left_space.reset_raw();
+diff --git a/src/input/devices.rs b/src/input/devices.rs
+index bdd9e70..d9d8989 100644
+--- a/src/input/devices.rs
++++ b/src/input/devices.rs
+@@ -334,15 +334,8 @@ pub struct SubactionPaths {
+ }
+ 
+ impl SubactionPaths {
+-    pub fn new(instance: &xr::Instance) -> Self {
+-        let left = instance
+-            .string_to_path("/user/hand/left")
+-            .expect("Failed to convert string to path");
+-        let right = instance
+-            .string_to_path("/user/hand/right")
+-            .expect("Failed to convert string to path");
+-
+-        Self { left, right }
++    pub fn try_new(instance: &xr::Instance) -> xr::Result<Self> {
++        Ok(Self { left: instance.string_to_path("/user/hand/left")?, right: instance.string_to_path("/user/hand/right")? })
+     }
+ }
+ 
+diff --git a/src/input/legacy.rs b/src/input/legacy.rs
+index 3099735..4d5abde 100644
+--- a/src/input/legacy.rs
++++ b/src/input/legacy.rs
+@@ -38,7 +38,7 @@ macro_rules! button_mask_from_ids {
+ }
+ 
+ impl<C: openxr_data::Compositor> Input<C> {
+-    pub fn setup_legacy_actions(&self) {
++    pub fn setup_legacy_actions(&self) -> xr::Result<()> {
+         debug!("setting up legacy actions");
+ 
+         let session_data = self.openxr.session_data.get();
+@@ -47,7 +47,7 @@ impl<C: openxr_data::Compositor> Input<C> {
+             &self.openxr.instance,
+             self.subaction_paths.left,
+             self.subaction_paths.right,
+-        );
++        )?;
+         let input_data = &session_data.input_data;
+ 
+         profiles::run_for_all_profiles(&mut Runner {
+@@ -104,6 +104,7 @@ impl<C: openxr_data::Compositor> Input<C> {
+             .actions
+             .set(LoadedActions::Legacy(legacy))
+             .unwrap_or_else(|_| panic!("Actions unexpectedly set up"));
++        Ok(())
+     }
+ 
+     pub fn legacy_haptic(
+@@ -388,41 +389,41 @@ pub(super) struct LegacyActionData {
+ }
+ 
+ impl LegacyActionData {
+-    pub fn new(instance: &xr::Instance, left_hand: xr::Path, right_hand: xr::Path) -> Self {
++    pub fn new(instance: &xr::Instance, left_hand: xr::Path, right_hand: xr::Path) -> xr::Result<Self> {
+         debug!("creating legacy actions");
+         let leftright = [left_hand, right_hand];
+ 
+         let set = instance
+             .create_action_set("xrizer-legacy-set", "XRizer Legacy Set", 0)
+-            .unwrap();
++            ?;
+ 
+         let actions = LegacyActions {
+             trigger_click: set
+                 .create_action("trigger-click", "Trigger Click", &leftright)
+-                .unwrap(),
+-            trigger: set.create_action("trigger", "Trigger", &leftright).unwrap(),
+-            squeeze: set.create_action("squeeze", "Squeeze", &leftright).unwrap(),
++                ?,
++            trigger: set.create_action("trigger", "Trigger", &leftright)?,
++            squeeze: set.create_action("squeeze", "Squeeze", &leftright)?,
+             app_menu: set
+                 .create_action("app-menu", "Application Menu", &leftright)
+-                .unwrap(),
+-            a: set.create_action("a", "A Button", &leftright).unwrap(),
++                ?,
++            a: set.create_action("a", "A Button", &leftright)?,
+             squeeze_click: set
+                 .create_action("grip-click", "Grip Click", &leftright)
+-                .unwrap(),
++                ?,
+             main_xy: set
+                 .create_action("main-joystick", "Main Joystick/Trackpad", &leftright)
+-                .unwrap(),
++                ?,
+             main_xy_click: set
+                 .create_action("main-joystick-click", "Main Joystick Click", &leftright)
+-                .unwrap(),
++                ?,
+             main_xy_touch: set
+                 .create_action("main-joystick-touch", "Main Joystick Touch", &leftright)
+-                .unwrap(),
+-            haptic: set.create_action("haptic", "Haptic", &leftright).unwrap(),
++                ?,
++            haptic: set.create_action("haptic", "Haptic", &leftright)?,
+             extra: Actions,
+         };
+ 
+-        Self { set, actions }
++        Ok(Self { set, actions })
+     }
+ }
  
 diff --git a/src/lib.rs b/src/lib.rs
 index 663f147..a6cc8ee 100644

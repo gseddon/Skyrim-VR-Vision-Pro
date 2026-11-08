@@ -100,24 +100,28 @@ impl<T> Drop for WriteOnDrop<T> {
 
 impl<C: openxr_data::Compositor> Input<C> {
     pub fn new(openxr: Arc<OpenXrData<C>>) -> Self {
+        Self::try_new(openxr).expect("Failed to initialize OpenXR input")
+    }
+
+    pub fn try_new(openxr: Arc<OpenXrData<C>>) -> xr::Result<Self> {
         let mut map = SlotMap::with_key();
         let left_hand_key = map.insert(c"/user/hand/left".into());
         let right_hand_key = map.insert(c"/user/hand/right".into());
-        let subaction_paths = SubactionPaths::new(&openxr.instance);
-        let pose_data = PoseData::new(
+        let subaction_paths = SubactionPaths::try_new(&openxr.instance)?;
+        let pose_data = PoseData::try_new(
             &openxr.instance,
             subaction_paths.left,
             subaction_paths.right,
-        );
+        )?;
         openxr
             .session_data
             .get()
             .input_data
             .pose_data
             .set(pose_data)
-            .unwrap_or_else(|_| panic!("PoseData already setup"));
+            .map_err(|_| xr::sys::Result::ERROR_RUNTIME_FAILURE)?;
 
-        Self {
+        Ok(Self {
             openxr,
             vtables: Default::default(),
             input_source_map: RwLock::new(map),
@@ -135,7 +139,7 @@ impl<C: openxr_data::Compositor> Input<C> {
             subaction_paths,
             events: Mutex::default(),
             loading_actions: false.into(),
-        }
+        })
     }
 
     fn get_subaction_path(&self, hand: Hand) -> xr::Path {
@@ -1463,7 +1467,7 @@ impl<C: openxr_data::Compositor> Input<C> {
             .unwrap();
     }
 
-    pub fn frame_start_update(&self) {
+    pub fn frame_start_update(&self) -> xr::Result<()> {
         tracy_span!();
         let data = self.openxr.session_data.get();
         let devices = data.input_data.devices.read().unwrap();
@@ -1488,9 +1492,9 @@ impl<C: openxr_data::Compositor> Input<C> {
                 debug!("no controllers connected - syncing info set");
                 data.session
                     .sync_actions(&[xr::ActiveActionSet::new(&loaded.info_set)])
-                    .unwrap();
+                    ?;
             }
-            return;
+            return Ok(());
         }
 
         match input_data.get_legacy_actions() {
@@ -1500,13 +1504,13 @@ impl<C: openxr_data::Compositor> Input<C> {
                         xr::ActiveActionSet::new(&actions.set),
                         xr::ActiveActionSet::new(&input_data.pose_data.get().unwrap().set),
                     ])
-                    .unwrap();
+                    ?;
 
                 self.legacy_state.on_action_sync();
             }
             None => {
                 if self.loading_actions.load(Ordering::Relaxed) {
-                    return;
+                    return Ok(());
                 }
 
                 // If we haven't created our legacy actions yet but we're getting our per frame
@@ -1526,11 +1530,12 @@ impl<C: openxr_data::Compositor> Input<C> {
                     debug!(
                         "Couldn't set up legacy actions because we're not in the real session yet."
                     );
-                    return;
+                    return Ok(());
                 }
-                self.setup_legacy_actions();
+                self.setup_legacy_actions()?;
             }
         }
+        Ok(())
     }
 
     pub fn post_session_restart(&self, data: &SessionData) {
@@ -1681,13 +1686,16 @@ struct PoseData {
 
 impl PoseData {
     fn new(instance: &xr::Instance, left_path: xr::Path, right_path: xr::Path) -> Self {
+        Self::try_new(instance, left_path, right_path).expect("Failed to initialize pose action")
+    }
+    fn try_new(instance: &xr::Instance, left_path: xr::Path, right_path: xr::Path) -> xr::Result<Self> {
         let set = instance
             .create_action_set("xrizer-pose-data", "xrizer pose data", 0)
-            .unwrap();
+            ?;
         let grip = set
             .create_action("grip-pose", "Grip Pose", &[left_path, right_path])
-            .unwrap();
-        Self {
+            ?;
+        Ok(Self {
             set,
             grip,
             left_space: HandSpace {
@@ -1700,7 +1708,7 @@ impl PoseData {
                 hand_path: right_path,
                 raw: RwLock::default(),
             },
-        }
+        })
     }
     fn reset_spaces(&self) {
         self.left_space.reset_raw();
