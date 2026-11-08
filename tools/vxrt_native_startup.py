@@ -102,6 +102,16 @@ def capture(args):
     callback_limit = getattr(args, 'callback_depth_limit', None)
     if callback_limit is not None and not 2 <= callback_limit <= 256:
         raise ValueError('callback depth limit must be from 2 to 256')
+    xrizer_path = getattr(args, 'xrizer_dylib', None)
+    if bool(getattr(args, 'experimental_xrizer', False)) != bool(xrizer_path):
+        raise ValueError('experimental xrizer requires an explicit xrizer dylib, and vice versa')
+    if xrizer_path:
+        xrizer_path = Path(xrizer_path)
+        if not xrizer_path.is_absolute():
+            raise ValueError('xrizer dylib path must be absolute')
+        xrizer_path = xrizer_path.resolve(strict=True)
+        if not xrizer_path.is_file() or 0x0100000c not in cpu_types(xrizer_path):
+            raise ValueError('xrizer dylib must be an ARM64 Mach-O file')
     exe = Path(args.exe).resolve(strict=True)
     runtime = Path(args.runtime).resolve(strict=True)
     directory = Path(args.aot_dir).resolve(strict=True)
@@ -152,6 +162,7 @@ def capture(args):
                 path.mkdir(parents=True, mode=0o700)
                 env[f'XDG_{kind}_HOME'] = str(path)
             env['VXRT_XRIZER_OPENVR'] = '1'
+            env['VXRT_XRIZER_DYLIB'] = str(xrizer_path)
             result.setdefault('diagnostic', {})['experimental_xrizer'] = 'development host; injected head and disconnected controllers'
         env.update(VXRT_ROOT=str(root), VXRT_OVERLAY=f'{source}:{overlay}', VXRT_AOT_DIR=str(directory),
                    VXRT_AOT_STRICT='1', VXRT_NO_WINE='1', VXRT_STEAM_BRIDGE='0', VXRT_MESSAGEBOX='auto',
@@ -161,7 +172,7 @@ def capture(args):
             env['VXRT_DLL_PATH'] = ':'.join(map(str, dlls))
         if callback_limit is not None:
             env['VXRT_CALLBACK_DEPTH_LIMIT'] = str(callback_limit)
-            result['diagnostic'] = dict(callback_depth_limit=callback_limit,
+            result.setdefault('diagnostic', {}).update(callback_depth_limit=callback_limit,
                 scope='bounded diagnostic stop; not ordinary startup acceptance')
         if getattr(args, 'trace_openvr_init', False):
             env['VXRT_TRACE_OPENVR_INIT'] = '1'
@@ -173,10 +184,14 @@ def capture(args):
         for base in [assets, *dlls]:
             inputs.extend(p for p in base.glob('*.dll') if p.is_file())
         input_hashes = {str(p): digest(p) for p in set(inputs)}
+        if xrizer_path:
+            input_hashes[str(xrizer_path)] = digest(xrizer_path)
         result['artifacts'] = dict(runtime=dict(path=str(runtime), sha256=digest(runtime)),
                                    exe=dict(path=str(exe), sha256=digest(exe)),
                                    modules=[dict(path=str(p), sha256=digest(p)) for p in modules],
                                    read_only_inputs=input_hashes)
+        if xrizer_path:
+            result['artifacts']['xrizer_dylib'] = dict(path=str(xrizer_path), sha256=digest(xrizer_path))
         cmd = ['/usr/bin/arch', '-arm64', str(runtime), str(exe)]
         result.update(command=cmd, cwd=str(assets), environment={k:v for k,v in env.items() if k.startswith(('VXRT_', 'VERANTYX_')) or k=='TMPDIR' or (getattr(args, 'experimental_xrizer', False) and k.startswith('XDG_'))}, timeout_seconds=args.seconds)
         log = out/'startup.log'
@@ -222,6 +237,7 @@ def main():
     ap.add_argument('--callback-depth-limit', type=int, help='diagnostic only: stop at nested callback depth 2..256')
     ap.add_argument('--trace-openvr-init', action='store_true', help='diagnostic only: transparently log real OpenVR initialization results')
     ap.add_argument('--experimental-xrizer', action='store_true', help='select experimental native xrizer development host; requires a configured runtime')
+    ap.add_argument('--xrizer-dylib', help='absolute path to the pinned native ARM64 xrizer dylib for experimental mode')
     ap.add_argument('--validate', metavar='RESULT_JSON')
     args = ap.parse_args()
     try:
