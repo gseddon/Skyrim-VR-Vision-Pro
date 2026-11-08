@@ -21,6 +21,7 @@ typedef matrix34 (*native_transform_c_fn)(int);
 typedef int (*native_wait_fn)(void *, void *, uint32_t, void *, uint32_t);
 typedef int (*native_one_pose_fn)(void *, uint32_t, void *, void *);
 typedef void (*native_handoff_fn)(void *);
+typedef void (*native_tracking_fn)(void *, int);
 typedef int (*native_submit_fn)(void *, int, const void *, const void *, int);
 static void *core_table[7], *system_table[47], *compositor_table[44], *system_fns[47];
 static guest_object core = {core_table, NULL}, system_object = {system_table, NULL}, compositor = {compositor_table, NULL};
@@ -244,6 +245,10 @@ static WINAPI uint32_t controller_index(guest_object *self, int role) {
 static WINAPI uint8_t input_available(guest_object *self) {
     require(self == &system_object); native_present_fn fn = (native_present_fn)native_table(self)[39]; return fn(self->native);
 }
+static WINAPI void tracking_space(guest_object *self, int origin) {
+    require(self == &compositor); native_tracking_fn fn = (native_tracking_fn)native_table(self)[0];
+    fn(self->native, origin);
+}
 static WINAPI int submit(guest_object *self, int eye, const void *texture, const void *bounds, int flags) {
     require(self == &compositor); native_submit_fn fn = (native_submit_fn)native_table(self)[5];
     return fn(self->native, eye, texture, bounds, flags);
@@ -402,7 +407,7 @@ void *vx_xrizer_guest_core(void *native_core) {
     core_table[0] = core_init; core_table[1] = core_cleanup; core_table[2] = core_version; core_table[3] = core_interface; core_table[4] = core_present;
     system_table[0] = render_size; system_table[1] = member_projection; system_table[4] = member_transform;
     system_table[18] = controller_index; system_table[39] = input_available;
-    compositor_table[2] = wait_poses; compositor_table[3] = last_poses; compositor_table[4] = one_pose; compositor_table[5] = submit; compositor_table[7] = handoff;
+    compositor_table[0] = tracking_space; compositor_table[2] = wait_poses; compositor_table[3] = last_poses; compositor_table[4] = one_pose; compositor_table[5] = submit; compositor_table[7] = handoff;
     system_fns[1] = fntable_projection; system_fns[4] = fntable_transform;
     cleaned = 0; core.native = native_core; return &core;
 }
