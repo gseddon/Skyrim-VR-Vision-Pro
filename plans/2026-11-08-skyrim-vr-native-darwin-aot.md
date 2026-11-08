@@ -1,7 +1,7 @@
 # Skyrim VR native Darwin AOT implementation plan
 
 Date: 8 November 2026 (Europe/London)
-Status: supervised Terra round active; exact game-facing owned Mac stereo/pose path passes strict AOT; normal-host configuration control and required regressions in progress; new actual Skyrim probe pending; physical headset and game scene unproven
+Status: supervised Terra implementation active in the standalone repository; actual Skyrim reaches native WaitGetPoses and event polling; latest probe finds a Bink AOT block gap; intermittent native fault and broad regression gates remain open; simulator integration in progress; physical headset and game scene unproven
 
 ## Overview
 
@@ -39,66 +39,74 @@ historical workers on other models remain idle.
 - Terra B `/root/terra_pose_input_round2`: `build/worktrees/terra-pose-input`.
 - Terra C `/root/terra_skyrim_aot_round2`: `build/worktrees/terra-skyrim-aot`.
 
-All three launched successfully from approved plan commit `8eb61b4`. The prior
-session limit did not recur; no non-Terra implementation workers were resumed.
-First checkpoints established the reusable guest bridge, unchanged frame-host
-contract and a separate coherent input snapshot. A has the first runtime test
-slot; B/C source and isolated CPU work proceed in parallel.
+All three launched from approved plan commit `8eb61b4`. A and B continue as
+Terra implementation workers. C completed six bounded game probes and then
+stopped after automatic content review twice rejected its turn, citing possible
+cybersecurity risk. The parent now performs ordinary local build/probe
+orchestration in C's checkout; that worker remains stopped. No review bypass or
+non-Terra implementation worker was introduced.
 
 ### Verified round progress
 
-- Guest graphics/ABI: real guest-created D3D11 textures, distinct producer/provider
-  queues, checked producer and destination completion, two changing pixel pairs,
-  unique balanced source leases, failed-producer retry, and shared/wrapped/DXGI
-  backbuffer refusals pass. Combined nonzero-pose/stereo fixture passes with
-  **67 AOT entries and zero fallback** (`terra-combined-check`).
-- Pose/input: focused native xrizer tests cover changing valid/invalid head poses,
-  all three pose-query APIs, disconnected legacy role/state calls, explicit
-  inactive input snapshots, and balanced cancellation. Ordinary Apple init still
-  refuses; connected-controller state/profile/provider-v2 activation is absent.
-- Exact game-facing integration: owned Windows caller through the six real
-  OpenVR exports and the actual development host passes **73 AOT entries,
-  zero fallback**, exact cropped pixel pairs, reader/source lease balance and
-  clean lifecycle (`xrizer-candidate-04/joined-002`). A Standing-invalid sample
-  is explicitly cancelled before Seated/local samples publish IDs 2/2 and 3/3.
-  The host has no floor reference. The normal 1024 recommendation/consumer path
-  is being tested with a passive observer before a game run; the earlier test
-  changed recommendation and consumer behavior for its audit.
-- Preserved failures: missing adjacent VM dylib prevented bootstrap001 execution;
-  bootstrap002 revealed a real synthetic shutdown-event bug; joined001 exposed
-  a test/host origin mismatch. Corrected candidates passed their owned tests.
-  These are not game or physical-device results and earlier logs remain intact.
-- Platform preparation: device/simulator unsigned app builds and raw Sense
-  observation/mapping controls pass; no physical launch and no connected input
-  routed into the provider. Simulator static-link/no-JIT dispatch integration is
-  being investigated separately, retaining the existing Apple host.
-- Required regression batch is active on frozen default-off Rosetta/ARM64
-  candidates. Previously recorded broad failures remain unresolved until this
-  batch is examined. The actual game has since advanced in two bounded native-backend probes (below);
-  keep those observations separate from fixture successes.
+- Guest graphics/ABI: the exact game-facing six-export Windows guest, real
+  xrizer/provider, normal 1024 recommendation and normal consumer pass two
+  changing 4x3 pixel/crop pairs, nonzero Seated poses, pre-frame optics with
+  zero tickets, Standing-invalid cancellation and balanced GPU/resource
+  lifecycle. Property, unavailable DXGI adapter and empty hidden-mesh wrappers
+  pass guarded MSVC ABI tests. These are owned offscreen Mac results.
+- PollNextEvent: the actual game passes a 48-byte event structure, unlike the
+  latest pinned Windows header's 64 bytes or Darwin's 60-byte layout. The
+  candidate12 owned guest passes real HMD activation event conversion, short/
+  null controls and canaries, plus the earlier stereo/lifecycle checks:
+  **107 AOT entries, zero fallback**. Its source checkpoint and evidence are integrated; actual probe008 now passes
+  event polling and exposes the next Bink code-discovery gap.
+- Pose/input and Apple host: raw Sony Sense observation/mapping controls and
+  unsigned device/simulator app builds pass. The static host adapter now passes
+  an actual native xrizer/Metal fixture with two stereo pairs, held/repeated
+  reader leases, two no-render zero-layer frames and clean drain (`xFA4vt`).
+  Real host clock/tracking, connected input and physical presentation remain
+  unproven; isolated simulator static archives/link probe now passes; existing-app
+  integration and actual simulator execution are next.
+- Native-fault diagnostics: an owned real-SIGBUS control verifies raw fault
+  registers plus cached native stack bounds/thread ID before logging/unwind.
+  Shallow/deep callback controls pass. This is observability, not a fix for the
+  intermittent actual-game crash.
+- Required regressions remain **red**. AOT semantic suite passes (8167 entries,
+  zero fallback, unsplit and split); broader checks stop at fiber-pool,
+  presentation snapshot or intermittent kernel memory assertions. Old/new
+  paired presentation controls reproduce the 14 snapshot failures on both
+  runners. Later tests, including D3D12, were skipped when earlier checks failed.
+  No baseline failure is waived by these fixture successes.
 
 ### Actual game follow-up in this round
 
-The first private native-xrizer probe reached original Skyrim code and observed
-real InitInternal2 token1/error0 and a successful System019 guest wrapper. It
-stopped at unimplemented System019 slot28. The typed six-argument string
-property wrapper then passed a real MSVC guest test, including the exact game
-query (device0, TrackingSystemName1000, capacity256). Native xrizer returns
-length0/UnknownProperty4; this error is preserved, not replaced with a value.
+Eight bounded native-backend probes are sealed in C's local ledger. They have
+advanced through real xrizer initialization, both pre-Wait eye transforms,
+the documented unavailable DXGI index -1, successful D3D11 device/swapchain
+creation, real Compositor022 acquisition and **WaitGetPoses returning 0**.
+Probe `xrizer-game-007` stopped intentionally at the then-unsupported method,
+System019 slot30 PollNextEvent. It reports **3,539,503 AOT entries, zero fallback
+requests and zero missing addresses up to that stop** (`o5`, `o8`, `o9`, `o12`).
+Probe008 passes the owned-tested event wrapper (actual size48 true then false),
+then strict dispatch stops at **binkw64.dll+0x1d48** in a loaded, hash/base-matched
+AOT image. It reports **3,351,147 entries, one fallback request and one missing
+address** (`o5`, `o6`, `o9=false`), with no translator execution. This fails
+zero-fallback acceptance. Terra A is classifying the static discovery pattern
+and preparing an owned reproducer before rebuilding only the affected module.
+These are synthetic-head/disconnected-controller Mac diagnostics, not physical
+tracking or rendered game scenes.
 
-The second actual probe progressed through that call and reached original
-GetEyeToHeadTransform(left) before any WaitGetPoses. xrizer then panicked in
-ViewCache because the provider correctly refuses timed views without a frame
-ticket. Both actual probes lack an AOT summary; execution/fallback totals are
-unknown, and neither reached compositor submission/menu/scene. Their sealed
-results, inputs and ledgers validate. See the round-two bootstrap report.
-
-The next measured fix is a separate static eye/FOV metadata query with startup
-availability checks, no head/tracking/time/frame/floor fiction, unchanged timed
-OpenXR validation and an owned reproduction of the real pre-Wait call order.
-Terra B owns Rust/provider, C the synthetic development-host callback, and A
-the guarded MSVC transform/projection goldens. No new game probe until that
-coherent candidate passes its owned control.
+The native SIGBUS at pthread_once observed in probes004/006 is intermittent
+and unresolved. Probe007 did not reproduce it, so the new raw fault diagnostics
+did not establish its cause. Probes001/002/004/006 lack AOT summaries; their
+entry/fallback totals remain unknown. Probe005 used an explicit callback-depth
+diagnostic and is not normal-depth acceptance. No compositor Submit, game
+stereo frame, menu, scene or physical headset playability has been established.
+See `research/2026-11-08-skyrim-native-bootstrap-round2.md` for exact identities,
+run scope and validation. Continue with one changed probe after the affected
+compiler/module change passes its owned control and the candidate/source inputs
+are pinned. Inspect any new fault's raw context before proposing a stack or
+renderer change.
 
 The no-JIT requirement concerns CPU/game code. The existing selected
 D3D11-to-Metal renderer retains supported Metal GPU shader compilation; no
@@ -210,9 +218,9 @@ Updated after the xrizer decision and Apple cross-builds on 8 November 2026. The
 | Area | Established | Still to prove |
 | --- | --- | --- |
 | AOT / Windows compatibility | Owned CPU/D3D11 suite passes strict AOT on Mac and in visionOS simulator; actual MSVC guest scalar/float/matrix static-wrapper tests pass with zero fallback | Complete observed interface coverage, guest/provider stereo and clean broad runtime baseline |
-| D3D11 / Metal / native frame exchange | Owned Windows guest D3D11 → xrizer/provider stereo passes real pixels, poses, identity, ownership and failure controls | Normal development-host configuration, physical presentation/input and unsupported formats/origins |
+| D3D11 / Metal / native frame exchange | Owned Windows guest stereo passes pixels, poses, ownership and normal development-host consumption; static Apple adapter passes native Metal/no-render lifecycle | Integrated simulator/physical presentation and input; unsupported formats/origins |
 | xrizer Apple port | Owned guest path initializes, queries nonzero poses and submits stereo through the provider; ordinary initialization remains disabled | Real Apple-host integration, connected input, broader interface coverage and recoverable session replacement |
-| Skyrim VR | Private prepared code and guest modules built; actual native AOT probes reach genuine OpenVR error110 | Fix the observed pre-frame geometry/time gap; no game stereo frame, menu, scene, controller or performance result |
+| Skyrim VR | Private prepared code/modules; actual native xrizer init, D3D11 device creation and WaitGetPoses; event polling; prior 3.54M-entry zero-fallback checkpoint | Latest Bink block-discovery gap (one strict fallback request); intermittent SIGBUS; game stereo/menu/scene, input and performance |
 | Physical Vision Pro | Unsigned device/simulator apps and raw spatial-controller collector compile | Integrated xrizer execution, signing/install/launch, resource budgets, local stereo/tracking/input/audio and sustained operation |
 
 Do not report a completion percentage: these are risk-reduction milestones, and the largest game-specific uncertainty is still untested.
@@ -249,7 +257,7 @@ xrizer owns the OpenVR compatibility behavior. It does not supply Apple's OpenXR
 
 ### Immediate uncertainties and stop conditions
 
-- Prepared-image analysis now leaves 0.86% of executable-section bytes unexplained; the earlier 78.98% figure describes the wrapped original. Neither number establishes executable-path completeness. Metadata gaps, refused blocks, callback discovery and instruction/ABI semantics still require measured investigation. The earlier no-image stop was classified as a missing Windows import. Current startup is blocked at real OpenVR initialization; the separate native callback SIGBUS remains unresolved. Actual scene execution remains the game feasibility gate.
+- Prepared-image analysis now leaves 0.86% of executable-section bytes unexplained; the earlier 78.98% figure describes the wrapped original. Neither number establishes executable-path completeness. Metadata gaps, refused blocks, callback discovery and instruction/ABI semantics still require measured investigation. The earlier no-image stop was classified as a missing Windows import. Current startup passes native event polling and stops at an undiscovered Bink AOT block; the separate native callback SIGBUS remains unresolved. Actual scene execution remains the game feasibility gate.
 - Broad checks remain unresolved: the latest Rosetta and ARM64 candidate runs fail in D3D12 native object release; baseline/regression classification requires an equivalent control. Earlier released-memory and thread/SMC failures were also observed. Isolate and fix with reproducers. These block declaring the broad baseline accepted, but do not require stopping independent source work. A JIT-specific failure and strict-AOT correctness must be measured separately.
 - The existing custom OpenVR adapter uses System021/Compositor026 and test-only readback/expiry exports. Its fixture is a reference, not the production ABI contract. Add a fixture for the pinned xrizer's System019/Compositor022 (plus other interfaces as actually needed), and move diagnostics to host-side evidence rather than making xrizer implement test-only OpenVR exports.
 - The current host provides rotation-only image reprojection and no reconstructed scene depth. Physical translation, world scale/origin and comfort need explicit tests; the old clip-space marker cannot prove them. Haptics, overlays, audio and unsupported MSAA/format paths remain separate coverage items.

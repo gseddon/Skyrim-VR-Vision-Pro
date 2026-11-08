@@ -6,12 +6,11 @@ Experimental work toward running an owned Windows x86-64 Skyrim VR build locally
 
 This is a development checkpoint, not a working game release.
 
-- A private prepared executable is available and mostly discoverable. Native strict-AOT startup reaches original game/OpenVR initialization; the observed blocker is Valve error110 (missing OpenVR runtime path registry). The separate native callback fault and broad runtime regression failures remain unresolved.
-- Owned native fixtures initialize actual xrizer, submit real Metal stereo images into the native frame queue and verify pixels, pose/frame identities, resource lifetime and four failure/retry paths. Host tracking/lifecycle are injected test data.
-- Actual Windows MSVC callers pass static thunk tests for scalar, float and large matrix returns; a separate guest control forwards into the actual native xrizer factory and preserves its default initialization failure.
-- The joined real-provider Windows guest fixture passes initialization, actual System019 member/FnTable matrices, empty-frame cancellation and cleanup: 33 AOT entries, zero fallback. It does not draw.
-- Owned Windows D3D11 stereo with nonzero poses passes through xrizer/provider (67 AOT entries, zero fallback); the exact game-facing export/host path separately passes cropped pixels and clean lifecycle (73 entries, zero fallback). Tracking is injected.
-- Normal-host configuration/regression checks, an actual Skyrim native-backend probe, connected PS VR2 Sense provider input and physical headset execution remain open.
+- Actual native Skyrim probes initialize xrizer, create a D3D11 device and reach WaitGetPoses/event polling. The latest strict probe stops at an undiscovered Bink DLL block after 3.35 million AOT entries; the prior checkpoint reported 3.54 million with zero fallback. The intermittent native SIGBUS remains unresolved. No game stereo image, menu or scene is established.
+- The owned Windows guest passes real xrizer/provider stereo pixels, nonzero injected poses, static optics, event-layout conversion and clean ownership/lifecycle through the normal development host: 107 AOT entries, zero fallback.
+- The static Apple host adapter passes a native Mac Metal fixture with two stereo pairs and two no-render cycles. The real xrizer/provider/adapter also statically links for visionOS simulator; existing-app integration and simulator execution remain in progress.
+- CPU AOT semantic checks pass, including split modules. Broad runtime regressions remain red; see [the current baseline report](research/2026-11-08-runtime-regression-round2.md).
+- Connected PS VR2 Sense provider input, physical headset execution, resource budgets and playability remain unproven.
 
 The plans are the source of truth: [main plan](plans/2026-11-08-skyrim-vr-native-darwin-aot.md), [AOT feasibility](plans/2026-11-08-skyrim-vr-prepared-input-aot-feasibility.md), [xrizer/Klepton](plans/2026-11-08-xrizer-klepton-native-openxr.md).
 
