@@ -31,6 +31,11 @@
 @property(nonatomic) uint64_t nextFrame;
 @property(nonatomic) unsigned width, height;
 @property(nonatomic) BOOL outstanding;
+#ifdef VXRT_XRIZER_DEV_AUDIT
+@property(nonatomic) BOOL audit;
+@property(nonatomic) unsigned published, acquired, released, begins, exits, ends;
+@property(nonatomic) uint64_t auditFrame, auditPose;
+#endif
 @end
 @implementation VXDevXRHost
 @end
@@ -58,6 +63,9 @@ static XrResult poll_event(void *p,KlNativeSessionEvent *out) {
 static XrResult begin_session(void *p,XrTime *out) {
     VXDevXRHost *h=host(p); if (!h || !out || h.event.type || !(*out=now_ns())) return XR_ERROR_RUNTIME_FAILURE;
     h.event=(KlNativeSessionEvent){KL_NATIVE_SESSION_VISIBLE,*out};
+#ifdef VXRT_XRIZER_DEV_AUDIT
+    if (h.audit) ++h.begins;
+#endif
     vx_log("xrizer dev host: synthetic session begun"); return XR_SUCCESS;
 }
 static XrResult request_exit(void *p) {
@@ -65,6 +73,9 @@ static XrResult request_exit(void *p) {
     if (!h || !t || h.outstanding) return XR_ERROR_RUNTIME_FAILURE;
     /* An immediate shutdown may supersede an unconsumed synthetic focus event. */
     h.event=(KlNativeSessionEvent){KL_NATIVE_SESSION_STOPPING,t};
+#ifdef VXRT_XRIZER_DEV_AUDIT
+    if (h.audit) ++h.exits;
+#endif
     vx_log("xrizer dev host: synthetic session exit requested"); return XR_SUCCESS;
 }
 static XrResult end_session(void *p,XrTime *out) {
@@ -73,6 +84,9 @@ static XrResult end_session(void *p,XrTime *out) {
     vx_native_vr_reset(h.frames);
     if (vx_native_vr_destroy(h.frames)) return XR_ERROR_RUNTIME_FAILURE;
     h.frames=NULL; *out=t; h.event=(KlNativeSessionEvent){KL_NATIVE_SESSION_EXITING,t};
+#ifdef VXRT_XRIZER_DEV_AUDIT
+    if (h.audit) ++h.ends;
+#endif
     vx_log("xrizer dev host: session ended with frame queue drained"); return XR_SUCCESS;
 }
 static XrResult input(void *p,KlNativeInputSample *out) {
@@ -167,6 +181,13 @@ static XrResult publish(void *p,const KlNativeFramePair *pair) {
         submitted|=1u<<i;
     }
     for (unsigned i=0;i<2;i++) { if (vx_native_vr_complete(h.frames,frame,i)) goto failed; completed|=1u<<i; }
+#ifdef VXRT_XRIZER_DEV_AUDIT
+    if (h.audit) {
+        ++h.published; h.outstanding=NO;
+        vx_log("xrizer dev audit: published frame %llu pose %llu",(unsigned long long)pose.frame_id,(unsigned long long)pose.pose_id);
+        return XR_SUCCESS;
+    }
+#endif
     vx_native_vr_frame read;
     if (vx_native_vr_acquire(h.frames,&read)) { vx_native_vr_reset(h.frames); h.outstanding=NO; return XR_SUCCESS; }
     vx_log("xrizer dev host: offscreen fresh pair frame %llu pose %llu (%ux%u, %ux%u), no display",(unsigned long long)pose.frame_id,
@@ -183,6 +204,9 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
         !getenv("XDG_STATE_HOME") || !getenv("XDG_CONFIG_HOME") || !getenv("XDG_CACHE_HOME") || !getenv("XDG_DATA_HOME")) return -1;
     @autoreleasepool {
         VXDevXRHost *h=[VXDevXRHost new]; dev_host=h; /* Keep any installed contexts alive on failure. */
+#ifdef VXRT_XRIZER_DEV_AUDIT
+        h.audit=getenv("VXRT_XRIZER_DEV_AUDIT") && !strcmp(getenv("VXRT_XRIZER_DEV_AUDIT"),"1");
+#endif
         h.width=width; h.height=height; h.device=MTLCreateSystemDefaultDevice(); h.queue=[h.device newCommandQueue];
         h.inputTime=now_ns(); h.frames=vx_native_vr_create(keep,drop);
         if (!h.device || !h.queue || !h.inputTime || !h.frames) return -1;
@@ -213,3 +237,31 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
         return 0;
     }
 }
+#ifdef VXRT_XRIZER_DEV_AUDIT
+int vx_xrizer_dev_audit_acquire(vx_native_vr_frame *out) {
+    VXDevXRHost *h=dev_host;
+    if (!h || !h.audit || !h.frames || !out || h.acquired!=h.released || h.published!=h.acquired+1) return -1;
+    if (vx_native_vr_acquire(h.frames,out)) return -1;
+    ++h.acquired;
+    int valid=out->pose.frame_id==h.sample.frame_id && out->pose.pose_id==h.sample.pose_id &&
+        out->pose.frame_id>h.auditFrame && out->pose.pose_id>h.auditPose;
+    if (!valid) { (void)vx_native_vr_release(h.frames,out->lease); ++h.released; return -1; }
+    h.auditFrame=out->pose.frame_id; h.auditPose=out->pose.pose_id;
+    return 0;
+}
+int vx_xrizer_dev_audit_release(uint64_t lease) {
+    VXDevXRHost *h=dev_host;
+    if (!h || !h.audit || !h.frames || h.acquired!=h.released+1 || vx_native_vr_release(h.frames,lease)) return -1;
+    ++h.released; vx_native_vr_reset(h.frames); return 0;
+}
+int vx_xrizer_dev_audit_finish(void) {
+    VXDevXRHost *h=dev_host; uint64_t acquired=0,released=0,copied=0;
+    XrizerMetalHost source=h ? h.source : (XrizerMetalHost){0};
+    if (!h || !h.audit || h.frames || h.outstanding || h.published!=2 || h.acquired!=2 || h.released!=2 ||
+        h.begins!=1 || h.exits!=1 || h.ends!=1 || vx_xrizer_guest_d3d_counts(&source,&acquired,&released,&copied) ||
+        acquired!=released || copied!=4) return -1;
+    vx_log("xrizer dev audit: drained pairs %u reader leases %u/%u source leases %llu/%llu copies %llu lifecycle %u/%u/%u",
+        h.published,h.acquired,h.released,(unsigned long long)acquired,(unsigned long long)released,(unsigned long long)copied,h.begins,h.exits,h.ends);
+    return 0;
+}
+#endif
