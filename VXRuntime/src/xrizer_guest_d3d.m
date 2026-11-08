@@ -1,6 +1,7 @@
 // Registry-validated D3D11 resources to xrizer's native Metal host boundary.
 #include "d3d_common.h"
 #include "xrizer_guest_d3d.h"
+#include "vx.h"
 #include <stdlib.h>
 
 typedef struct lease { d3d_texture *texture; void *metal; struct lease *next; } lease;
@@ -13,15 +14,29 @@ typedef struct {
     unsigned inflight;
     int invalid_release;
 } bridge;
+static unsigned acquire_notes;
+static void note_acquire(const char *why, void *handle, d3d_texture *t, id<MTLTexture> src, int device_ok) {
+    if (acquire_notes >= 4) return;
+    acquire_notes++;
+    if (!t) { vx_log("xrizer_guest_d3d: acquire %s handle %p", why, handle); return; }
+    vx_log("xrizer_guest_d3d: acquire %s handle %p dim %u %ux%u array %u samples %u dxgi %u metal %ld type %lu shared %d external %d device_ok %d",
+           why, handle, t->dim, t->desc[TD_WIDTH], t->desc[TD_HEIGHT], t->desc[TD_ARRAY], t->desc[TD_SAMPLES], t->desc[TD_FORMAT],
+           src ? (long)src.pixelFormat : -1L, src ? (unsigned long)src.textureType : 0UL, t->shared, t->external_origin, device_ok);
+}
 static int32_t acquire(void *ctx, void *handle, XrizerMetalTexture *out) {
     bridge *b = ctx; if (!b || !out) return -1;
     *out = (XrizerMetalTexture){0};
     d3d_texture *t = d3d_texture_acquire(VX_LOW(handle));
-    if (!t) return -1;
+    if (!t) { note_acquire("miss", handle, NULL, nil, 0); return -1; }
     id<MTLTexture> src = (__bridge id<MTLTexture>)t->mtl;
+    int device_ok = t->base.dev && t->base.dev->mtl == b->device && src && src.device == (__bridge id<MTLDevice>)b->device;
     if (!src || !t->base.dev || t->base.dev->mtl != b->device || src.device != (__bridge id<MTLDevice>)b->device ||
         t->shared || t->external_origin || t->dim != 2 || t->desc[TD_ARRAY] != 1 || t->desc[TD_SAMPLES] != 1 || src.textureType != MTLTextureType2D ||
-        src.pixelFormat != MTLPixelFormatRGBA8Unorm) { d3d_release(&t->base); return -1; }
+        src.pixelFormat != MTLPixelFormatRGBA8Unorm) {
+        note_acquire("rejected", handle, t, src, device_ok);
+        d3d_release(&t->base); return -1;
+    }
+    note_acquire("accepted", handle, t, src, device_ok);
     if (b->acquired == UINT64_MAX) { d3d_release(&t->base); return -1; }
     lease *held=malloc(sizeof(*held)); if (!held) { d3d_release(&t->base); return -1; }
     held->texture=t; held->metal=(void *)CFRetain(t->mtl); held->next=b->active; b->active=held; ++b->acquired;
@@ -38,7 +53,7 @@ static void release_source(void *ctx, void *token) {
 }
 static int32_t copy_complete(void *ctx, const XrizerMetalCopy *copy) {
     bridge *b=ctx;
-    if (!b || !copy || !copy->source || !copy->source->lease || copy->eye>1 || copy->color_space!=2) return -1;
+    if (!b || !copy || !copy->source || !copy->source->lease || copy->eye>1 || copy->color_space>2) return -1;
     lease *held=b->active; while (held && held!=copy->source->lease) held=held->next;
     if (!held || b->copied==UINT64_MAX) return -1;
     d3d_texture *t=held->texture;

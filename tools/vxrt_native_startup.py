@@ -136,6 +136,9 @@ def capture(args):
     callback_limit = getattr(args, 'callback_depth_limit', None)
     if callback_limit is not None and not 2 <= callback_limit <= 256:
         raise ValueError('callback depth limit must be from 2 to 256')
+    ring_at = getattr(args, 'trace_call_ring', None)
+    if ring_at is not None and not 1 <= ring_at < args.seconds:
+        raise ValueError('call ring time must be at least 1 second and before the timeout')
     xrizer_path = getattr(args, 'xrizer_dylib', None)
     if bool(getattr(args, 'experimental_xrizer', False)) != bool(xrizer_path):
         raise ValueError('experimental xrizer requires an explicit xrizer dylib, and vice versa')
@@ -217,6 +220,11 @@ def capture(args):
             env['VXRT_AOT_NULL_DIAGNOSTIC'] = '1'
             result.setdefault('diagnostic', {}).update(null_target_trace=True,
                 null_target_scope='opt-in null-target snapshot; diagnostic evidence only')
+        if ring_at is not None:
+            env['VXRT_TRACE_CALLS_RING'] = '1'
+            env['VXRT_TRACE_CALLS_RING_AT'] = str(ring_at)
+            result.setdefault('diagnostic', {}).update(call_ring_at=ring_at,
+                call_ring_scope='diagnostic dump of each thread\'s last runtime calls; not a startup acceptance')
         inputs = [exe]
         original = assets / exe.name
         if original.is_file() and original.resolve() != exe:
@@ -280,6 +288,7 @@ def main():
     ap.add_argument('--callback-depth-limit', type=int, help='diagnostic only: stop at nested callback depth 2..256')
     ap.add_argument('--trace-openvr-init', action='store_true', help='diagnostic only: transparently log real OpenVR initialization results')
     ap.add_argument('--trace-null-target', action='store_true', help='diagnostic only: capture a null AOT target snapshot')
+    ap.add_argument('--trace-call-ring', type=int, metavar='SECONDS', help='diagnostic only: dump each thread\'s last runtime calls after this many seconds, before the timeout')
     ap.add_argument('--experimental-xrizer', action='store_true', help='select experimental native xrizer development host; requires a configured runtime')
     ap.add_argument('--xrizer-dylib', help='absolute path to the pinned native ARM64 xrizer dylib for experimental mode')
     ap.add_argument('--validate', metavar='RESULT_JSON')
