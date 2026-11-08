@@ -50,7 +50,7 @@ class ProbeTest(unittest.TestCase):
         self.base_log = Child.log
         patches = [patch.object(probe, 'REPO', self.root), patch.object(probe, 'cpu_types', return_value={0x0100000c}),
                    patch.object(probe.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', '')),
-                   patch.object(probe.subprocess, 'check_output', return_value='testrev\n'),
+                   patch.object(probe.subprocess, 'check_output', side_effect=lambda *a, **kw: 'testrev\n' if kw.get('text') else b''),
                    patch.object(probe.subprocess, 'Popen', Child), patch.object(probe.os, 'killpg'), patch.object(probe.ledger, 'append')]
         for p in patches:
             p.start(); self.addCleanup(p.stop)
@@ -141,6 +141,8 @@ class ProbeTest(unittest.TestCase):
         self.assertEqual(env['VXRT_XRIZER_OPENVR'], '1')
         self.assertEqual(env['VXRT_XRIZER_DYLIB'], str(dylib))
         self.assertEqual(result['artifacts']['xrizer_dylib']['sha256'], probe.digest(dylib))
+        self.assertEqual(result['source_identity']['commit'], 'testrev')
+        self.assertTrue(next(o['value'] for o in result['observed'] if o['metric']=='source_unchanged'))
         self.assertNotIn('XDG_RUNTIME_DIR', env)
         for kind in ('STATE', 'CONFIG', 'CACHE', 'DATA'):
             path = Path(env[f'XDG_{kind}_HOME'])
