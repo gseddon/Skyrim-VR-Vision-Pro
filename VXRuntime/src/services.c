@@ -632,10 +632,6 @@ static WINAPI BOOL CopyFileExW(const WCHAR *from, const WCHAR *to, void *progres
     BOOL (WINAPI *copy)(const WCHAR *, const WCHAR *, BOOL) = (BOOL (WINAPI *)(const WCHAR *, const WCHAR *, BOOL))vx_find_export("kernel32.dll", "CopyFileW");
     return copy ? copy(from, to, flags & 1) : 0;
 }
-// Profile (.ini) files: the defaults (nothing is read yet).
-static WINAPI unsigned GetPrivateProfileIntW(const WCHAR *app, const WCHAR *key, int def, const WCHAR *file) { (void)app; (void)key; (void)file; return (unsigned)def; }
-static WINAPI unsigned GetPrivateProfileIntA(const char *app, const char *key, int def, const char *file) { (void)app; (void)key; (void)file; return (unsigned)def; }
-static WINAPI DWORD GetPrivateProfileSectionW(const WCHAR *app, WCHAR *out, DWORD cap, const WCHAR *file) { (void)app; (void)file; if (out && cap >= 2) out[0] = out[1] = 0; return 0; }
 static WINAPI BOOL PeekConsoleInputA(HANDLE h, void *rec, DWORD n, DWORD *got) { (void)h; (void)rec; (void)n; *got = 0; return 1; }
 static WINAPI BOOL ReadConsoleInputW(HANDLE h, void *rec, DWORD n, DWORD *got) { (void)h; (void)rec; (void)n; if (got) *got = 0; vx_set_last_error(6); return 0; }
 static WINAPI BOOL FlushConsoleInputBuffer(HANDLE h) { (void)h; return 1; }
@@ -752,8 +748,8 @@ static const vx_export k32[] = {
     VX_EXPORT(FlushInstructionCache), VX_EXPORT(RtlAddFunctionTable), VX_EXPORT(RtlDeleteFunctionTable),
     VX_EXPORT(RtlInstallFunctionTableCallback),
     VX_EXPORT(SetSystemTime), VX_EXPORT(SetLocalTime), VX_EXPORT(Beep), VX_EXPORT(SignalObjectAndWait), VX_EXPORT(ReadDirectoryChangesW),
-    VX_EXPORT(CopyFileExW), VX_EXPORT(GetPrivateProfileIntW),
-    VX_EXPORT(GetPrivateProfileIntA), VX_EXPORT(GetPrivateProfileSectionW), VX_EXPORT(PeekConsoleInputA), VX_EXPORT(ReadConsoleInputW),
+    VX_EXPORT(CopyFileExW),
+    VX_EXPORT(PeekConsoleInputA), VX_EXPORT(ReadConsoleInputW),
     VX_EXPORT(FlushConsoleInputBuffer), VX_EXPORT(GetNumaHighestNodeNumber), VX_EXPORT(GetLargePageMinimum),
     VX_EXPORT(InitOnceBeginInitialize), VX_EXPORT(InitOnceComplete), VX_EXPORT(RtlRestoreContext),
     VX_EXPORT(CreateFile2), VX_EXPORT(CopyFile2), VX_EXPORT(CreateHardLinkW), VX_EXPORT(K32EnumProcesses),
