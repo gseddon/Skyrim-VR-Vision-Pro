@@ -89,7 +89,11 @@ extern "C" void mainCRTStartup() {
     check(system->GetStringTrackedDeviceProperty(17,vr::Prop_SerialNumber_String,property_value,10,&property_error)==0 &&
           property_error==vr::TrackedProp_InvalidDevice,50);
     geometry(system); // Actual game ordering: property query then geometry before Wait.
-    check(preframe()==0,54);
+    struct { unsigned before; int value; unsigned after; } adapter={0x12345678u,123,0x87654321u};
+    system->GetDXGIOutputInfo(&adapter.value);
+    check(adapter.before==0x12345678u && adapter.after==0x87654321u && adapter.value==-1,55);
+    system->GetDXGIOutputInfo(nullptr);
+    check(preframe()==0,56);
     auto comp=(vr::IVRCompositor *)get(vr::IVRCompositor_Version,&error);
     check(comp && !error,4);
     struct { unsigned long long before; vr::TrackedDevicePose_t values[3]; unsigned long long after; }
