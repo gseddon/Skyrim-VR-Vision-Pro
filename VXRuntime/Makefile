@@ -123,7 +123,7 @@ build/recomp/openvr-init-check-fixture/openvr_api.dll: tests/aot_openvr_init_dll
 	$(MINGW) -O1 -nostdlib -shared -e fixtureDllMain -Wl,--image-base,0xf06000000,--out-implib,build/recomp/openvr-init-check-fixture/libopenvr_owned.a -o $@ $< -lkernel32
 
 build/recomp/openvr-init-check-fixture/aot_openvr_init.exe: tests/aot_openvr_init.c build/recomp/openvr-init-check-fixture/openvr_api.dll
-	$(MINGW) -O1 -nostdlib -e mainCRTStartup -o $@ $< -Lbuild/recomp/openvr-init-fixture -lopenvr_owned -lkernel32
+	$(MINGW) -O1 -nostdlib -e mainCRTStartup -o $@ $< -Lbuild/recomp/openvr-init-check-fixture -lopenvr_owned -lkernel32
 
 .PHONY: aot-missing-import-check
 
