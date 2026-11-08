@@ -183,9 +183,13 @@ static vx_file *open_file(const char *path, const char *mode) {
     int writes = strpbrk(m, "wa+") != NULL;
     if (!(writes ? vx_unix_path_write(path, unix_path, sizeof unix_path, m[0] != 'w') : vx_unix_path(path, unix_path, sizeof unix_path))) { set_errno(2); return NULL; }
     FILE *f = fopen(unix_path, m);
+    static int trace = -1;                                   // VXRT_TRACE_FILES: C runtime opens, with the path and the handle later calls name
+    if (trace < 0) trace = getenv("VXRT_TRACE_FILES") != NULL;
+    if (trace) vx_log("fopen(%s, %s): %s", path, mode, f ? "opened" : "failed");
     if (!f) { set_errno(errno == ENOENT ? 2 : errno == EACCES ? 13 : errno == EEXIST ? 17 : errno == EISDIR ? 13 : 22); return NULL; }
     vx_file *v = calloc(1, sizeof *v);
     v->fd = fileno(f); v->f = f;
+    if (trace) vx_log("fopen: %s is handle %p", path, (void *)v);
     return v;
 }
 static WINAPI vx_file *vx_fopen(const char *path, const char *mode) { return open_file(path, mode); }
