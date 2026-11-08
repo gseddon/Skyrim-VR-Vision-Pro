@@ -24,3 +24,10 @@ Subject: actual Skyrim VR on the native arm64 host with the dev host (a syntheti
 2. If a longer observation is needed, raise the harness's 60 s cap rather than bypassing it.
 3. Attack the start-up flake with counts over a fixed number of runs.
 4. Run the broad checks and record the baseline.
+
+## Update 23:50 (loading screen)
+- With a longer dev-host run (`--experimental-xrizer` allows `--seconds` up to 300), the eyes stay black for 90–100 s, then show Skyrim's loading screen (quote, level bar, fog, a rotating model drawn as a black silhouette). Frame 9600 of probe 051 shows a different quote from frame 4800 of probe 048, so it is animating. No world scene by 300 s. Dev host only; no headset.
+- The game's first thread is not deadlocked. It hands work to a loader thread (event `0x3a4`, semaphore `0x39c`, loader releases at `+0xd75bde`); the loader reads 512 KB chunks. Process CPU is about 118%, and the largest active leaf is `_sigtramp` on one game thread (AOT code near `p9.dylib+0x645108…0x646c7c`, including a qword copy with `ldapr`/`stlr`). The cause of the slow load is unknown.
+- New opt-in diagnostics: `--wait-dump`, `--trace-call-ring`, and `fopen` lines under `--trace-files`.
+- Next: (1) find what raises the signals (a `sigaction` handler count by signal number, opt-in) and whether they are frequent in AOT code; (2) check the two failing shaders as the black-model cause; (3) a second execution mode for comparison, if one can drive the same dev host.
+
