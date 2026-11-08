@@ -36,8 +36,8 @@ See `research/2026-11-08-bink-emms-aot.md`. Keep **discovered**, **emitted**,
 **loaded** and **executed** code sets separate.
 
 Probe009 loaded the changed Bink module but hit the separate native SIGBUS
-before proving passage through that target. Raw fault SP is240 bytes below
-cached native stack_low, with the fault address224 bytes below. This strongly
+before proving passage through that target. Raw fault SP is 240 bytes below
+cached native stack_low, with the fault address 224 bytes below. This strongly
 supports stack/guard exhaustion as the immediate mechanism; the source of stack
 consumption remains unresolved. Terra A now owns static callback/frame-size
 analysis and a minimal owned reproducer. No speculative stack-size increase or

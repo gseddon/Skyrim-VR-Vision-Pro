@@ -100,7 +100,7 @@ tracking or rendered game scenes.
 
 Probe009 loaded the changed Bink module but reproduced the native SIGBUS at
 pthread_once before establishing passage through the EMMS leaf. Its raw fault
-record gives SP240 bytes below cached native stack_low and fault address224
+record gives SP 240 bytes below cached native stack_low and fault address 224
 bytes below it. This strongly supports native stack/guard exhaustion as the
 immediate mechanism; the stack-consuming call path and root cause remain
 under investigation. Do not fix this by guessing a larger stack.
