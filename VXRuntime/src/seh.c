@@ -21,6 +21,8 @@
 #include <execinfo.h>
 #include "vx.h"
 #include <dlfcn.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
 #ifdef __aarch64__
 #include "arm64.h"
 #endif
@@ -397,6 +399,47 @@ static void __attribute__((noreturn)) resume(CONTEXT *ctx) {
     vx_restore_context(ctx);
 }
 
+// VXRT_FAULT_OBJECTS=1: at an unhandled fault, for each callee-saved/argument register that holds a readable pointer,
+// log the pointer's first qword as an image offset (a vtable's address for a C++ object) and, when that qword is a
+// readable pointer too, the qword at +0x380 (the slot the Skyrim fault at +0x27c743 calls). Diagnostic only; reads go
+// through mach_vm_read_overwrite so a stale pointer cannot fault.
+static int fault_read(uint64_t addr, uint64_t *out) {
+    mach_vm_size_t got = 0;
+    return mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)addr, 8, (mach_vm_address_t)out, &got) == KERN_SUCCESS && got == 8;
+}
+static void fault_describe(uint64_t v, char *buf, size_t n) {
+    const vx_image *m = vx_image_at(v);
+    if (m) snprintf(buf, n, "%s+%#llx", m->name, (unsigned long long)(v - (uint64_t)(uintptr_t)m->base));
+    else snprintf(buf, n, "%#llx", (unsigned long long)v);
+}
+static void fault_objects(const CONTEXT *ctx) {
+    static const char *const names[16] = {"rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","r8","r9","r10","r11","r12","r13","r14","r15"};
+    for (int i = 0; i < 16; i++) {
+        if (i == 4) continue;
+        uint64_t p = ctx->gpr[i], q = 0, slot = 0, vslot = 0; char d1[160] = "", d2[160] = "";
+        if (p < 0x10000 || !fault_read(p, &q)) continue;
+        fault_describe(q, d1, sizeof d1);
+        uint64_t rtti = 0;
+        if (fault_read(q + 0x380, &slot)) fault_describe(slot, d2, sizeof d2); else strcpy(d2, "unreadable");
+        if (fault_read(q - 8, &rtti)) vslot = rtti;
+        vx_log("   fault object %s=%#llx: [0]=%s, [[0]+0x380]=%s, [[0]-8]=%#llx", names[i], (unsigned long long)p, d1, d2, (unsigned long long)vslot);
+        // the TESForm header the Skyrim fault's object carries: flags at +0x10, form id at +0x14, type byte at +0x1a, and the
+        // same for the base form (+0x40) and parent cell (+0x60)
+        uint64_t hd = 0, hd2 = 0, bf = 0, bfh = 0, pc = 0, pch = 0;
+        fault_read(p + 0x10, &hd); fault_read(p + 0x18, &hd2); if (fault_read(p + 0x40, &bf) && bf > 0x10000) fault_read(bf + 0x10, &bfh);
+        if (fault_read(p + 0x60, &pc) && pc > 0x10000) fault_read(pc + 0x10, &pch);
+        {   // the object's words at +0x58..+0x78 and, where +0x68 is a pointer, that object's +0x60/+0x68 (the loaded-state chain
+            // the Skyrim 3D getter at +0x2a2ec0 follows)
+            uint64_t w[5] = {0}, ls[2] = {0};
+            for (int k = 0; k < 5; k++) fault_read(p + 0x58 + 8 * k, &w[k]);
+            if (w[1] > 0x10000) { fault_read(w[1] + 0x60, &ls[0]); fault_read(w[1] + 0x68, &ls[1]); }
+            vx_log("      +0x58..+0x78: %#llx %#llx %#llx %#llx %#llx; [+0x68]->+0x60=%#llx +0x68=%#llx", (unsigned long long)w[0], (unsigned long long)w[1],
+                   (unsigned long long)w[2], (unsigned long long)w[3], (unsigned long long)w[4], (unsigned long long)ls[0], (unsigned long long)ls[1]);
+        }
+        vx_log("      +0x10=%#llx (flags %#x formid %08x type %#x) base=%#llx[+0x10]=%#llx cell=%#llx[+0x10]=%#llx", (unsigned long long)hd, (unsigned)hd, (unsigned)(hd >> 32),
+               (unsigned)((hd2 >> 16) & 0xff), (unsigned long long)bf, (unsigned long long)bfh, (unsigned long long)pc, (unsigned long long)pch);
+    }
+}
 static int seh_trace(void) {                       // VXRT_TRACE_SEH=1: every raise, and what runs when nothing handles one
     static int on = -1;
     if (on < 0) { const char *e = getenv("VXRT_TRACE_SEH"); on = e && *e == '1'; }
@@ -498,6 +541,7 @@ static void __attribute__((noreturn)) dispatch(EXCEPTION_RECORD *rec, CONTEXT *c
            rec->nparams > 1 ? access_action(rec->info[0]) : ", ", rec->nparams > 1 ? (unsigned long long)rec->info[1] : 0ull,
            (unsigned long long)ctx->gpr[0], (unsigned long long)ctx->gpr[1], (unsigned long long)ctx->gpr[2], (unsigned long long)ctx->gpr[3],
            (unsigned long long)ctx->gpr[6], (unsigned long long)ctx->gpr[7], (unsigned long long)ctx->gpr[8]);
+    if (getenv("VXRT_FAULT_OBJECTS")) fault_objects(ctx);
     CONTEXT walk = *ctx;                          // the program's frames, unwound
     vx_entry *at = self.next;
     for (int depth = 0; depth < 20; depth++) {

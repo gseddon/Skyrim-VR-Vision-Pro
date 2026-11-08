@@ -36,6 +36,8 @@ extern int vx_xrizer_dev_audit_observe(uint32_t variant);
 @property(nonatomic) BOOL outstanding;
 /* Opt-in development choice (VXRT_XRIZER_DEV_STAGE=1): declare the synthetic local origin to be the floor. */
 @property(nonatomic) BOOL syntheticStage;
+/* Opt-in diagnostic (VXRT_XRIZER_DEV_DUMP=<absolute dir>): write raw RGBA of the published eyes for a few frames. */
+@property(nonatomic,copy) NSString *dumpDir;
 #ifdef VXRT_XRIZER_DEV_AUDIT
 @property(nonatomic) BOOL audit;
 @property(nonatomic) unsigned published, acquired, released, begins, exits, ends;
@@ -157,6 +159,10 @@ static XrResult publish(void *p,const KlNativeFramePair *pair) {
         memcmp(pair->sample.head_from_eye,sample.head_from_eye,sizeof sample.head_from_eye) ||
         memcmp(pair->sample.fov,sample.fov,sizeof sample.fov)) return XR_ERROR_RUNTIME_FAILURE;
     id<MTLTexture> copies[2]={nil,nil};
+    id<MTLBuffer> dumps[2]={nil,nil};
+    uint64_t fid=pair->sample.frame_id;
+    BOOL keep_files=fid==1 || fid==2 || fid==60 || fid==300 || fid==600;
+    BOOL dump=h.dumpDir && (keep_files || fid%30==0); /* statistics every 30th frame; files for the selected few */
     id<MTLCommandBuffer> cb=[h.queue commandBuffer]; if (!cb) return XR_ERROR_RUNTIME_FAILURE;
     id<MTLBlitCommandEncoder> blit=[cb blitCommandEncoder]; if (!blit) return XR_ERROR_RUNTIME_FAILURE;
     for (unsigned i=0;i<2;i++) {
@@ -174,9 +180,27 @@ static XrResult publish(void *p,const KlNativeFramePair *pair) {
         [blit copyFromTexture:src sourceSlice:e->array_layer sourceLevel:0 sourceOrigin:MTLOriginMake(e->rect.offset.x,e->rect.offset.y,0)
             sourceSize:MTLSizeMake(e->rect.extent.width,e->rect.extent.height,1) toTexture:copies[i]
             destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];
+        if (dump) {
+            NSUInteger bpr=(NSUInteger)e->rect.extent.width*4;
+            dumps[i]=[h.device newBufferWithLength:bpr*(NSUInteger)e->rect.extent.height options:MTLResourceStorageModeShared];
+            if (dumps[i]) [blit copyFromTexture:src sourceSlice:e->array_layer sourceLevel:0 sourceOrigin:MTLOriginMake(e->rect.offset.x,e->rect.offset.y,0)
+                sourceSize:MTLSizeMake(e->rect.extent.width,e->rect.extent.height,1) toBuffer:dumps[i]
+                destinationOffset:0 destinationBytesPerRow:bpr destinationBytesPerImage:bpr*(NSUInteger)e->rect.extent.height];
+        }
     }
     [blit endEncoding]; [cb commit]; [cb waitUntilCompleted];
     if (cb.status!=MTLCommandBufferStatusCompleted || cb.error) return XR_ERROR_RUNTIME_FAILURE;
+    for (unsigned i=0;i<2;i++) if (dumps[i]) {
+        const uint8_t *px=dumps[i].contents; NSUInteger n=dumps[i].length/4, w=(NSUInteger)pair->eye[i].rect.extent.width;
+        uint64_t sum[3]={0,0,0}, differ=0, nonzero=0; for (NSUInteger k=0;k<n;k++) {
+            sum[0]+=px[k*4]; sum[1]+=px[k*4+1]; sum[2]+=px[k*4+2];
+            if (memcmp(px+k*4,px,4)) ++differ; if (px[k*4]|px[k*4+1]|px[k*4+2]) ++nonzero;
+        }
+        char path[1024]; snprintf(path,sizeof path,"%s/frame%llu_eye%u_%lux%lu.rgba",h.dumpDir.UTF8String,(unsigned long long)fid,i,(unsigned long)w,(unsigned long)(n/w));
+        FILE *f=keep_files ? fopen(path,"wb") : NULL; if (f) { fwrite(px,1,dumps[i].length,f); fclose(f); }
+        vx_log("xrizer dev host: dump frame %llu eye %u %lux%lu mean rgb %.1f %.1f %.1f, %.1f%% pixels differ from pixel 0, %.1f%% non-black%s%s",(unsigned long long)fid,i,
+            (unsigned long)w,(unsigned long)(n/w),(double)sum[0]/n,(double)sum[1]/n,(double)sum[2]/n,100.0*differ/n,100.0*nonzero/n,f?" -> ":"",f?path:"");
+    }
     vx_native_vr_pose pose={.frame_id=pair->sample.frame_id,.pose_id=pair->sample.pose_id,
         .pose_time=(double)pair->sample.predicted_display_time/1e9,
         .tracking_valid=(pair->sample.head_location_flags & (XR_SPACE_LOCATION_ORIENTATION_VALID_BIT|XR_SPACE_LOCATION_POSITION_VALID_BIT)) ==
@@ -224,6 +248,7 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
         h.audit=getenv("VXRT_XRIZER_DEV_AUDIT") && !strcmp(getenv("VXRT_XRIZER_DEV_AUDIT"),"1");
 #endif
         h.syntheticStage=getenv("VXRT_XRIZER_DEV_STAGE") && !strcmp(getenv("VXRT_XRIZER_DEV_STAGE"),"1");
+        { const char *dd=getenv("VXRT_XRIZER_DEV_DUMP"); if (dd && dd[0]=='/') h.dumpDir=[NSString stringWithUTF8String:dd]; }
         if (h.syntheticStage) vx_log("xrizer dev host: synthetic stage declared valid (local origin is the floor); development only");
         h.width=width; h.height=height; h.device=MTLCreateSystemDefaultDevice(); h.queue=[h.device newCommandQueue];
         h.inputTime=now_ns(); h.frames=vx_native_vr_create(keep,drop);
