@@ -1,0 +1,18 @@
+/* Link-only probe. This executable is not launched and configures no host. */
+#include "xrizer_xros_host.h"
+#include <stddef.h>
+extern int32_t xrizer_configure_openxr_provider(PFN_xrGetInstanceProcAddr);
+extern int32_t xrizer_configure_metal_host(const XrizerMetalHost *);
+extern void *VRClientCoreFactory(const char *, int *);
+static int install(vx_xros_xrizer_factory factory, void *context) {
+    (void)factory; (void)context; return -1;
+}
+/* Volatile table forces native direct references through the actual static ABI. */
+static const vx_xros_xrizer_static_api api = {
+    VX_XROS_XRIZER_API_VERSION, sizeof(api), xrizer_configure_openxr_provider,
+    xrizer_configure_metal_host, VRClientCoreFactory, install
+};
+int main(void) {
+    const vx_xros_xrizer_static_api *volatile pinned = &api;
+    return vx_xros_xrizer_register(NULL, pinned, NULL);
+}
