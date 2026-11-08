@@ -133,15 +133,27 @@ class ProbeTest(unittest.TestCase):
 
     def test_xrizer_mode_confines_all_xdg_paths(self):
         self.args.experimental_xrizer = True
+        dylib = self.root/'xrizer.dylib'; dylib.write_bytes(b'fixture')
+        self.args.xrizer_dylib = str(dylib)
         with patch.dict(probe.os.environ, {'XDG_CONFIG_HOME': '/outside', 'XDG_RUNTIME_DIR': '/outside'}):
             result = probe.capture(self.args)
         env = result['environment']
         self.assertEqual(env['VXRT_XRIZER_OPENVR'], '1')
+        self.assertEqual(env['VXRT_XRIZER_DYLIB'], str(dylib))
+        self.assertEqual(result['artifacts']['xrizer_dylib']['sha256'], probe.digest(dylib))
         self.assertNotIn('XDG_RUNTIME_DIR', env)
         for kind in ('STATE', 'CONFIG', 'CACHE', 'DATA'):
             path = Path(env[f'XDG_{kind}_HOME'])
             self.assertTrue(path.is_dir() and path.is_relative_to(Path(self.args.out)))
         self.assertIn('development host', result['diagnostic']['experimental_xrizer'])
+
+    def test_xrizer_requires_explicit_absolute_dylib(self):
+        self.args.experimental_xrizer = True
+        with self.assertRaisesRegex(ValueError, 'explicit xrizer dylib'):
+            probe.capture(self.args)
+        self.args.xrizer_dylib = 'relative.dylib'
+        with self.assertRaisesRegex(ValueError, 'absolute'):
+            probe.capture(self.args)
 
 
 if __name__=='__main__':unittest.main()
