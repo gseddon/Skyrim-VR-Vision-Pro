@@ -70,9 +70,12 @@ def validate(result):
     if result.get('status') not in ('observed', 'refused'):
         problems.append('invalid evidence status')
     if result.get('status') == 'observed':
-        for key in ('runtime', 'exe'):
-            item = result['artifacts'][key]
-            if not Path(item['path']).is_file() or digest(item['path']) != item['sha256']:
+        keys = ['runtime', 'exe']
+        if result.get('schema_version', 1) >= 3:
+            keys.append('xrizer_dylib')
+        for key in keys:
+            item = result['artifacts'].get(key)
+            if not item or not Path(item['path']).is_file() or digest(item['path']) != item['sha256']:
                 problems.append(key + ' artifact changed or missing')
         for item in result.get('observed', []):
             path = REPO / item['artifact']
