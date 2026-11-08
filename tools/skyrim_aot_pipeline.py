@@ -6,7 +6,8 @@ JSON: original and prepared are {path,sha256}; dlls is a list of
 exe_base, jobs and optional owned_gate (argument vector) complete the config.
 Paths must be absolute. Inputs are pinned; prepared and DLLs must be private
 repository-local copies. --probe requires --build and an explicit passing gate.
-This does not prepare inputs, establish their provenance, or validate PE layout.
+This validates basic PE layout and mapping ranges. It does not prepare inputs
+or establish the provenance or semantic completeness of a prepared image.
 """
 import argparse
 import fcntl
@@ -16,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -77,6 +79,51 @@ def directory(value):
     return str(path.resolve())
 
 
+def pe_layout(path):
+    """Reject malformed/wrong-ISA images before building or reusing modules."""
+    data = Path(path).read_bytes()
+    def reject(reason):
+        raise ValueError('invalid x86-64 PE layout: ' + reason + ': ' + str(path))
+    if len(data) < 64 or data[:2] != b'MZ':
+        reject('DOS header')
+    pe = struct.unpack_from('<I', data, 0x3c)[0]
+    if pe < 64 or pe + 24 > len(data) or data[pe:pe+4] != b'PE\0\0':
+        reject('PE header')
+    machine, count = struct.unpack_from('<HH', data, pe+4)
+    optional_size = struct.unpack_from('<H', data, pe+20)[0]
+    opt = pe+24
+    table = opt+optional_size
+    if machine != 0x8664 or not 1 <= count <= 96 or optional_size < 112 or table+40*count > len(data):
+        reject('machine, optional header or section table')
+    if struct.unpack_from('<H', data, opt)[0] != 0x20b:
+        reject('not PE32+')
+    entry = struct.unpack_from('<I', data, opt+16)[0]
+    preferred = struct.unpack_from('<Q', data, opt+24)[0]
+    image_size, header_size = struct.unpack_from('<II', data, opt+56)
+    directories = struct.unpack_from('<I', data, opt+108)[0]
+    if not image_size or not table+40*count <= header_size <= min(len(data), image_size) or 112+8*directories > optional_size:
+        reject('image/header/directory bounds')
+    sections = []
+    for i in range(count):
+        off = table+40*i
+        virtual_size, rva, raw_size, raw = struct.unpack_from('<IIII', data, off+8)
+        flags = struct.unpack_from('<I', data, off+36)[0]
+        size = max(virtual_size, raw_size)
+        if size and (rva < header_size or rva+size > image_size):
+            reject('section virtual bounds')
+        if raw_size and (raw < header_size or raw+raw_size > len(data)):
+            reject('section file bounds')
+        if size:
+            sections.append((rva, rva+size, flags))
+    sections.sort()
+    if any(a[1] > b[0] for a, b in zip(sections, sections[1:])):
+        reject('overlapping virtual sections')
+    if entry and not any(lo <= entry < hi and flags & 0x20000000 for lo, hi, flags in sections):
+        reject('entry is outside executable sections')
+    return {'machine': '0x8664', 'bits': 64, 'image_size': image_size,
+            'preferred_base': hex(preferred), 'entry_rva': hex(entry), 'sections': count}
+
+
 def prepare(config):
     original = pin(config['original'])
     exe = pin(config['prepared'], True)
@@ -89,6 +136,13 @@ def prepare(config):
         raise ValueError('module basenames must be unique')
     if len({m['base'] for m in modules}) != len(modules):
         raise ValueError('module bases must be distinct; overlap requires separate review')
+    for module in modules:
+        module['pe'] = pe_layout(module['path'])
+    # The loader reserves at 64K granularity; distinct bases can still overlap.
+    ranges = sorted((int(m['base'], 16), int(m['base'], 16) +
+                     ((m['pe']['image_size']+65535)//65536)*65536) for m in modules)
+    if any(end > 2**64 for _, end in ranges) or any(a[1] > b[0] for a, b in zip(ranges, ranges[1:])):
+        raise ValueError('module image mappings overlap or overflow')
     jobs = config.get('jobs', 1)
     if type(jobs) is not int or not 1 <= jobs <= 64:
         raise ValueError('jobs must be an integer from 1 to 64')
@@ -187,7 +241,7 @@ def run(config, out, build=False, probe=False):
     out.mkdir(parents=True, mode=0o700)
     result = {'subject': 'private prepared-input AOT; no game or VR compatibility claim', 'status': 'planned',
               'config': cfg, 'source': identity, 'compiler_sha256': compiler_hash, 'script_sha256': script_hash,
-              'target': 'macos-arm64', 'modules': [], 'unknown': ['prepared PE structural/provenance validation', 'runtime code coverage', 'physical headset and playability']}
+              'target': 'macos-arm64', 'modules': [], 'unknown': ['prepared image provenance and semantic completeness', 'runtime code coverage', 'physical headset and playability']}
     def save():
         (out/'result.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
     save()
