@@ -1005,11 +1005,13 @@ static int vx_x86_stack_words(uint64_t *out, int n, uint64_t lo, uint64_t hi) { 
 static WINAPI void ctx_clear_rtv(void *this, d3d_view *v, const float color[4]) {
     static int traced;
     if (vx_draw_trace_active && v && v->resource->kind == K_TEXTURE) {   // (VXRT_TRACE_DRAWS is logging: every clear, by texture identity)
-        // VXRT_TRACE_CLEAR_STACK=lo-hi (hex): also the guest stack words in that range (the callers above)
-        static const char *range; static uint64_t lo, hi; static int parsed;
-        if (!parsed) { parsed = 1; range = getenv("VXRT_TRACE_CLEAR_STACK"); if (range) sscanf(range, "%llx-%llx", (unsigned long long *)&lo, (unsigned long long *)&hi); }
+        // VXRT_TRACE_CLEAR_STACK=lo-hi[:n] (hex range, decimal n, default 10, at most 40): also the first n guest stack
+        // words in that range (the callers above, with stale words mixed in)
+        static const char *range; static uint64_t lo, hi; static int parsed, words = 10;
+        if (!parsed) { parsed = 1; range = getenv("VXRT_TRACE_CLEAR_STACK"); if (range) { sscanf(range, "%llx-%llx", (unsigned long long *)&lo, (unsigned long long *)&hi);
+            const char *c = strchr(range, ':'); if (c) words = atoi(c + 1); if (words < 1) words = 10; if (words > 40) words = 40; } }
         if (hi > lo) {
-            uint64_t w[10]; int k = vx_x86_stack_words(w, 10, lo, hi); char line[256]; size_t at = 0;
+            uint64_t w[40]; int k = vx_x86_stack_words(w, words, lo, hi); char line[720]; size_t at = 0;
             for (int i = 0; i < k && at < sizeof line - 20; i++) at += (size_t)snprintf(line + at, sizeof line - at, " %llx", (unsigned long long)w[i]);
             vx_log("clear rtv @%05lx stack:%s", (unsigned long)((uintptr_t)v->resource >> 4 & 0xfffff), k ? line : " (none)");
         }
@@ -1042,6 +1044,9 @@ static WINAPI void ctx_discard_view(void *this, d3d_view *v) { if (v) discard_la
 static WINAPI void ctx_discard_resource(void *this, d3d_object *res) { if (res) discard_later(this, NULL, res); }
 static WINAPI void ctx_discard_view1(void *this, d3d_view *v, const void *rects, uint32_t n) { if (v && !n) discard_later(this, v, NULL); }
 static WINAPI void ctx_clear_dsv(void *this, d3d_view *v, uint32_t flags, float depth, uint8_t stencil) {
+    if (vx_draw_trace_active && v && v->resource->kind == K_TEXTURE)   // (VXRT_TRACE_DRAWS is logging: depth-stencil clears too)
+        vx_log("clear dsv @%05lx %ux%u f%u flags %u to depth %g stencil %u from %p", (unsigned long)((uintptr_t)v->resource >> 4 & 0xfffff), ((d3d_texture *)v->resource)->desc[TD_WIDTH],
+               ((d3d_texture *)v->resource)->desc[TD_HEIGHT], v->format, flags, depth, stencil, vx_x86_return_address());
     if (v && v->resource->kind == K_TEXTURE && (flags & 3)) clear_later(this, v, NULL, flags & 1, depth, flags & 2, stencil);
 }
 static void hold(d3d_view **slot, d3d_view *v) {
@@ -1741,6 +1746,32 @@ static WINAPI uint32_t device_release(void *this) { return d3d_release(this); }
 
 // D3D11_SUBRESOURCE_DATA: pointer, row pitch, slice pitch.
 typedef struct { const void *data; uint32_t pitch, slice_pitch; } SUBRESOURCE_DATA;
+// A new depth-stencil texture made without initial data starts as zeros (depth 0, stencil 0), as new video memory does
+// on Windows (the OS hands out zeroed allocations); a new Metal texture's contents are undefined. Skyrim VR gates its
+// fade pass with a stencil test (NOT_EQUAL 255) on a depth-stencil texture it never clears, and drew nothing there.
+static void zero_depth_texture(d3d_device *d, d3d_texture *t) {
+    id<MTLTexture> tex = (__bridge id<MTLTexture>)t->mtl;
+    MTLPixelFormat f = tex.pixelFormat;
+    BOOL has_depth = f == MTLPixelFormatDepth32Float_Stencil8 || f == MTLPixelFormatDepth32Float || f == MTLPixelFormatDepth16Unorm;
+    BOOL has_stencil = f == MTLPixelFormatDepth32Float_Stencil8 || f == MTLPixelFormatStencil8;
+    if (!tex || (!has_depth && !has_stencil) || tex.textureType == MTLTextureType3D) return;
+    id<MTLCommandBuffer> cb = [(__bridge id<MTLCommandQueue>)d->queue commandBuffer];
+    NSUInteger slices = tex.textureType == MTLTextureTypeCube ? 6 : tex.textureType == MTLTextureTypeCubeArray ? 6 * tex.arrayLength : tex.arrayLength;
+    for (NSUInteger mip = 0; mip < tex.mipmapLevelCount; mip++)
+        for (NSUInteger slice = 0; slice < slices; slice++) {
+            MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+            if (has_depth) {
+                rp.depthAttachment.texture = tex; rp.depthAttachment.level = mip; rp.depthAttachment.slice = slice;
+                rp.depthAttachment.loadAction = MTLLoadActionClear; rp.depthAttachment.clearDepth = 0; rp.depthAttachment.storeAction = MTLStoreActionStore;
+            }
+            if (has_stencil) {
+                rp.stencilAttachment.texture = tex; rp.stencilAttachment.level = mip; rp.stencilAttachment.slice = slice;
+                rp.stencilAttachment.loadAction = MTLLoadActionClear; rp.stencilAttachment.clearStencil = 0; rp.stencilAttachment.storeAction = MTLStoreActionStore;
+            }
+            [[cb renderCommandEncoderWithDescriptor:rp] endEncoding];
+        }
+    [cb commit];
+}
 static HRESULT create_texture(void *this, const uint32_t *desc, uint32_t dim, uint32_t depth, const SUBRESOURCE_DATA *init, void **out) {
     d3d_device *d = dev_of(this);
     HRESULT hr;
@@ -1751,6 +1782,7 @@ static HRESULT create_texture(void *this, const uint32_t *desc, uint32_t dim, ui
         vx_log("Direct3D: texture %ux%u (%ud) x%u mips %u format %u samples %u usage %u bind %#x cpu %#x misc %#x -> %#x", desc[TD_WIDTH], desc[TD_HEIGHT],
                dim, desc[TD_ARRAY], desc[TD_MIPS], desc[TD_FORMAT], desc[TD_SAMPLES], desc[TD_USAGE], desc[TD_BIND], desc[TD_CPU], desc[TD_MISC], (unsigned)hr);
     if (!t) { if (out) *out = NULL; return hr; }
+    if (!init && (desc[TD_BIND] & 0x40)) zero_depth_texture(d, t);   // (D3D11_BIND_DEPTH_STENCIL)
     if (init) {
         uint32_t subs = t->desc[TD_MIPS] * t->desc[TD_ARRAY];
         for (uint32_t s = 0; s < subs; s++)
