@@ -15,7 +15,7 @@ How this report applies that decision:
 - SteamVR files and stubbed responses stay private: on the user's Mac and in the app built for the user's own headset. They are never redistributed or committed.
 - Anti-cheat remains out of scope.
 
-`AGENTS.md` still says "Do not fake ownership or Steamworks responses". It has not been edited. Someone needs to amend it, with `tools/vxrt_agents.py sync` and `check`, so that later agents do not refuse this work.
+`AGENTS.md` was amended on the same day to match (synced and checked with `tools/vxrt_agents.py`).
 
 ## 1. How AVP Play drives a toolchain
 
@@ -234,5 +234,4 @@ Translated code and prepared images stay in ignored private directories on the M
 - Real controller input through input host v3 from `AccessoryTrackingProvider` (not the synthetic dev-host controllers), with haptics or an honest refusal.
 - A **physical headset test** that the user authorizes separately, then a human playtest before any "playable" claim.
 - A root path the runtime takes from launch configuration, and a save location AVP Play can back up.
-- `AGENTS.md` amended to match the 2026-11-09 SteamVR/Steamworks decision.
 - Then: the local contract-compatible toolchain directory and a private recipe run under an isolated `AVPPLAY_HOME`.
