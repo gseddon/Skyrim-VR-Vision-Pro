@@ -88,9 +88,33 @@ class ProbeTest(unittest.TestCase):
         probe.os.killpg.assert_any_call(12345,signal.SIGKILL)
 
     def test_busy_refuses_without_child(self):
-        with patch.object(probe.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'99 vxrt','')), patch.object(probe.subprocess,'Popen') as child:
+        with patch.object(probe.sessions,'list_processes',return_value=[(99,'vxrt-arm64','vxrt-arm64 game.exe')]), \
+             patch.object(probe.sessions,'proc_args',return_value=None), patch.object(probe.sessions,'alive',return_value=True), \
+             patch.object(probe.subprocess,'Popen') as child:
             r=probe.capture(self.args)
             self.assertEqual(r['status'],'refused'); child.assert_not_called()
+            self.assertIn('environment unreadable', r['preconditions'][0]['detail'])
+
+    def test_owned_concurrent_runtime_is_recorded_and_marked(self):
+        other = self.root/'build'/'other-run'
+        info = ('/x/vxrt-arm64', ['/x/vxrt-arm64', 'f.exe'], {'VXRT_ROOT': str(other/'root'), probe.sessions.MARKER: str(other)})
+        with patch.object(probe.sessions,'list_processes',return_value=[(77,'vxrt-arm64','/x/vxrt-arm64 f.exe')]), \
+             patch.object(probe.sessions,'proc_args',return_value=info):
+            r=probe.capture(self.args)
+        self.assertEqual(r['status'],'observed')
+        self.assertTrue(all(c['ok'] for c in r['preconditions']))
+        self.assertIn('pid 77 harness', r['preconditions'][0]['detail'])
+        self.assertEqual([p['pid'] for p in r['diagnostic']['concurrent_runtime']['processes']], [77])
+        self.assertEqual(Child.last_env[probe.sessions.MARKER], str(Path(self.args.out).resolve()))
+
+    def test_runtime_in_same_output_refused(self):
+        out = Path(self.args.out).resolve()
+        info = ('/x/vxrt-arm64', ['/x/vxrt-arm64', 'f.exe'], {'VXRT_ROOT': str(out/'root'), probe.sessions.MARKER: str(out)})
+        with patch.object(probe.sessions,'list_processes',return_value=[(78,'vxrt-arm64','/x/vxrt-arm64 f.exe')]), \
+             patch.object(probe.sessions,'proc_args',return_value=info), patch.object(probe.subprocess,'Popen') as child:
+            r=probe.capture(self.args)
+        self.assertEqual(r['status'],'refused'); child.assert_not_called()
+        self.assertEqual([c['code'] for c in r['preconditions'] if not c['ok']], ['run_paths_unshared'])
 
     def test_wrong_identity_or_output_refused(self):
         next(self.aot.iterdir()).unlink()

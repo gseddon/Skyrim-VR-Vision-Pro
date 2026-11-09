@@ -3,11 +3,13 @@
 W=/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/terra-skyrim-aot/build
 B=$W/private/skyrimvr/6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971
 tag=$1; runs=$2; rt=${3:-/Users/gseddon/git/Skyrim-VR-Vision-Pro/VXRuntime/build/terra-stage2/vxrt-arm64}
-pgrep -f vxrt-arm64 >/dev/null && { echo BUSY; exit 1; }
+R=/Users/gseddon/git/Skyrim-VR-Vision-Pro
+# Refuse only for the user's session or a runtime using this run's directory; VXRT_HARNESS_RUN marks these boots as owned.
+python3 $R/tools/vxrt_runtime_sessions.py --own /tmp/fast_$tag --tmp /tmp/fast_$tag/temp || { echo BUSY; exit 1; }
 bad=0
 for i in $(seq 1 $runs); do
   d=/tmp/fast_$tag; rm -rf $d; mkdir -p $d/temp $d/overlay $d/root $d/xdg/cache $d/xdg/config $d/xdg/data $d/xdg/state
-  cd /Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SkyrimVR && env -i HOME=$HOME PATH=$PATH TMPDIR=$d/temp VERANTYX_AUDIO=0 VXRT_AOT_DIR=$B/${AOTD:-aot-splits2} VXRT_AOT_NULL_DIAGNOSTIC=1 VXRT_AOT_STRICT=1 $EXTRA \
+  cd /Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SkyrimVR && env -i HOME=$HOME PATH=$PATH TMPDIR=$d/temp VXRT_HARNESS_RUN=$d VERANTYX_AUDIO=0 VXRT_AOT_DIR=$B/${AOTD:-aot-splits2} VXRT_AOT_NULL_DIAGNOSTIC=1 VXRT_AOT_STRICT=1 $EXTRA \
     VXRT_DLL_PATH=$B/redist:/Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SteamVR/bin/vrwebhelper/win64 VXRT_LOG_TIME=1 VXRT_MESSAGEBOX=auto VXRT_MUTE=1 VXRT_NO_ACTIVATE=1 VXRT_NO_WINE=1 \
     VXRT_OVERLAY=/Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common:$d/overlay VXRT_ROOT=$d/root VXRT_STEAM_BRIDGE=0 VXRT_TRACE_CALLS=3 VXRT_XRIZER_DEV_STAGE=1 \
     VXRT_XRIZER_DYLIB=/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/xrizer-submit-diag-dylib/aarch64-apple-darwin/debug/libxrizer.dylib \
