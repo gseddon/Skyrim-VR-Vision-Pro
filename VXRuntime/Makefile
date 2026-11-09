@@ -1598,7 +1598,7 @@ check: all build/vkmsl build/x86dec_test build/x86dec_check build/ref_x86 build/
 VXRT ?= $(VXRT_ROSETTA_TARGET)
 runtime-tests: export VXRT_ROOT = build/root
 runtime-tests: export VXRT_NO_ACTIVATE = 1
-runtime-tests: $(VXRT) tests
+runtime-tests: $(VXRT) build/vxrt-npu tests
 	$(VXRT) build/hello_k32.exe
 	$(VXRT) build/smc.exe
 	$(VXRT) build/order.exe
