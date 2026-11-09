@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 #include <unistd.h>
 #include "xrizer_xros_fixture.h"
 #include "xrizer_xros_optics.h"
@@ -35,6 +36,13 @@ static XrTime input_time;
 /* Bounded history of accepted injected offers; protected by lock. */
 static uint64_t offered_ids[1024];
 static XrTime last_prediction, last_event;
+/* Drawable inspection records (VXRT_XRIZER_XROS_PRESENT); protected by lock.
+ * The first presentation of a provider frame id is fresh; later ones repeat. */
+typedef struct { uint64_t frame,pose; unsigned presentations; int completed; uint32_t format; unsigned char px[96]; } drawable_record;
+static drawable_record drawn[8];
+static unsigned drawn_next;
+static unsigned long long fresh_presented, repeat_presented;
+static pthread_cond_t drawn_cond=PTHREAD_COND_INITIALIZER;
 /* Session events are Mach absolute nanoseconds. An accepted frame prediction
  * is already on that clock. CLOCK_MONOTONIC includes sleep and must not be used. */
 static XrTime now_ns(void) {
@@ -76,6 +84,57 @@ static XrResult input(void *ctx,KlNativeInputSample *sample) {
     if(vx_xros_sense_v1_hands(NULL,0,hands))return XR_ERROR_RUNTIME_FAILURE;
     *sample=(KlNativeInputSample){.sample_id=id,.sample_time=t,.hand_connected={(XrBool32)hands[0],(XrBool32)hands[1]}};
     return XR_SUCCESS;
+}
+int vx_xros_fixture_present_enabled(void) {
+    const char *o=getenv("VXRT_XRIZER_XROS_OFFSCREEN"),*p=getenv("VXRT_XRIZER_XROS_PRESENT");
+    return vx_xros_fixture_enabled() && o && !strcmp(o,"1") && p && !strcmp(p,"1");
+}
+void vx_xros_fixture_record_drawable(uint64_t frame,uint64_t pose,int completed,uint32_t format,const unsigned char samples[96]) {
+    pthread_mutex_lock(&lock);
+    drawable_record *r=NULL;
+    for(unsigned i=0;i<8;i++)if(drawn[i].frame==frame && frame){r=&drawn[i];break;}
+    int fresh=!r;
+    if(r){r->presentations++;repeat_presented++;}
+    else {
+        r=&drawn[drawn_next++%8];
+        *r=(drawable_record){.frame=frame,.pose=pose,.presentations=1,.completed=completed,.format=format};
+        memcpy(r->px,samples,sizeof r->px);++fresh_presented;
+    }
+    pthread_cond_broadcast(&drawn_cond);pthread_mutex_unlock(&lock);
+    if(fresh)vx_log("xrizer xros fixture: drawable fresh pair frame=%llu pose=%llu completed=%d format=%u",
+        (unsigned long long)frame,(unsigned long long)pose,completed,format);
+}
+static unsigned char srgb_byte(unsigned v) {
+    float c=(float)v/255.f, e=c<=0.0031308f ? 12.92f*c : 1.055f*powf(c,1.f/2.4f)-0.055f;
+    int b=(int)lroundf(e*255.f);return (unsigned char)(b<0?0:b>255?255:b);
+}
+/* Waits for the presenter's first drawable record of this frame and checks it
+ * against the same independent source formula, encoded for an sRGB target. */
+static int verify_drawable(uint64_t frame_id,unsigned variant) {
+    struct timespec deadline;if(clock_gettime(CLOCK_REALTIME,&deadline))return -1;deadline.tv_sec+=3;
+    pthread_mutex_lock(&lock);drawable_record r={0};int rc=0,found=0;
+    while(!found && !rc) {
+        for(unsigned i=0;i<8;i++)if(drawn[i].frame==frame_id){r=drawn[i];found=1;break;}
+        if(!found)rc=pthread_cond_timedwait(&drawn_cond,&lock,&deadline);
+    }
+    pthread_mutex_unlock(&lock);
+    int srgb=r.format==MTLPixelFormatBGRA8Unorm_sRGB || r.format==MTLPixelFormatRGBA8Unorm_sRGB;
+    int ok=found && r.completed && r.pose==frame_id && (srgb || r.format==MTLPixelFormatBGRA8Unorm || r.format==MTLPixelFormatRGBA8Unorm);
+    unsigned worst=0;
+    if(ok) for(unsigned i=0;i<2;i++)for(unsigned y=0;y<3;y++)for(unsigned x=0;x<4;x++) {
+        unsigned sx=x+2,sy=y+1, want[4]={40+variant*80+sx*11+sy*3,20+i*130+sx*3+sy*2,30+variant*70+i*50+sx+sy,255};
+        const unsigned char *p=r.px+((i*3+y)*4+x)*4;
+        for(unsigned c=0;c<4;c++) {
+            unsigned w=c<3 && srgb ? srgb_byte(want[c]) : want[c], d=p[c]>w ? p[c]-w : w-p[c];
+            if(d>worst)worst=d;
+        }
+    }
+    /* Two counts covers the GPU's sRGB encode rounding; a wrong eye, crop or
+     * channel order differs by far more. */
+    if(worst>2)ok=0;
+    vx_log("xrizer xros fixture: drawable pair %u frame=%llu found=%d completed=%d format=%u max_delta=%u readback=%s",variant,
+        (unsigned long long)frame_id,found,r.completed,r.format,worst,ok?"pass":"fail");
+    return ok?0:-1;
 }
 int vx_xros_fixture_enabled(void) { const char *v=getenv("VXRT_XRIZER_XROS_FIXTURE"); return v && !strcmp(v,"1"); }
 int vx_xros_fixture_start(void *device,void *queue) {
@@ -169,6 +228,11 @@ int WINAPI vx_xros_fixture_verify_shutdown(void) {
     int resumed=vx_xros_fixture_offer(8,8,eyes,tangents,(double)now_ns()/1e9+10,NULL,0);
     int ok=begin_count==1 && end_count==1 && exit_count==1 && resumed==-1 &&
         !vx_xrizer_guest_d3d_counts(&source,&acquired,&released,&copied) && acquired==released && copied==4;
+    if(vx_xros_fixture_present_enabled()) {
+        pthread_mutex_lock(&lock);unsigned long long fresh=fresh_presented,repeats=repeat_presented;pthread_mutex_unlock(&lock);
+        vx_log("xrizer xros fixture: drawable presentations fresh=%llu repeats=%llu",fresh,repeats);
+        if(fresh<2)ok=0;
+    }
     vx_log("xrizer xros fixture: drain lifecycle=%u/%u/%u source leases=%llu/%llu copies=%llu resume=%d %s",
         begin_count,exit_count,end_count,(unsigned long long)acquired,(unsigned long long)released,(unsigned long long)copied,resumed,ok?"pass":"fail");
     return ok?0:-1;
@@ -210,10 +274,13 @@ int WINAPI vx_xros_fixture_verify_pair(unsigned variant) {
         if(p[0]!=40+variant*80+source_x*11+source_y*3 || p[1]!=20+i*130+source_x*3+source_y*2 ||
            p[2]!=30+variant*70+i*50+source_x+source_y || p[3]!=255)ok=0;
     }
-    if(ok)last_verified_frame=frame.pose.frame_id;
     vx_log("xrizer xros fixture: provider pair %u frame=%llu pose=%llu readback=%s",variant,
         (unsigned long long)frame.pose.frame_id,(unsigned long long)frame.pose.pose_id,ok?"pass":"fail");
+    /* A published slot has one reader at a time: release before the presenter
+     * needs it. The guest submits nothing more until this returns. */
     if(vx_xros_fixture_release(frame.lease))ok=0;
+    if(ok && vx_xros_fixture_present_enabled() && verify_drawable(frame.pose.frame_id,variant))ok=0;
+    if(ok)last_verified_frame=frame.pose.frame_id;
     return ok?0:-1;
 }
 #ifdef __aarch64__

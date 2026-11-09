@@ -162,6 +162,9 @@ final class VXImmersiveRenderer: @unchecked Sendable {
 #if XRIZER_XROS_FIXTURE
         let fixture = vx_xros_fixture_enabled() != 0
         let offscreen = fixture && ProcessInfo.processInfo.environment["VXRT_XRIZER_XROS_OFFSCREEN"] == "1"
+        let monoPresent = offscreen && vx_xros_fixture_present_enabled() != 0
+        var monoHave: Int32 = 0
+        var monoAcquired = false
         if offscreen && !drawables[0].colorTextures.isEmpty && tracking {
             xrizerHeadFrames += 1
             let headTracked: Int32 = anchor?.isTracked == true ? 1 : 0
@@ -200,6 +203,12 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                         }
                     }
                 }
+                // Inspection: the simulator's one view shows the acquired pair side
+                // by side; the fixture audits that drawable's pixels per frame id.
+                if monoPresent && offered == 0 && drawables[0].views.count == 1 {
+                    monoHave = vx_xros_fixture_present_begin(presentation)
+                    monoAcquired = true
+                }
                 if xrizerFixtureOffscreenOffers < 2 {
                     xrizerFixtureOffscreenOffers += 1
                     if xrizerFixtureOffscreenOffers == 1 {
@@ -213,10 +222,12 @@ final class VXImmersiveRenderer: @unchecked Sendable {
 #else
         let fixture = false
         let offscreen = false
+        let monoHave: Int32 = 0
+        let monoAcquired = false
 #endif
-        let native = nativeDiagnostic || (fixture && !offscreen)
-        var have: Int32 = 0
-        if native {
+        let native = nativeDiagnostic || (fixture && !offscreen) || monoAcquired
+        var have: Int32 = monoHave
+        if native && !monoAcquired {
             let d = drawables[0]
             var eyes = [Float](repeating: 0, count: 32)
             var frustums = [Float](repeating: 0, count: 8)
@@ -289,7 +300,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                 }
             }
             }
-        } else {
+        } else if !native {
             have = withUnsafePointer(to: &head) {
                 $0.withMemoryRebound(to: Float.self, capacity: 16) { vx_xros_vr_begin_frame($0, presentation) }
             }
@@ -319,6 +330,9 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                                 tp.withMemoryRebound(to: Float.self, capacity: 4) { t in
                                     let colorp = Unmanaged.passUnretained(color as AnyObject).toOpaque()
                                     let depthp = Unmanaged.passUnretained(depth as AnyObject).toOpaque()
+#if XRIZER_XROS_FIXTURE
+                                    if monoAcquired { return vx_xros_fixture_draw_inspection(cbp, Int32(i), colorp, depthp) }
+#endif
                                     if native { return vx_xros_native_draw_eye(cbp, Int32(i), v, t, colorp, depthp) }
                                     return vx_xros_vr_draw_eye(cbp, Int32(i), v, t, Self.near, colorp, depthp)
                                 }
