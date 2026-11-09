@@ -1366,6 +1366,62 @@ static int optimized_clear_value_validation_test(ID3D12Device *dev) {
     return ok ? 0 : 1;
 }
 
+// Timestamps resolved right after they are taken: in the same command list, and in the next list of the same
+// ExecuteCommandLists. (Metal writes a command buffer's counter samples only when it completes, so a resolve on the GPU
+// that does not wait for that read zeros - the runtime once did, in about 2 of 5 runs of the queries check below.)
+static int timestamp_resolve_test(ID3D12Device *dev, ID3D12CommandQueue *queue) {
+    enum { N = 16 };
+    D3D12_QUERY_HEAP_DESC qd = { D3D12_QUERY_HEAP_TYPE_TIMESTAMP, 4 * N };
+    ID3D12QueryHeap *ts = NULL;
+    CHECK(ID3D12Device_CreateQueryHeap(dev, &qd, &IID_ID3D12QueryHeap, (void **)&ts));
+    ID3D12Resource *rb = buffer(dev, D3D12_HEAP_TYPE_READBACK, 8 * 4 * N, 0, D3D12_RESOURCE_STATE_COPY_DEST);
+    if (!rb) return 1;
+    ID3D12CommandAllocator *alloc[2];
+    ID3D12GraphicsCommandList *list[2];
+    for (int k = 0; k < 2; k++) {
+        CHECK(ID3D12Device_CreateCommandAllocator(dev, D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator, (void **)&alloc[k]));
+        CHECK(ID3D12Device_CreateCommandList(dev, 0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc[k], NULL, &IID_ID3D12GraphicsCommandList, (void **)&list[k]));
+    }
+    UINT64 gpu0 = 0, cpu0 = 0, gpu1 = 0, cpu1 = 0;
+    CHECK(ID3D12CommandQueue_GetClockCalibration(queue, &gpu0, &cpu0));
+    for (UINT k = 0; k < N; k++) {                       // (pairs 0..N-1: taken and resolved in one list)
+        ID3D12GraphicsCommandList_EndQuery(list[0], ts, D3D12_QUERY_TYPE_TIMESTAMP, 2 * k);
+        ID3D12GraphicsCommandList_EndQuery(list[0], ts, D3D12_QUERY_TYPE_TIMESTAMP, 2 * k + 1);
+        ID3D12GraphicsCommandList_ResolveQueryData(list[0], ts, D3D12_QUERY_TYPE_TIMESTAMP, 2 * k, 2, rb, 16 * k);
+    }
+    for (UINT k = N; k < 2 * N; k++) {                   // (pairs N..2N-1: taken in the first list, resolved in the second)
+        ID3D12GraphicsCommandList_EndQuery(list[0], ts, D3D12_QUERY_TYPE_TIMESTAMP, 2 * k);
+        ID3D12GraphicsCommandList_EndQuery(list[0], ts, D3D12_QUERY_TYPE_TIMESTAMP, 2 * k + 1);
+        ID3D12GraphicsCommandList_ResolveQueryData(list[1], ts, D3D12_QUERY_TYPE_TIMESTAMP, 2 * k, 2, rb, 16 * k);
+    }
+    CHECK(ID3D12GraphicsCommandList_Close(list[0]));
+    CHECK(ID3D12GraphicsCommandList_Close(list[1]));
+    ID3D12CommandList *lists[] = { (ID3D12CommandList *)list[0], (ID3D12CommandList *)list[1] };
+    ID3D12CommandQueue_ExecuteCommandLists(queue, 2, lists);
+    wait_queue(dev, queue);
+    CHECK(ID3D12CommandQueue_GetClockCalibration(queue, &gpu1, &cpu1));
+    UINT64 *t = NULL;
+    CHECK(ID3D12Resource_Map(rb, 0, NULL, (void **)&t));
+    int zero = 0, outside = 0, reversed = 0;
+    for (UINT k = 0; k < 4 * N; k++) {
+        zero += !t[k];
+        outside += t[k] && (t[k] < gpu0 || t[k] > gpu1);
+        if (k & 1) reversed += t[k] < t[k - 1];
+    }
+    int ok = !zero && !outside && !reversed;
+    printf("d3d12 timestamp resolve: %d timestamps resolved in the list that took them and %d in the next list, "
+           "%d zero, %d outside the calibrations, %d pairs reversed: %s\n", 2 * N, 2 * N, zero, outside, reversed,
+           ok ? "ok" : "FAILED");
+    if (!ok) printf("  first pair %llu %llu, calibration %llu .. %llu\n", (unsigned long long)t[0], (unsigned long long)t[1],
+                    (unsigned long long)gpu0, (unsigned long long)gpu1);
+    ID3D12Resource_Unmap(rb, 0, NULL);
+    for (int k = 0; k < 2; k++) { ID3D12GraphicsCommandList_Release(list[k]); ID3D12CommandAllocator_Release(alloc[k]); }
+    ID3D12Resource_Release(rb);
+    ID3D12QueryHeap_Release(ts);
+    if (!ok) bad++;
+    return 0;
+}
+
 static int write_buffer_immediate_test(ID3D12Device *dev, ID3D12CommandQueue *direct_queue) {
     ID3D12Resource *destination = buffer(dev, D3D12_HEAP_TYPE_READBACK, 32, 0,
                                          D3D12_RESOURCE_STATE_COPY_DEST);
@@ -7759,6 +7815,7 @@ int main(void) {
     if (cross_queue_fence_test(dev)) return 1;
     if (command_allocator_lifetime_test(dev, queue)) return 1;
     if (write_buffer_immediate_test(dev, queue)) return 1;
+    if (timestamp_resolve_test(dev, queue)) return 1;
     if (state_transition_test(dev, queue)) return 1;
     if (resource_state_validation_test(dev)) return 1;
     if (resource_flags_validation_test(dev)) return 1;

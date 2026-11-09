@@ -357,6 +357,12 @@ typedef struct {
     uint32_t residency_priority;
     id<MTLBuffer> results;           // occlusion: Metal's visibility results; others: zeros
     id<MTLCounterSampleBuffer> samples;
+    // (Metal writes a command buffer's counter samples when that command buffer completes: a resolve on the GPU before
+    //  then reads zeros, even later in the same command buffer or in the next one on the queue. Each command buffer that
+    //  samples into the heap raises sampled_event to its sampled_value when it completes; a resolve waits for it.)
+    id<MTLSharedEvent> sampled_event;
+    uint64_t sampled_value;
+    const void *sampled_cb;          // (compared only, not held: the command buffer that sampled last)
 } queryheap12;
 
 static int resource_resident12(const res12 *resource) {
@@ -2959,7 +2965,7 @@ static WINAPI void queue_copy_tile_mappings(void *this, void *dst_resource, cons
 
 // ---- query heaps -----------------------------------------------------------------------------------------------------
 
-static void queryheap_destroy(d3d_object *o) { queryheap12 *q = (queryheap12 *)o; q->results = nil; q->samples = nil; release_dev(o); }
+static void queryheap_destroy(d3d_object *o) { queryheap12 *q = (queryheap12 *)o; q->results = nil; q->samples = nil; q->sampled_event = nil; release_dev(o); }
 static WINAPI HRESULT queryheap_query(void *this, const GUID *iid, void **out) {
     const GUID *k[] = { &IID_ID3D12QueryHeap, &IID_ID3D12Pageable, &IID_ID3D12DeviceChild, &IID_ID3D12Object };
     return query(this, iid, out, k, 4);
@@ -3006,6 +3012,10 @@ static WINAPI HRESULT dev_create_query_heap(void *this, const uint32_t *desc, co
     q->results = [d->mtl newBufferWithLength:(NSUInteger)count * stride options:MTLResourceStorageModeShared];
     memset(q->results.contents, 0, q->results.length);
     q->samples = samples;
+    if (samples) {
+        q->sampled_event = [d->mtl newSharedEvent];
+        if (!q->sampled_event) { d3d_release(&q->base); return E_OUTOFMEMORY; }
+    }
     HRESULT hr = queryheap_query(q, iid, out);
     d3d_release(&q->base);
     return hr;
@@ -11685,6 +11695,44 @@ static int replay_indirect_override_reserve12(d3d12_indirect_validation_override
     return 1;
 }
 
+static int parallel_replay12(void);
+// A timestamp is about to be sampled into q in cb: cb, when it completes, makes the samples readable (see queryheap12).
+static void query_sampled12(queryheap12 *q, id<MTLCommandBuffer> cb) {
+    if (q->sampled_cb == (__bridge const void *)cb) return;
+    q->sampled_cb = (__bridge const void *)cb;
+    uint64_t value = ++q->sampled_value;
+    id<MTLSharedEvent> event = q->sampled_event;
+    [cb addCompletedHandler:^(id<MTLCommandBuffer> done) { if (event.signaledValue < value) event.signaledValue = value; }];
+}
+// Before ResolveQueryData of q's samples: the GPU waits until the command buffers that sampled them have completed.
+// When the current one sampled them itself, it is committed here and the replay goes on in a new command buffer
+// (returned; NULL if none could be made), which waits.
+static id<MTLCommandBuffer> query_resolvable12(dev12 *d, id<MTLCommandQueue> queue, queryheap12 *q, id<MTLCommandBuffer> cb,
+                                               gfx_state *g, id<MTLComputeCommandEncoder> __strong *ce,
+                                               id<MTLBlitCommandEncoder> __strong *be, id<MTLRenderCommandEncoder> __strong *re) {
+    uint64_t value = q->sampled_value;
+    if (!value || q->sampled_event.signaledValue >= value) return cb;
+    close_pass(d, g, cb, re); end_encoders(ce, be, re);
+    if (q->sampled_cb == (__bridge const void *)cb) {
+        if (parallel_replay12()) {      // (its command buffer was enqueued in order with other lists': it cannot be split)
+            static int told;
+            if (!told++) vx_log("D3D12: a timestamp resolved in the command buffer that sampled it reads 0 with VXRT_D3D12_PARALLEL_REPLAY");
+            return cb;
+        }
+        MTLCommandBufferDescriptor *cd = [MTLCommandBufferDescriptor new];
+        cd.errorOptions = cb.errorOptions;
+        cd.retainedReferences = cb.retainedReferences;
+        id<MTLCommandBuffer> next = [queue commandBufferWithDescriptor:cd];
+        if (!next) return nil;
+        [cb commit];
+        cb = next;
+        q->sampled_cb = NULL;
+        g->changed = 1;
+    }
+    [cb encodeWaitForEvent:q->sampled_event value:value];
+    return cb;
+}
+
 static int replay(dev12 *d, id<MTLCommandQueue> queue, int32_t queue_type, list12 *l,
                   resource_state_shadow12 **state_shadows, uint32_t *state_count,
                   id<MTLCommandBuffer> *command_buffer, scratch *sc) {
@@ -11783,6 +11831,7 @@ static int replay(dev12 *d, id<MTLCommandQueue> queue, int32_t queue_type, list1
                 close_pass(d, g, cb, &re);
                 if (ce) { [ce endEncoding]; ce = nil; }
                 if (!be) be = [cb blitCommandEncoder];
+                query_sampled12(q, cb);
                 [be sampleCountersInBuffer:q->samples atSampleIndex:c->b withBarrier:YES];
             } else if (q->samples && c->b < q->count) {
                 // A timestamp: when the work before it has finished; Apple GPUs sample only where an encoder starts
@@ -11793,6 +11842,7 @@ static int replay(dev12 *d, id<MTLCommandQueue> queue, int32_t queue_type, list1
                 bp.sampleBufferAttachments[0].sampleBuffer = q->samples;
                 bp.sampleBufferAttachments[0].startOfEncoderSampleIndex = MTLCounterDontSample;
                 bp.sampleBufferAttachments[0].endOfEncoderSampleIndex = c->b;
+                query_sampled12(q, cb);
                 id<MTLBlitCommandEncoder> tb = [cb blitCommandEncoderWithDescriptor:bp];
                 [tb fillBuffer:q->results range:NSMakeRange(0, 4) value:0];   // (an encoder with no work may be dropped)
                 [tb endEncoding];
@@ -11805,6 +11855,12 @@ static int replay(dev12 *d, id<MTLCommandQueue> queue, int32_t queue_type, list1
             if (!dst || !dst->buffer || c->b + c->c > q->count || c->off + (uint64_t)c->c * q->stride > dst->buffer.length) {
                 vx_log("D3D12: ResolveQueryData outside the heap or the buffer");
                 break;
+            }
+            if (q->samples) {
+                id<MTLCommandBuffer> next = query_resolvable12(d, queue, q, cb, g, &ce, &be, &re);
+                if (!next) { vx_log("D3D12: no Metal command buffer to resolve timestamps in"); replay_failed = 1; break; }
+                cb = next;
+                *command_buffer = cb;
             }
             if (ce) { [ce endEncoding]; ce = nil; }
             close_pass(d, g, cb, &re);
