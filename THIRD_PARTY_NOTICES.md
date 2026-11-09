@@ -70,6 +70,39 @@ physical Apple-host adapter remain incomplete. Its ordinary Metal extension
 is withheld; fixtures opt into the partial route. The Android/Linux guest
 loader and graphics stacks are not linked into this component.
 
+## WMA v2 decoder derived from FFmpeg (LGPL-2.1-or-later)
+
+`VXRuntime/src/wmadec/` decodes xWMA (WMA v2, format tag 0x161) audio for
+VXRuntime's XAudio2 (`VXRuntime/src/xaudio2.m`). It is derived from FFmpeg,
+https://ffmpeg.org (source: https://git.ffmpeg.org/ffmpeg.git, mirror
+https://github.com/FFmpeg/FFmpeg), at revision
+`bf1b838f2ab88b4f8fd83443325c782ea0e0f7fa` (tag n9.0.1). These files are
+**not** MIT: they are licensed under the GNU Lesser General Public License,
+version 2.1 or (at your option) any later version, like the FFmpeg files they
+come from, and keep FFmpeg's copyright headers:
+
+| File | Derived from (FFmpeg n9.0.1) | Copyright |
+| --- | --- | --- |
+| `VXRuntime/src/wmadec/wmadec.c` | `libavcodec/wmadec.c`, `wma.c`, `wma_common.c`, `wma_freqs.c` | (c) 2002, 2002-2007 The FFmpeg Project |
+| `VXRuntime/src/wmadec/wmadec_internal.h` | `libavcodec/wma.h` | (c) 2002-2007 The FFmpeg Project |
+| `VXRuntime/src/wmadec/wmadata.h` | `libavcodec/wmadata.h` | (c) 2002 The FFmpeg Project |
+| `VXRuntime/src/wmadec/aac_scalefactor.h` | `libavcodec/aactab.c` (the scalefactor Huffman tables only) | (c) 2005-2006 Oded Shimon, 2006-2007 Maxim Gavrilov |
+| `VXRuntime/src/wmadec/wmadec.h` | the interface of the files above | (c) 2002-2007 The FFmpeg Project |
+
+All of them are under LGPL-2.1-or-later in FFmpeg (each file's header says so;
+none is among the GPL parts FFmpeg's `LICENSE.md` lists). The local
+modifications (WMA v2 only; libavcodec's bit reader, VLC tables, MDCT and float
+DSP replaced by small local equivalents; a C interface) are listed in each
+file's header and in [`VXRuntime/src/wmadec/SOURCE.md`](VXRuntime/src/wmadec/SOURCE.md),
+with the decoder's verification. The decoder is compiled into VXRuntime's
+binaries (`vxrt`, `vxrt-arm64`, the visionOS library); the corresponding source
+is this repository at the same commit, and the LGPL allows recipients to
+modify these files and rebuild those binaries from it. Because FFmpeg is
+licensed under LGPL-2.1-or-later, recipients may instead follow the terms of
+any later version of the LGPL. The full text of LGPL-2.1 is at the end of this
+file. The test vectors in `VXRuntime/tests/wma/` are owned: they were encoded
+from synthetic signals for this repository (see `SOURCE.md`).
+
 ## Code derived from Wine in earlier versions (replaced)
 
 From commit 744de86 (2026-10-12, "VXRuntime milestone 2") up to, but not

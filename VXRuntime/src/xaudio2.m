@@ -5,8 +5,11 @@
 // resampled by its frequency ratio with linear interpolation, loops and stream ends included), and is mixed
 // through its output matrices into submix voices (in processing-stage order) and the mastering voice, whose output
 // goes to an output AudioUnit. XAudio2's voices are not COM objects: their method tables have no IUnknown part.
+// xWMA voices (WMA v2, format tag 0x161: Skyrim's music and voice lines) are decoded packet by packet, as they
+// play, by the FFmpeg-derived decoder in wmadec/ (LGPL-2.1-or-later; see wmadec/SOURCE.md).
 #import <AudioToolbox/AudioToolbox.h>
 #include "d3d_common.h"
+#include "wmadec/wmadec.h"
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
 #pragma clang diagnostic ignored "-Wunused-variable"
@@ -47,8 +50,10 @@ enum { V_SOURCE, V_SUBMIX, V_MASTER };
 typedef struct engine engine;
 typedef struct voice voice;
 typedef struct { voice *to; float matrix[MAX_CHANNELS * MAX_CHANNELS]; } send;
-typedef struct queued { XA_BUFFER b; uint32_t loops_left; void *own; struct queued *next; } queued;   // own: silence we made for an xWMA buffer
-static void free_queued(queued *q) { free(q->own); free(q); }
+// An xWMA buffer's packets and how far they are decoded (into the queued buffer's own 16-bit PCM).
+typedef struct { const uint8_t *data; uint32_t *cumulative, packets, next; uint32_t frames, decoded; int started; } xwma_buf;
+typedef struct queued { XA_BUFFER b; uint32_t loops_left; void *own; xwma_buf *x; struct queued *next; } queued;   // own: an xWMA buffer's decoded PCM
+static void free_queued(queued *q) { if (q->x) free(q->x->cumulative); free(q->x); free(q->own); free(q); }
 struct voice {
     void **vtbl;
     int type;
@@ -59,7 +64,13 @@ struct voice {
     void *callback;
     queued *queue; uint32_t queued_count;
     double pos;                                   // in frames of the current buffer
-    int started, buffer_started, xwma;            // xwma: an xWMA voice (WMA v2/Pro): played as silence of the decoded length
+    int started, buffer_started, xwma;            // xwma: an xWMA voice (decoded to 16-bit PCM of the packet table's length)
+    // xWMA: the decoder (NULL: WMA Pro / Lossless, or a format it refuses: silence of the decoded length), one
+    // packet's output, frames decoded past the end of the previous buffer (carried into the next one of the same
+    // stream), frames the previous buffer was short (dropped from the next one), and whether the next buffer
+    // continues the stream the decoder is in.
+    vx_wma *wma; int16_t *wma_scratch; int16_t *carry; uint32_t carry_n, deficit; int wma_continue;
+    uint16_t wma_block; uint32_t wma_errors;
 
     float ratio, max_ratio;
     double samples_played;                        // in the voice's own frames
@@ -87,6 +98,31 @@ static void **g_engine_vtbl, **g_source_vtbl, **g_submix_vtbl, **g_master_vtbl;
 static void **g_engine27_vtbl, **g_source27_vtbl, **g_submix27_vtbl, **g_master27_vtbl;
 static void lock(engine *e) { pthread_mutex_lock(&e->lock); }
 static void unlock(engine *e) { pthread_mutex_unlock(&e->lock); }
+
+// VXRT_XAUDIO2_CAPTURE=<file> (tests): every mastering voice's mixed output as it is made, independent of the device
+// and of VXRT_MUTE: per mastering voice a header ("VXCA", channels, rate: 32-bit little endian), then its passes
+// as interleaved 32-bit floats. (tests/xaudio2_27.c's xWMA output is checked from it.)
+static FILE *g_capture;
+static pthread_mutex_t g_capture_lock = PTHREAD_MUTEX_INITIALIZER;
+static FILE *capture_file(void) {
+    static int tried;
+    if (!tried) {
+        pthread_mutex_lock(&g_capture_lock);
+        const char *p = getenv("VXRT_XAUDIO2_CAPTURE");
+        if (!tried && p && *p) { g_capture = fopen(p, "wb"); if (!g_capture) vx_log("XAudio2: VXRT_XAUDIO2_CAPTURE: cannot write %s", p); }
+        tried = 1;
+        pthread_mutex_unlock(&g_capture_lock);
+    }
+    return g_capture;
+}
+static void capture_begin(uint32_t channels, uint32_t rate) {
+    if (!capture_file()) return;
+    pthread_mutex_lock(&g_capture_lock);
+    uint32_t h[3] = { 0x41435856, channels, rate };              // "VXCA"
+    fwrite(h, 4, 3, g_capture);
+    fflush(g_capture);
+    pthread_mutex_unlock(&g_capture_lock);
+}
 
 // VXRT_TRACE_AUDIO=1: what a program does with XAudio2 (engines, voices, buffers) and, every 10 s, how loud the
 // output was (a game that plays nothing and one whose sound is lost on the way look the same from outside)
@@ -155,6 +191,61 @@ static void regions(const voice *v, const XA_BUFFER *b, uint32_t *begin, uint32_
     if (*lend > *end) *lend = *end;
 }
 
+// ---- xWMA ---------------------------------------------------------------------------------------------------------
+static uint32_t carry_take(voice *v, int16_t *dst, uint32_t max) {
+    uint32_t n = v->carry_n < max ? v->carry_n : max, ch = v->channels;
+    memcpy(dst, v->carry, (size_t)n * ch * 2);
+    memmove(v->carry, v->carry + (size_t)n * ch, (size_t)(v->carry_n - n) * ch * 2);
+    v->carry_n -= n;
+    return n;
+}
+static void carry_put(voice *v, const int16_t *src, uint32_t n) {
+    uint32_t ch = v->channels, cap = (uint32_t)vx_wma_max_frames(v->wma) * 2;   // (at most a packet's output or so is ever carried)
+    if (!v->carry) v->carry = malloc((size_t)cap * ch * 2);
+    if (v->carry_n + n > cap) n = cap - v->carry_n;
+    memcpy(v->carry + (size_t)v->carry_n * ch, src, (size_t)n * ch * 2);
+    v->carry_n += n;
+}
+// Decodes an xWMA buffer's packets until frame `need` - 1 is there (and, once the buffer is full, its remaining
+// packets into the carry). The stream's frames are the buffers' table lengths laid end to end: what a buffer's
+// packets decode to beyond its length starts the next buffer; what they fall short of stays silent and is dropped
+// from the next. A packet the decoder refuses is the silence of its table length (logged once).
+static void xwma_fill(voice *v, queued *q, uint32_t need) {
+    xwma_buf *x = q->x;
+    int16_t *pcm = q->own;
+    uint32_t ch = v->channels;
+    if (need > x->frames) need = x->frames;
+    if (!x->started) {
+        x->started = 1;
+        if (!v->wma_continue) { if (v->wma) vx_wma_reset(v->wma); v->carry_n = v->deficit = 0; }
+        v->wma_continue = 0;
+        x->decoded = carry_take(v, pcm, x->frames);
+    }
+    if (!v->wma) { x->decoded = x->frames; return; }               // silence
+    if (!v->wma_scratch) v->wma_scratch = malloc((size_t)vx_wma_max_frames(v->wma) * ch * 2);
+    while (x->next < x->packets && (x->decoded < need || x->decoded >= x->frames)) {
+        uint32_t k = x->next++;
+        int n = vx_wma_decode(v->wma, x->data + (size_t)k * v->wma_block, v->wma_block, v->wma_scratch);
+        const int16_t *src = v->wma_scratch;
+        if (n < 0) {
+            uint32_t prev = k ? x->cumulative[k - 1] : 0, len = (x->cumulative[k] > prev ? x->cumulative[k] - prev : 0) / (ch * 2);
+            if (!v->wma_errors++) vx_log("XAudio2: xWMA packet %u of a buffer on voice %p did not decode; %u frames of silence in its place (logged once per voice)", k, (void *)v, len);
+            x->decoded += len < x->frames - x->decoded ? len : x->frames - x->decoded;
+            continue;
+        }
+        uint32_t got = (uint32_t)n;
+        if (v->deficit) { uint32_t d = v->deficit < got ? v->deficit : got; src += (size_t)d * ch; got -= d; v->deficit -= d; }
+        uint32_t room = x->frames - x->decoded, put = got < room ? got : room;
+        memcpy(pcm + (size_t)x->decoded * ch, src, (size_t)put * ch * 2);
+        x->decoded += put;
+        if (got > put) carry_put(v, src + (size_t)put * ch, got - put);
+    }
+    if (x->next == x->packets) {                                    // all decoded: the rest (if any) stays silent
+        if (x->decoded < x->frames) { v->deficit += x->frames - x->decoded; x->decoded = x->frames; }
+        v->wma_continue = !(q->b.flags & XAUDIO2_END_OF_STREAM);
+    }
+}
+
 // Renders `n` output frames of a source voice into `out` (channels interleaved), consuming its queue.
 static void render_source(voice *v, float *out, uint32_t n, uint32_t out_rate) {
     double step = (double)v->ratio * v->rate / out_rate;
@@ -180,6 +271,7 @@ static void render_source(voice *v, float *out, uint32_t n, uint32_t out_rate) {
                 v->queue = q->next;
                 v->queued_count--;
                 v->buffer_started = 0;
+                if (q->x && (q->x->next < q->x->packets || q->x->decoded < q->x->frames)) v->wma_continue = 0;   // (cut short by PlayLength)
                 void *ctx = q->b.context;
                 int eos = q->b.flags & XAUDIO2_END_OF_STREAM;
                 free_queued(q);
@@ -188,6 +280,7 @@ static void render_source(voice *v, float *out, uint32_t n, uint32_t out_rate) {
                 continue;
             }
             uint32_t f0 = (uint32_t)v->pos, f1 = f0 + 1 < limit ? f0 + 1 : f0;
+            if (q->x && f1 >= q->x->decoded) xwma_fill(v, q, f1 + 1);
             float t = (float)(v->pos - f0);
             const uint8_t *data = q->b.data;
             for (uint32_t c = 0; c < v->channels; c++) {
@@ -245,6 +338,12 @@ static void one_pass(engine *e) {
     for (uint32_t i = 0; i < n; i++) {
         float *dst = e->ring + (size_t)((e->written + i) % e->ring_frames) * m->channels;
         for (uint32_t c = 0; c < m->channels; c++) dst[c] = m->mix[(size_t)i * m->channels + c] * m->volume * m->channel_volume[c];
+    }
+    if (capture_file()) {
+        pthread_mutex_lock(&g_capture_lock);
+        for (uint32_t i = 0; i < n; i++) fwrite(e->ring + (size_t)((e->written + i) % e->ring_frames) * m->channels, sizeof(float), m->channels, g_capture);
+        fflush(g_capture);
+        pthread_mutex_unlock(&g_capture_lock);
     }
     __atomic_add_fetch(&e->written, n, __ATOMIC_RELEASE);
     for (int i = 0; i < e->ncallbacks; i++) ((*(engine_callback **)e->callbacks[i]))->pass_end(e->callbacks[i]);
@@ -345,6 +444,7 @@ static WINAPI void voice_destroy(void *this) {
     if (e->master == v) e->master = NULL;
     while (v->queue) { queued *q = v->queue; v->queue = q->next; free_queued(q); }
     unlock(e);
+    vx_wma_close(v->wma); free(v->wma_scratch); free(v->carry);
     free(v->mix);
     free(v);
 }
@@ -353,27 +453,34 @@ static WINAPI HRESULT source_stop(void *this, uint32_t flags, uint32_t op) { (vo
 static WINAPI HRESULT source_submit(void *this, const XA_BUFFER *b, const void *wma) {
     __atomic_add_fetch(&g_xa_submitted, 1, __ATOMIC_RELAXED);
     voice *v = vself(this);
-    // xWMA (what Skyrim's voice lines and music are): there is no WMA decoder here, so the voice plays SILENCE of the
-    // length the packet table gives (its last cumulative value is the decoded size in bytes). The game's own timing and
-    // callbacks follow the real durations; nothing is heard.
+    // xWMA (what Skyrim's voice lines and music are): the buffer becomes 16-bit PCM of the length its packet table
+    // gives (the last cumulative value is the decoded size in bytes), silent until it is decoded, packet by packet,
+    // as it plays (render_source). PlayBegin / PlayLength and the loop region are in those decoded frames. Without
+    // a decoder (WMA Pro / Lossless) it stays silent; the game's timing and callbacks are the same either way.
     typedef struct __attribute__((packed)) { const uint32_t *cumulative; uint32_t packets; } XA_BUFFER_WMA;
     const XA_BUFFER_WMA *xw = wma;
     if (!b || !b->data || !b->bytes || (v->xwma != (xw != NULL))) return XAUDIO2_E_INVALID_CALL;
-    void *silence = NULL; XA_BUFFER sb;
+    void *pcm = NULL; xwma_buf *x = NULL; XA_BUFFER sb;
     if (xw) {
         if (!xw->cumulative || !xw->packets) return XAUDIO2_E_INVALID_CALL;
         uint32_t bytes = xw->cumulative[xw->packets - 1];
         if (!bytes || bytes > (256u << 20)) { if (xa_trace()) vx_log("XAudio2: xWMA buffer refused (%u packets, %u decoded bytes)", xw->packets, bytes); return XAUDIO2_E_INVALID_CALL; }
+        if (v->wma && (uint64_t)xw->packets * v->wma_block > b->bytes) { vx_log("XAudio2: xWMA buffer refused (%u packets of %u bytes, %u data bytes)", xw->packets, v->wma_block, b->bytes); return XAUDIO2_E_INVALID_CALL; }
         bytes -= bytes % v->fmt.block;
-        silence = calloc(1, bytes);
+        pcm = calloc(1, bytes ? bytes : 1);
+        x = calloc(1, sizeof *x);
+        x->cumulative = malloc(sizeof(uint32_t) * xw->packets);
+        memcpy(x->cumulative, xw->cumulative, sizeof(uint32_t) * xw->packets);
+        x->data = b->data; x->packets = xw->packets; x->frames = bytes / v->fmt.block;
         uint32_t data_bytes = b->bytes;
-        sb = *b; sb.data = silence; sb.bytes = bytes; sb.play_begin = sb.play_length = 0; b = &sb;
+        sb = *b; sb.data = pcm; sb.bytes = bytes; b = &sb;
         static int noted; if (noted++ < 300 && xa_trace())
-            vx_log("XAudio2: xWMA buffer on voice %p (%u ch %u Hz): %u packets, cumulative %u..%u, %u data bytes, flags %#x, loops %u: %.2f s of silence",
-                   (void *)v, v->fmt.channels, v->fmt.rate, xw->packets, xw->cumulative[0], bytes, data_bytes, b->flags, b->loop_count, (double)bytes / v->fmt.block / v->fmt.rate);
+            vx_log("XAudio2: xWMA buffer on voice %p (%u ch %u Hz): %u packets, cumulative %u..%u, %u data bytes, flags %#x, play %u+%u, loops %u: %.2f s%s",
+                   (void *)v, v->fmt.channels, v->fmt.rate, xw->packets, xw->cumulative[0], bytes, data_bytes, b->flags, b->play_begin, b->play_length, b->loop_count,
+                   (double)bytes / v->fmt.block / v->fmt.rate, v->wma ? "" : " of silence (no decoder)");
     }
     queued *q = calloc(1, sizeof *q);
-    q->own = silence;
+    q->own = pcm; q->x = x;
     q->b = *b;
     q->loops_left = b->loop_count;
     lock(v->eng);
@@ -390,6 +497,7 @@ static WINAPI HRESULT source_flush(void *this) {
     // The buffer playing (if started) stays; the rest are dropped with their end callbacks, as XAudio2 does.
     queued *keep = v->buffer_started ? v->queue : NULL, *q = keep ? keep->next : v->queue;
     if (keep) keep->next = NULL; else v->queue = NULL;
+    if (q) v->wma_continue = 0;                                 // (the stream's next packets are gone)
     while (q) {
         queued *n = q->next;
         if (v->callback) CALL(v->callback, buffer_end, q->b.context);
@@ -461,7 +569,13 @@ static WINAPI HRESULT engine_create_source(void *this, voice **out, const WAVEFO
     if (!e->master) return XAUDIO2_E_INVALID_CALL;
     voice *v = make_voice(e, V_SOURCE, fmt->channels, fmt->rate, e->v27 ? g_source27_vtbl : g_source_vtbl);
     v->fmt = *fmt; v->sample_kind = kind; v->callback = callback; v->flags = flags;
-    if (kind == 4) { v->xwma = 1; v->sample_kind = 1; v->fmt.tag = 1; v->fmt.bits = 16; v->fmt.block = (uint16_t)(fmt->channels * 2); v->fmt.extra = 0; }   // decoded: 16-bit PCM
+    if (kind == 4) {                                            // decoded: 16-bit PCM
+        v->xwma = 1; v->sample_kind = 1; v->fmt.tag = 1; v->fmt.bits = 16; v->fmt.block = (uint16_t)(fmt->channels * 2); v->fmt.extra = 0;
+        v->wma_block = fmt->block;
+        if (fmt->tag == 0x161) v->wma = vx_wma_open(fmt->channels, (int)fmt->rate, (int)(fmt->bytes_per_sec * 8), fmt->block, fmt->extra ? (const uint8_t *)(fmt + 1) : NULL, fmt->extra);
+        if (!v->wma) { static int noted; if (!noted++) vx_log("XAudio2: xWMA voice (tag %#x, %u ch, %u Hz, %u bytes/s, packets of %u) has no decoder: it plays silence of the decoded length (logged once)",
+                                                               fmt->tag, fmt->channels, fmt->rate, fmt->bytes_per_sec, fmt->block); }
+    }
     if (!v->fmt.block) v->fmt.block = (uint16_t)(fmt->channels * fmt->bits / 8);
     v->max_ratio = max_ratio > 0 ? max_ratio : 2.0f;
     set_sends(v, sends);
@@ -511,6 +625,7 @@ static WINAPI HRESULT engine_create_master(void *this, voice **out, uint32_t cha
         free(m->mix); free(m);
         return (HRESULT)0x88960002;                              // XAUDIO2_E_DEVICE_INVALIDATED
     }
+    capture_begin(channels, rate);
     lock(e); m->next = e->voices; e->voices = m; e->master = m; unlock(e);
     if (xa_trace()) vx_log("XAudio2: mastering voice %u ch %u Hz started", channels, rate);
     if (!e->thread_running) {
