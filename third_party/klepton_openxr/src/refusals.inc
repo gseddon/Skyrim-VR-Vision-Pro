@@ -15,11 +15,6 @@ static XrResult XRAPI_CALL refuse_xrGetReferenceSpaceBoundsRect(XrSession sessio
     (void)bounds;
     return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
 }
-static XrResult XRAPI_CALL refuse_xrCreateActionSpace(XrSession session, const XrActionSpaceCreateInfo* createInfo, XrSpace* space) {
-    (void)createInfo;
-    (void)space;
-    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
-}
 static XrResult XRAPI_CALL refuse_xrEnumerateBoundSourcesForAction(XrSession session, const XrBoundSourcesForActionEnumerateInfo* enumerateInfo, uint32_t sourceCapacityInput, uint32_t* sourceCountOutput, XrPath* sources) {
     (void)enumerateInfo;
     (void)sourceCapacityInput;
