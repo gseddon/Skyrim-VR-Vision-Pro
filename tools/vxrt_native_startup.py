@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 import vxrt_ledger as ledger
+import vxrt_runtime_sessions as sessions
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'VXRuntime/tools'))
@@ -197,19 +198,22 @@ def capture(args):
     source = Path(os.path.commonpath([str(assets), *map(str, originals)]))
     if source == Path('/') or REPO.is_relative_to(source) or out.is_relative_to(assets):
         raise ValueError('asset/DLL overlay would include repository outputs or filesystem root')
-    # Do not run through another user's active runtime session.
-    busy = subprocess.run(['pgrep', '-x', 'vxrt(-arm64)?(-[[:alnum:]_.]+)*|vrserver|vrcompositor'], capture_output=True, text=True)
-    wine = subprocess.run(['pgrep', '-fl', '[w]ine.*(vrserver|hlvr|SkyrimVR)'], capture_output=True, text=True)
-    idle = busy.returncode == 1 and wine.returncode == 1
+    # Do not run through the user's session (SteamVR, a Wine game, any runtime not provably harness/fixture-owned)
+    # nor alongside a runtime writing into this run's directories; owned isolated runs may overlap and are recorded.
+    checks, concurrent = sessions.preconditions([out], out/'temp')
+    idle = all(c['ok'] for c in checks)
     out.mkdir(parents=True)
     result = dict(kind='native_aot_startup', schema_version=4 if getattr(args, 'experimental_xrizer', False) else 2, level=None, status='refused' if not idle else 'observed',
                   appid=getattr(args, 'appid', None),
                   scope='startup checkpoint only; no VR compatibility, frame, gameplay or performance claim',
                   source_commit=subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', 'HEAD'], text=True).strip(),
-                  preconditions=[dict(code='user_not_playing', ok=idle, detail=(busy.stdout + wine.stdout).strip() or 'no active runtime found')],
+                  preconditions=checks,
                   observed=[], derived=[], inferred=[], unknown=[
                       'main-game code execution and scene initialization', 'VR connection and stereo frame delivery',
                       'headset input, audio and playability', 'code coverage outside observed startup path'])
+    if concurrent:
+        result.setdefault('diagnostic', {})['concurrent_runtime'] = dict(processes=concurrent,
+            scope='owned runtime processes running when this run started; timing and fps may be affected')
     if idle:
         if getattr(args, 'experimental_xrizer', False):
             result['source_identity'] = source_identity()
@@ -230,6 +234,7 @@ def capture(args):
                    VXRT_AOT_STRICT='1', VXRT_NO_WINE='1', VXRT_STEAM_BRIDGE='0', VXRT_MESSAGEBOX='auto',
                    VXRT_NO_ACTIVATE='1', VXRT_MUTE='1', VERANTYX_AUDIO='0', TMPDIR=str(temp),
                    VXRT_LOG_TIME='1', VXRT_TRACE_CALLS='3')
+        env[sessions.MARKER] = str(out)               # marks this run's processes as harness-owned for other runs
         if dlls:
             env['VXRT_DLL_PATH'] = ':'.join(map(str, dlls))
         if callback_limit is not None:

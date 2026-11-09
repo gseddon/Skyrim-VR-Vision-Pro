@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vxrt_doctor as doctor                                    # noqa: E402
 import vxrt_ledger as ledger                                    # noqa: E402
 import vxrt_games as profiles_db                                # noqa: E402
+import vxrt_runtime_sessions as sessions                        # noqa: E402
 
 REPO = doctor.REPO
 DRIVE = os.path.expanduser(os.environ.get("VERANTYX_VR_DRIVE", "~/Verantyx_VR_Drive"))
@@ -85,7 +86,7 @@ def pgrep(pattern):
 def listening(port):
     return subprocess.run(["lsof", "-nP", "-iTCP:%d" % port, "-sTCP:LISTEN"], capture_output=True).returncode == 0
 
-def preconditions(spec, game, args, root, overlay, need_steam=True):
+def preconditions(spec, game, args, root, overlay, need_steam=True, run_dir=None, concurrent=None):
     """Checks that make a run a fair measurement; each failed one is a typed refusal."""
     checks = []
     def check(code, ok, detail):
@@ -93,8 +94,12 @@ def preconditions(spec, game, args, root, overlay, need_steam=True):
     entry_error = game.get("launch_exe_error") if game else None
     check("game_installed", spec and game and not entry_error,
           entry_error or ("found in a Steam library; entry: " + game["exe"] if game else "not installed (tools/vxrt_steam.py fetch or import) or unknown"))
-    busy = pgrep("[b]uild/vxrt") + pgrep("[w]ine.*(vrserver|hlvr)")
-    check("user_not_playing", not busy, "no VXRuntime or Wine game/SteamVR running" if not busy else "running: " + "; ".join(b[:120] for b in busy[:3]))
+    # The user's game, SteamVR or a Wine game, or any runtime not provably harness/fixture-owned, refuses the run; so
+    # does a runtime writing into this run's root, overlay or run directory (tools/vxrt_runtime_sessions.py).
+    session_checks, owned = sessions.preconditions([root, overlay] + ([run_dir] if run_dir else []), user_roots=sorted(USER_ROOTS))
+    checks.extend(session_checks)
+    if concurrent is not None:
+        concurrent.extend(owned)
     check("steamvr_not_running", not listening(27062), "port 27062 free" if not listening(27062) else "a SteamVR is listening on 27062")
     steam = pgrep("[S]team.AppBundle/Steam/Contents/MacOS/steam_osx")
     check("steam_running", steam or not need_steam, "Mac Steam is running" if steam else "Mac Steam is not running (sign in there first)")
@@ -453,7 +458,11 @@ def run(game, scenario=None, quality="", seconds=None, extra_args=(), press_ever
 
     settings = dict((spec or {}).get("settings", {}), **(settings or {}))      # (the profile's defaults, then the run's)
     result["settings"] = settings
-    checks = preconditions(spec, inst, args, root, overlay, need_steam)
+    concurrent = []
+    checks = preconditions(spec, inst, args, root, overlay, need_steam, run_dir, concurrent)
+    if concurrent:
+        result.setdefault("diagnostic", {})["concurrent_runtime"] = {"processes": concurrent,
+            "scope": "owned runtime processes running when this run started; timing and fps may be affected"}
     bad = sorted(set(settings) - TUNABLES)
     checks.append({"code": "settings_allowed", "ok": not bad, "detail": "only AGENTS.md's tunables" if not bad else "not tunable: " + ", ".join(bad)})
     result["preconditions"] = checks
@@ -472,6 +481,7 @@ def run(game, scenario=None, quality="", seconds=None, extra_args=(), press_ever
         return finish(result, run_dir, say)
 
     env = dict(os.environ, VXRT_VR_ROOT=root, VXRT_VR_OVERLAY=overlay, VXRT_VR_LOG_DIR=logs, VXRT_MUTE="1", VERANTYX_AUDIO="0")
+    env[sessions.MARKER] = run_dir                  # the run's processes are harness-owned (vxrt_runtime_sessions.py)
     if quality: env["VXRT_VR_QUALITY"] = quality
     else: env.pop("VXRT_VR_QUALITY", None)
     if trace: env["VXRT_TRACE"] = "1"
