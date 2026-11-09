@@ -66,7 +66,7 @@ build/recomp/suite.exe: tests/recomp/suite.cpp tests/recomp/suite_d3d.c tests/re
 	$(MINGW) -nostdlib -e mainCRTStartup -o $@ build/recomp/suite.obj build/recomp/suite_d3d.o build/recomp/start.obj -Lbuild/recomp -lvcruntime140 -lkernel32 -lucrtbase -ld3d11
 aot-suite aot-text-callback-check: export AOT_COMPARE_ROSETTA = $(abspath $(VXRT_ROSETTA_TARGET))
 aot-suite aot-text-callback-check: export AOT_COMPARE_ARM64 = $(abspath $(VXRT_ARM64_TARGET))
-aot-suite: $(VXRT_ROSETTA_TARGET) $(VXRT_ARM64_TARGET) build/vxrt-aot build/recomp/suite.exe aot-text-callback-check aot-missing-import-check
+aot-suite: $(VXRT_ROSETTA_TARGET) $(VXRT_ARM64_TARGET) build/vxrt-aot build/recomp/suite.exe aot-text-callback-check aot-missing-import-check aot-jump-bound-check
 	@mkdir -p build/aot
 	build/vxrt-aot gen build/recomp/suite.exe build/recomp/suite_b.s
 	clang -arch arm64 -dynamiclib -o build/aot/$$(build/vxrt-aot name build/recomp/suite.exe) build/recomp/suite_b.s
@@ -78,6 +78,14 @@ aot-suite: $(VXRT_ROSETTA_TARGET) $(VXRT_ARM64_TARGET) build/vxrt-aot build/reco
 build/aot_text_callbacks.exe: tests/aot_text_callbacks.c tests/aot_text_callbacks.S
 	@mkdir -p build
 	$(MINGW) -O1 -static -o $@ $^
+
+# vxrt-aot's jump table bound: a table indexed by a copy of the compared register (analysis only, no run)
+build/aot_jump_bound.exe: tests/aot_jump_bound.c tests/aot_jump_bound.S
+	@mkdir -p build
+	$(MINGW) -O1 -static -o $@ $^
+aot-jump-bound-check: build/vxrt-aot build/aot_jump_bound.exe
+	python3 tests/aot_jump_bound_check.py build/vxrt-aot build/aot_jump_bound.exe
+.PHONY: aot-jump-bound-check
 
 aot-text-callback-check: $(VXRT_ROSETTA_TARGET) $(VXRT_ARM64_TARGET) build/vxrt-aot build/aot_text_callbacks.exe
 	tools/aot_build.sh build/aot_text_callbacks.exe build/aot-text-callbacks
