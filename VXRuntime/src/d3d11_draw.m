@@ -1820,6 +1820,11 @@ void d3d_flash_frame(d3d_device *dev, d3d_texture *t, d3d_texture *dst, const ui
         }
     }];
 }
+#ifdef __aarch64__
+int vx_x86_stack_words(uint64_t *out, int n, uint64_t lo, uint64_t hi);   // (arm64.c)
+#else
+static int vx_x86_stack_words(uint64_t *out, int n, uint64_t lo, uint64_t hi) { (void)out; (void)n; (void)lo; (void)hi; return 0; }
+#endif
 // Sets everything a draw needs; returns the encoder, or nil when the draw cannot happen.
 // VXRT_TRACE_DRAWS=file: once that file exists, the next 300 draws are logged (shaders, targets, textures bound).
 static void trace_draw(d3d_context *c, d3d_draw_state *s) {
@@ -1830,7 +1835,7 @@ static void trace_draw(d3d_context *c, d3d_draw_state *s) {
     if (!left) { static int polls; if (++polls % 64 || access(path, F_OK)) return; left = 300; }
     left--;
     vx_draw_trace_active = left > 0;
-    char line[1024]; size_t k = 0;
+    char line[1600]; size_t k = 0;
     d3d_shader *vs = s->shader[STAGE_VS], *ps = s->shader[STAGE_PS];
     k += (size_t)snprintf(line + k, sizeof line - k, "draw vs %08x ps %08x", vs ? vs->hash : 0, ps ? ps->hash : 0);
     for (int i = 0; i < 8; i++) if (c->rtv[i]) {
@@ -1843,11 +1848,39 @@ static void trace_draw(d3d_context *c, d3d_draw_state *s) {
     }
     if (s->blend && k < sizeof line - 80) {
         const uint32_t *rt = s->blend->desc + 2;
-        snprintf(line + k, sizeof line - k, " blend %u rgb %u,%u,%u a %u,%u,%u mask %x", rt[0], rt[1], rt[2], rt[3], rt[4], rt[5], rt[6], rt[7]);
-    } else if (k < sizeof line - 16) snprintf(line + k, sizeof line - k, " noblend");
+        k += (size_t)snprintf(line + k, sizeof line - k, " blend %u rgb %u,%u,%u a %u,%u,%u mask %x", rt[0], rt[1], rt[2], rt[3], rt[4], rt[5], rt[6], rt[7]);
+    } else if (k < sizeof line - 16) k += (size_t)snprintf(line + k, sizeof line - k, " noblend");
+    // (the depth target and states, the first viewport and vertex buffer: what decides whether the draw covers any pixel)
+    if (k < sizeof line - 200) {
+        const uint32_t *dd = s->depth ? s->depth->desc : NULL, *rd = s->raster ? s->raster->desc : NULL;
+        d3d_texture *dt = c->dsv && c->dsv->resource->kind == K_TEXTURE ? (d3d_texture *)c->dsv->resource : NULL;
+        k += (size_t)snprintf(line + k, sizeof line - k, " ds %s%05lx", dt ? "@" : "none", dt ? (unsigned long)((uintptr_t)dt >> 4 & 0xfffff) : 0ul);
+        if (dt) k += (size_t)snprintf(line + k, sizeof line - k, " (%ux%u f%u view f%u mtl %d)", dt->desc[TD_WIDTH], dt->desc[TD_HEIGHT], dt->desc[TD_FORMAT], c->dsv->format,
+                                      (int)((__bridge id<MTLTexture>)dt->mtl).pixelFormat);
+        if (dd) k += (size_t)snprintf(line + k, sizeof line - k, " depth %u write %u func %u stencil %u ref %u", dd[0], dd[1], dd[2], dd[3], s->stencil_ref);
+        if (dd && dd[3]) k += (size_t)snprintf(line + k, sizeof line - k, " masks %04x front %u,%u,%u,%u back %u,%u,%u,%u", dd[4] & 0xffff, dd[5], dd[6], dd[7], dd[8], dd[9], dd[10], dd[11], dd[12]);
+        if (rd) k += (size_t)snprintf(line + k, sizeof line - k, " raster fill %u cull %u ccw %u clip %u scissor %u", rd[0], rd[1], rd[2], rd[6], rd[7]);
+        if (c->nviewports) k += (size_t)snprintf(line + k, sizeof line - k, " vp %g,%g %gx%g z %g-%g", c->viewport[0], c->viewport[1], c->viewport[2], c->viewport[3], c->viewport[4], c->viewport[5]);
+        if (s->vb[0]) snprintf(line + k, sizeof line - k, " vb0 %u bytes stride %u off %u topo %u layout %u", s->vb[0]->desc[0], s->stride[0], s->offset[0], s->topology, s->layout ? s->layout->n : 0);
+    }
     vx_log("%s", line);
+    // VXRT_TRACE_DRAW_STACK=<ps hash>,lo-hi[:n] (hex, decimal n, default 20, at most 40): for the traced draws with that
+    // pixel shader, also the first n guest stack words in that range (the callers, with stale words mixed in)
+    static int stack_parsed, stack_words = 20; static unsigned stack_ps; static uint64_t stack_lo, stack_hi;
+    if (!stack_parsed) {
+        const char *e = getenv("VXRT_TRACE_DRAW_STACK"); stack_parsed = 1;
+        if (e && sscanf(e, "%x,%llx-%llx", &stack_ps, (unsigned long long *)&stack_lo, (unsigned long long *)&stack_hi) == 3) {
+            const char *c = strchr(e, ':'); if (c) stack_words = atoi(c + 1);
+            if (stack_words < 1) stack_words = 20; if (stack_words > 40) stack_words = 40;
+        } else stack_hi = stack_lo = 0;
+    }
+    if (stack_hi > stack_lo && ps && ps->hash == stack_ps) {
+        uint64_t w[40]; int n = vx_x86_stack_words(w, stack_words, stack_lo, stack_hi); char sl[720]; size_t at = 0;
+        for (int i = 0; i < n && at < sizeof sl - 20; i++) at += (size_t)snprintf(sl + at, sizeof sl - at, " %llx", (unsigned long long)w[i]);
+        vx_log("draw ps %08x stack:%s", ps->hash, n ? sl : " (none)");
+    }
     // VXRT_DRAW_SNAPSHOT=<ps hash>:<file prefix>[,<ps hash>:<file prefix>...]: the textures each of those pixel shaders reads
-    // (and the constants it is given), as PNGs, once each.
+    // (and the constants it is given) and its render targets before the draw, as PNGs, once each.
     static int done[8];
     const char *ds = getenv("VXRT_DRAW_SNAPSHOT");
     for (int n = 0; ds && ps && n < 8; n++) {
@@ -1859,17 +1892,37 @@ static void trace_draw(d3d_context *c, d3d_draw_state *s) {
         if (done[n] || strtoul(want, NULL, 16) != ps->hash) continue;
         done[n] = 1;
         d3d_flush(c->base.dev, 1);
-        for (int b = 0; b < 4; b++) if (s->cb[STAGE_PS][b]) {
-            id<MTLBuffer> mb = (__bridge id<MTLBuffer>)s->cb[STAGE_PS][b]->mtl;
-            if (mb.storageMode != MTLStorageModeShared) continue;
-            const float *f = (const float *)((const uint8_t *)mb.contents + s->cb[STAGE_PS][b]->off + s->cb_offset[STAGE_PS][b]);
-            for (NSUInteger r = 0; r < MIN(s->cb[STAGE_PS][b]->desc[0] / 16, 16u); r++)
-                vx_log("ps %08x cb%d[%lu] = %g %g %g %g", ps->hash, b, (unsigned long)r, f[4 * r], f[4 * r + 1], f[4 * r + 2], f[4 * r + 3]);
+        for (int st = 0; st < 2; st++) for (int b = 0; b < 4; b++) {
+            int stage = st ? STAGE_VS : STAGE_PS;
+            if (!s->cb[stage][b]) { if (st) vx_log("ps %08x: vs cb%d not bound", ps->hash, b); continue; }
+            id<MTLBuffer> mb = (__bridge id<MTLBuffer>)s->cb[stage][b]->mtl;
+            if (mb.storageMode != MTLStorageModeShared) { vx_log("ps %08x: %s cb%d not CPU-visible", ps->hash, st ? "vs" : "ps", b); continue; }
+            const float *f = (const float *)((const uint8_t *)mb.contents + s->cb[stage][b]->off + s->cb_offset[stage][b]);
+            for (NSUInteger r = 0; r < MIN(s->cb[stage][b]->desc[0] / 16, st ? 4u : 16u); r++)
+                vx_log("ps %08x %scb%d[%lu] = %g %g %g %g", ps->hash, st ? "vs " : "", b, (unsigned long)r, f[4 * r], f[4 * r + 1], f[4 * r + 2], f[4 * r + 3]);
         }
         for (int i = 0; i < 16; i++) if (s->srv[STAGE_PS][i] && s->srv[STAGE_PS][i]->resource->kind == K_TEXTURE) {
             char path[1024];
             snprintf(path, sizeof path, "%s.t%d.png", prefix, i);
             d3d_texture_png(c->base.dev, ((d3d_texture *)s->srv[STAGE_PS][i]->resource)->mtl, path);
+        }
+        // the input layout and the first vertices of vertex buffer 0
+        if (s->layout) for (uint32_t a = 0; a < s->layout->n && a < 8; a++)
+            vx_log("ps %08x layout[%u] reg %u format %u slot %u offset %u", ps->hash, a, s->layout->attr[a].reg, s->layout->attr[a].format, s->layout->attr[a].slot, s->layout->attr[a].offset);
+        if (s->vb[0] && s->stride[0] && ((__bridge id<MTLBuffer>)s->vb[0]->mtl).storageMode == MTLStorageModeShared) {
+            const float *f = (const float *)((const uint8_t *)((__bridge id<MTLBuffer>)s->vb[0]->mtl).contents + s->vb[0]->off + s->offset[0]);
+            uint32_t per = s->stride[0] / 4 < 8 ? s->stride[0] / 4 : 8;
+            for (uint32_t v = 0; v < 4 && (v + 1) * s->stride[0] + s->offset[0] <= s->vb[0]->desc[0]; v++) {
+                char vl[160]; size_t at = 0;
+                for (uint32_t j = 0; j < per; j++) at += (size_t)snprintf(vl + at, sizeof vl - at, " %g", f[v * s->stride[0] / 4 + j]);
+                vx_log("ps %08x vb0 vertex %u:%s", ps->hash, v, vl);
+            }
+        }
+        // and the render targets as they are before this draw (what the earlier draws left there): file.rt<n>.png
+        for (int i = 0; i < 8; i++) if (c->rtv[i] && c->rtv[i]->resource->kind == K_TEXTURE) {
+            char path[1024];
+            snprintf(path, sizeof path, "%s.rt%d.png", prefix, i);
+            d3d_texture_png(c->base.dev, ((d3d_texture *)c->rtv[i]->resource)->mtl, path);
         }
     }
 }
