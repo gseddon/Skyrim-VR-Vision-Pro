@@ -24,6 +24,10 @@ How to read the columns:
 | 2 | `ClearUnorderedAccessViewFloat/Uint` on textures | Clears the view's mips/slices | `6040c1d` (branch `worktree-agent-ac034f1dbaf0b07a2`) | awaiting check-arm64 + replay check | none | per call, only when the game clears; not measured | None yet. Owned test fails 6 checks before |
 | 3 | Safe math for D3D11 shaders (no fast math) | IEEE NaN/Inf behaviour | `82b282f` (branch `worktree-agent-a1f880ed1969adbf5`) | awaiting replay check | `VXRT_D3D11_FAST_MATH=1` | shader compile time within noise (≈5–7 ms either way); **GPU time per frame not measured** — the likeliest of these to cost frame time | None yet. Owned test: NaN self-compare folded to false under fast math |
 
+Related, not a Metal guarantee but a missing Windows feature: xWMA (WMA v2) decoding in XAudio2, merged `43e882f`.
+Cost: about 0.12 s CPU to decode a 185 s stereo track, done packet by packet as it plays. Off: none (WMA was silent
+before, so there is nothing to fall back to).
+
 ## Not yet done (from the audit)
 
 Gaps 6–18: depth-bias scale, depth-array clears and layered passes, `Map(WRITE)` on mipped/array staging textures,
