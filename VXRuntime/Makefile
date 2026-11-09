@@ -286,7 +286,7 @@ $(VXRT_ARM64_TARGET): src/native_vr.h src/native_openvr.h $(ARM64_SRC) src/npu_i
 
 tests: build/hello_k32.exe build/hello_crt.exe build/threads.exe build/cxx_exceptions.exe build/hw_exceptions.exe build/seh_try.exe build/unwind.exe build/breakpoint.exe build/child_stdout.exe \
        build/files.exe build/ini.exe build/dll_test.exe build/vxplugin.dll build/dllprobe.exe \
-       build/window.exe build/winsta.exe build/scm.exe build/net.exe build/winhttp.exe build/winhttp_proxy.exe build/iphlp.exe build/winsock_nsp.exe build/midi.exe build/directinput.exe build/msvc_eh.exe build/com.exe build/msxml.exe build/vxcom.dll build/iocp.exe build/d3d11.exe build/egl_host.exe build/gl.exe build/hlslc.exe build/dxbc2msl build/draw.exe build/compute.exe build/d3d12.exe build/d3d12_engine.exe build/d3d12_fxc.exe build/d3d11on12.exe build/input.exe build/xinput_script.exe build/audio.exe build/xaudio2.exe build/dwrite.exe build/dxbcscan build/pipes.exe build/ipc.exe build/shared.exe build/steam.exe build/smc.exe build/order.exe build/lowmem.exe build/clip.exe build/shoplist.exe build/vulkan_win.exe build/vulkan_features.exe build/vulkan_shaders.exe build/game_imports.exe build/ucrt_extra.exe build/kernelx.exe build/jobs.exe build/security.exe \
+       build/window.exe build/winsta.exe build/scm.exe build/net.exe build/winhttp.exe build/winhttp_proxy.exe build/iphlp.exe build/winsock_nsp.exe build/midi.exe build/directinput.exe build/msvc_eh.exe build/com.exe build/msxml.exe build/vxcom.dll build/iocp.exe build/d3d11.exe build/egl_host.exe build/gl.exe build/hlslc.exe build/dxbc2msl build/draw.exe build/compute.exe build/d3d12.exe build/d3d12_engine.exe build/d3d12_fxc.exe build/d3d11on12.exe build/input.exe build/xinput_script.exe build/audio.exe build/xaudio2.exe build/xaudio2_27.exe build/dwrite.exe build/dxbcscan build/pipes.exe build/ipc.exe build/shared.exe build/steam.exe build/smc.exe build/order.exe build/lowmem.exe build/clip.exe build/shoplist.exe build/vulkan_win.exe build/vulkan_features.exe build/vulkan_shaders.exe build/game_imports.exe build/ucrt_extra.exe build/kernelx.exe build/jobs.exe build/security.exe \
        build/sysdlls.exe build/dbghelp.exe build/crypt32.exe build/webhelper_apis.exe build/steam_client_ui.exe build/handle_xfer.exe build/open_thread.exe build/version_info.exe build/section_access.exe build/dbfiles.exe build/updater_files.exe build/shlock.exe build/net_events.exe build/regwait.exe build/tcptable.exe build/winprops.exe build/a11y.exe build/gdi_xform.exe build/view_align.exe \
        build/client_imports.exe build/hello32.exe build/clipboard.exe build/input_route.exe build/name_reuse.exe
 
@@ -1085,6 +1085,10 @@ build/xaudio2.exe: tests/xaudio2.c
 	@mkdir -p build
 	$(MINGW) -O1 -o $@ $< -lxaudio2_9 -lm
 
+build/xaudio2_27.exe: tests/xaudio2_27.c
+	@mkdir -p build
+	$(MINGW) -O1 -o $@ $< -lole32 -luuid -lm
+
 build/dwrite.exe: tests/dwrite.c
 	@mkdir -p build
 	$(MINGW) -O1 -o $@ $< -ldwrite -lgdi32 -lm
@@ -1699,6 +1703,7 @@ runtime-tests: $(VXRT) tests
 	VXRT_XINPUT_SCRIPT=3:A+START:1 $(VXRT) build/xinput_script.exe
 	$(VXRT) build/audio.exe
 	$(VXRT) build/xaudio2.exe
+	VXRT_MUTE=1 $(VXRT) build/xaudio2_27.exe
 	$(VXRT) build/dwrite.exe
 	$(VXRT) build/pipes.exe
 	$(VXRT) build/pipes.exe serve & server=$$!; $(VXRT) build/pipes.exe ask; client_status=$$?; wait $$server; server_status=$$?; test $$client_status -eq 0 -a $$server_status -eq 0

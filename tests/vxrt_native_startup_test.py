@@ -173,6 +173,17 @@ class ProbeTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 probe.capture(self.args)
 
+    def test_xinput_repeat_expands_merges_and_is_validated(self):
+        self.assertEqual(probe.expand_xinput_repeat('A@30-36/3'), '30:A:0.2,33:A:0.2,36:A:0.2')
+        self.assertEqual(probe.expand_xinput_repeat('START@10-12/1:0.5', '11.5:B:0.3'), '10:START:0.5,11:START:0.5,11.5:B:0.3,12:START:0.5')
+        for bad in ('A', 'A@30-20/3', 'A@30-40/0.2', 'A@30-40/0.2:0.2', 'A@30-40/1:1', 'A@0-9999/1', '@30-40/3'):
+            with self.assertRaises(ValueError):
+                probe.expand_xinput_repeat(bad)
+        self.args.xinput_repeat = 'A@30-33/3'
+        result = probe.capture(self.args)
+        self.assertEqual(result['environment']['VXRT_XINPUT_SCRIPT'], '30:A:0.2,33:A:0.2')
+        self.assertIn('not a physical controller', result['diagnostic']['xinput_script_scope'])
+
     def test_stay_active_is_opt_in_and_labelled(self):
         result = probe.capture(self.args)
         self.assertNotIn('VXRT_STAY_ACTIVE', result['environment'])
