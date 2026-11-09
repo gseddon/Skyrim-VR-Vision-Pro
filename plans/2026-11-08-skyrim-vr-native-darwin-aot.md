@@ -23,6 +23,8 @@ The confirmed XR revision reuses selected Klepton OpenXR and visionOS host code 
 
 Distribution follow-on (2026-11-09): the user wants this runtime usable as an [AVP Play](https://github.com/myMartek/avp-play) backend, for its Steam fetching, signing, install, start window, play area and controller settings. See [the AVP Play backend plan](2026-11-09-avp-play-backend.md) and its [research](../research/2026-11-09-avp-play-backend.md). It begins only after Skyrim runs from our visionOS app; it does not reorder the milestones above.
 
+Compatibility fixes (2026-11-09): every change made because Windows guarantees something Metal does not (zeroed resources, unbound reads, IEEE math, ...) is tracked with its cost, off switch and game evidence in [the compatibility-fix ledger](2026-11-09-windows-metal-compat-fixes.md), so any that cost too much can be dropped knowingly.
+
 ## Source control and active checkout
 
 The source-only checkpoint is published in `gseddon/Skyrim-VR-Vision-Pro`, branch
