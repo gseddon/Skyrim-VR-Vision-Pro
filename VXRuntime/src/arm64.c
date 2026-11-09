@@ -200,6 +200,15 @@ static __attribute__((noinline)) void callback_depth_check(uint64_t fn) {
 void *vx_x86_return_address(void) {
     return t_ctx && t_ctx->gpr[4] ? (void *)(uintptr_t)*(uint64_t *)(uintptr_t)t_ctx->gpr[4] : NULL;
 }
+// (diagnostics: the first n words of the guest's stack, from its return address up, that lie in [lo, hi): candidate
+// return addresses of the frames above)
+int vx_x86_stack_words(uint64_t *out, int n, uint64_t lo, uint64_t hi) {
+    int k = 0;
+    if (!t_ctx || !t_ctx->gpr[4]) return 0;
+    const uint64_t *sp = (const uint64_t *)(uintptr_t)t_ctx->gpr[4];
+    for (int i = 0; i < 512 && k < n; i++) if (sp[i] >= lo && sp[i] < hi) out[k++] = sp[i];
+    return k;
+}
 void vx_arm64_thread_exit(void) { free(t_ctx); t_ctx = NULL; t_level = NULL; free(t_callbacks); t_callbacks = NULL;
     t_native_stack_low = t_native_stack_high = t_native_tid = 0; }
 void *vx_seh_level_begin(const x86_ctx *outer);

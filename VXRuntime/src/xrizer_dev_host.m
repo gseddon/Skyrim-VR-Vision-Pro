@@ -32,6 +32,7 @@ extern int vx_xrizer_dev_audit_observe(uint32_t variant);
 @property(nonatomic) KlNativeFrameSample sample;
 @property(nonatomic) XrTime inputTime;
 @property(nonatomic) uint64_t nextFrame;
+@property(nonatomic) XrTime deadline;   // when the next frame is due (one 90 Hz period after the previous one)
 @property(nonatomic) unsigned width, height;
 @property(nonatomic) BOOL outstanding;
 /* Opt-in development choice (VXRT_XRIZER_DEV_STAGE=1): declare the synthetic local origin to be the floor. */
@@ -111,9 +112,17 @@ static XrResult input(void *p,KlNativeInputSample *out) {
 }
 static XrResult wait_frame(void *p,KlNativeFrameSample *out) {
     VXDevXRHost *h=host(p); if (!h || !out || h.outstanding) return XR_ERROR_RUNTIME_FAILURE;
-    struct timespec delay={0,11111111};
-    while (nanosleep(&delay,&delay)) if (errno!=EINTR) return XR_ERROR_RUNTIME_FAILURE;
-    XrTime t=now_ns(); if (!t || h.nextFrame==UINT64_MAX) return XR_ERROR_RUNTIME_FAILURE;
+    // Paced like a 90 Hz display: a frame is due one period after the previous one was, so the program's own frame
+    // time counts toward it (a fixed sleep after each frame added a whole period to every frame).
+    // A late frame is not made up for: the next one is due a period after now.
+    XrTime t=now_ns(); if (!t) return XR_ERROR_RUNTIME_FAILURE;
+    if (h.deadline>t) {
+        struct timespec delay={(time_t)((h.deadline-t)/1000000000),(long)((h.deadline-t)%1000000000)};
+        while (nanosleep(&delay,&delay)) if (errno!=EINTR) return XR_ERROR_RUNTIME_FAILURE;
+        t=now_ns(); if (!t) return XR_ERROR_RUNTIME_FAILURE;
+    }
+    h.deadline=(h.deadline>t ? h.deadline : t)+INT64_C(11111111);
+    if (h.nextFrame==UINT64_MAX) return XR_ERROR_RUNTIME_FAILURE;
     uint64_t id=++h.nextFrame;
     *out=(KlNativeFrameSample){.ticket=(__bridge void *)h,.frame_id=id,.pose_id=id,.predicted_display_time=t+INT64_C(11111111),
         .predicted_display_period=INT64_C(11111111),.should_render=XR_TRUE,

@@ -252,13 +252,27 @@ static WINAPI matrix34 *fntable_transform(matrix34 *out, int eye) {
     require(native_system_fns && out); native_transform_c_fn fn = (native_transform_c_fn)native_system_fns[4];
     *out = fn(eye); return out;
 }
+// (TrackedDevicePose_t, 80 bytes on both sides: a 3x4 matrix, two vectors, eTrackingResult, bPoseIsValid, bDeviceIsConnected)
+static void note_poses(const char *what, int result, const void *render, uint32_t count) {
+    static unsigned calls; calls++;
+    if (calls > 5 && calls % 900) return;
+    const uint8_t *p = render ? VX_LOW(render) : NULL;
+    int32_t tracking = 0; float m[12] = { 0 };
+    if (p && count) { memcpy(m, p, sizeof m); memcpy(&tracking, p + 72, 4); }
+    vx_log("xrizer_guest_bridge: %s call %u result %d, %u render poses; HMD tracking %d valid %u connected %u position %.3f %.3f %.3f", what, calls, result,
+           count, tracking, p && count ? p[76] : 0, p && count ? p[77] : 0, m[3], m[7], m[11]);
+}
 static WINAPI int wait_poses(guest_object *self, void *render, uint32_t render_count, void *game, uint32_t game_count) {
     require(self == &compositor); native_wait_fn fn = (native_wait_fn)native_table(self)[2];
-    return fn(self->native, render, render_count, game, game_count);
+    int r = fn(self->native, render, render_count, game, game_count);
+    note_poses("WaitGetPoses", r, render, render_count);
+    return r;
 }
 static WINAPI int last_poses(guest_object *self, void *render, uint32_t render_count, void *game, uint32_t game_count) {
     require(self == &compositor); native_wait_fn fn = (native_wait_fn)native_table(self)[3];
-    return fn(self->native, render, render_count, game, game_count);
+    int r = fn(self->native, render, render_count, game, game_count);
+    note_poses("GetLastPoses", r, render, render_count);
+    return r;
 }
 static WINAPI int one_pose(guest_object *self, uint32_t index, void *render, void *game) {
     require(self == &compositor); native_one_pose_fn fn = (native_one_pose_fn)native_table(self)[4];
@@ -312,7 +326,11 @@ static WINAPI uint32_t string_property(guest_object *self, uint32_t device, int 
     return result;
 }
 static WINAPI uint8_t input_available(guest_object *self) {
-    require(self == &system_object); native_present_fn fn = (native_present_fn)native_table(self)[39]; return fn(self->native);
+    require(self == &system_object); native_present_fn fn = (native_present_fn)native_table(self)[39];
+    uint8_t r = fn(self->native);
+    static unsigned calls; calls++;
+    if (calls <= 3 || !(calls % 1000)) vx_log("xrizer_guest_bridge: System019 slot39 IsInputAvailable %u (call %u)", r, calls);
+    return r;
 }
 static WINAPI void tracking_space(guest_object *self, int origin) {
     require(self == &compositor); native_tracking_fn fn = (native_tracking_fn)native_table(self)[0];
