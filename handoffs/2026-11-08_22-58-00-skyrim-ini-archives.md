@@ -31,3 +31,9 @@ Subject: actual Skyrim VR on the native arm64 host with the dev host (a syntheti
 - New opt-in diagnostics: `--wait-dump`, `--trace-call-ring`, and `fopen` lines under `--trace-files`.
 - Next: (1) find what raises the signals (a `sigaction` handler count by signal number, opt-in) and whether they are frequent in AOT code; (2) check the two failing shaders as the black-model cause; (3) a second execution mode for comparison, if one can drive the same dev host.
 
+## Update 00:30 (signals fixed; static image after loading)
+- Root cause of the slow load: 55 M `ldapr`/`stlr` alignment signals; modules regenerated with the split profile (recipe in the continuation plan, 00:25 entry). Loading now takes about 30 s. New strict-AOT misses came from a wrong jump-table bound in the generator (roots work around it).
+- `GetFrameTiming` (compositor slot 8) added to the guest bridge; the game no longer aborts.
+- Open: after loading, the image is static (one white bar on black). Next: find what the game is doing after loading (call ring/`sample`, which windows/menus, any waits on input), and whether the white bar is the title menu with missing content.
+- Modules to use: `--aot-dir build/private/skyrimvr/<original-sha>/aot-splits` (worktree `terra-skyrim-aot`); host `VXRuntime/build/terra-stage/vxrt-arm64` SHA `52d3b26f…`.
+

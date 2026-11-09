@@ -27,6 +27,7 @@ typedef matrix34 (*native_transform_c_fn)(int);
 typedef int (*native_wait_fn)(void *, void *, uint32_t, void *, uint32_t);
 typedef int (*native_one_pose_fn)(void *, uint32_t, void *, void *);
 typedef void (*native_handoff_fn)(void *);
+typedef uint8_t (*native_frame_timing_fn)(void *, void *, uint32_t);
 typedef void (*native_tracking_fn)(void *, int);
 typedef int (*native_submit_fn)(void *, int, const void *, const void *, int);
 static void *core_table[7], *system_table[47], *compositor_table[44], *system_fns[47];
@@ -334,6 +335,15 @@ static WINAPI int submit(guest_object *self, int eye, const void *texture, const
 static WINAPI void handoff(guest_object *self) {
     require(self == &compositor); native_handoff_fn fn = (native_handoff_fn)native_table(self)[7]; fn(self->native);
 }
+// IVRCompositor_022 slot 8, GetFrameTiming(Compositor_FrameTiming *, uint32_t framesAgo) -> bool. The structure starts with its own
+// m_nSize and is `#pragma pack(4)` in openvr_driver.h on every platform (its one double sits at byte 24, already aligned), so the
+// Windows and Apple layouts are the same; xrizer reads that size and fills only what fits, so the guest's pointer goes through
+// as it does for the pose arrays.
+static WINAPI uint8_t frame_timing(guest_object *self, void *timing, uint32_t frames_ago) {
+    require(self == &compositor);
+    native_frame_timing_fn fn = (native_frame_timing_fn)native_table(self)[8];
+    return fn(self->native, timing, frames_ago);
+}
 static WINAPI uint8_t can_render_scene(guest_object *self) {
     require(self == &compositor);
     native_present_fn fn = (native_present_fn)native_table(self)[24];
@@ -490,7 +500,7 @@ void *vx_xrizer_guest_core(void *native_core) {
     core_table[0] = core_init; core_table[1] = core_cleanup; core_table[2] = core_version; core_table[3] = core_interface; core_table[4] = core_present;
     system_table[0] = render_size; system_table[1] = member_projection; system_table[2] = projection_raw; system_table[4] = member_transform;
     system_table[7] = dxgi_output; system_table[18] = controller_index; system_table[28] = string_property; system_table[30] = poll_event; system_table[33] = hidden_area_mesh; system_table[39] = input_available;
-    compositor_table[0] = tracking_space; compositor_table[2] = wait_poses; compositor_table[3] = last_poses; compositor_table[4] = one_pose; compositor_table[5] = submit; compositor_table[7] = handoff; compositor_table[24] = can_render_scene;
+    compositor_table[0] = tracking_space; compositor_table[2] = wait_poses; compositor_table[3] = last_poses; compositor_table[4] = one_pose; compositor_table[5] = submit; compositor_table[7] = handoff; compositor_table[8] = frame_timing; compositor_table[24] = can_render_scene;
     system_fns[1] = fntable_projection; system_fns[2] = fntable_raw; system_fns[4] = fntable_transform;
     cleaned = 0; core.native = native_core; return &core;
 }
