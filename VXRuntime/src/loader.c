@@ -38,6 +38,7 @@
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #include <mach-o/ldsyms.h>
+#include <libproc.h>
 
 vx_process vx_proc;
 int vx_trace;
@@ -703,6 +704,19 @@ static int in_arena(uint64_t a, uint64_t n) {
 // file, the modules' own dylibs, frameworks), so with the address only hinted for mmap it was taken in about every other
 // start. The range is reserved first thing in main, before anything is mapped, and load_pe maps over the reservation.
 static uint64_t g_main_resv_base, g_main_resv_size;
+// Says what already sits in [base, base+size): each mapping that overlaps it, with its permissions, tag and file.
+static void log_range_owners(uint64_t base, uint64_t size) {
+    mach_vm_address_t a = base; natural_t depth = 0;
+    for (int i = 0; i < 16; i++) {
+        mach_vm_size_t sz = 0; struct vm_region_submap_info_64 info; mach_msg_type_number_t cnt = VM_REGION_SUBMAP_INFO_COUNT_64;
+        if (mach_vm_region_recurse(mach_task_self(), &a, &sz, &depth, (vm_region_recurse_info_t)&info, &cnt) != KERN_SUCCESS || a >= base + size) break;
+        if (info.is_submap) { depth++; continue; }
+        char file[1024] = "";
+        if (info.share_mode != SM_EMPTY) proc_regionfilename(getpid(), a, file, sizeof file);
+        vx_log("loader:   %#llx-%#llx prot=%d/%d user_tag=%u share=%d %s", (unsigned long long)a, (unsigned long long)(a + sz), info.protection, info.max_protection, info.user_tag, info.share_mode, file);
+        a += sz;
+    }
+}
 static int reserve_main_image(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return 1;                                           // (load_pe reports it)
@@ -715,8 +729,9 @@ static int reserve_main_image(const char *path) {
     uint64_t base; uint32_t size; memcpy(&base, h + pe + 24 + 24, 8); memcpy(&size, h + pe + 24 + 56, 4);
     if (!base || !size || base < 0x100000000ull) return 1;
     mach_vm_address_t a = base;
-    if (mach_vm_allocate(mach_task_self(), &a, size, VM_FLAGS_FIXED) != KERN_SUCCESS) {
+    if (!xa_take_reserved("__VXIMG", base, size) && mach_vm_allocate(mach_task_self(), &a, size, VM_FLAGS_FIXED) != KERN_SUCCESS) {
         vx_log("loader: the program's preferred range %#llx-%#llx is already taken", (unsigned long long)base, (unsigned long long)(base + size));
+        log_range_owners(base, size);
         return 0;
     }
     g_main_resv_base = base; g_main_resv_size = size;
