@@ -9,6 +9,8 @@
 #include <dlfcn.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
+#include <mach-o/dyld.h>
+#include <mach-o/getsect.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -141,6 +143,22 @@ uint64_t xa_arena_size(void) {
     return 0x20000000ull;
 #endif
 }
+// Takes [a, a+n) (made in advance, from the host's own start) out of the host's reserved segment `seg` (src/addr_resv.S) when
+// that segment holds all of it: the segment's pages are replaced by fresh ones in place, so nothing can have been mapped
+// there in between. 0 when the range is not inside it (or the host has no such segment: visionOS, another build).
+int xa_take_reserved(const char *seg, uint64_t a, uint64_t n) {
+#if VX_XROS
+    (void)seg; (void)a; (void)n;
+    return 0;
+#else
+    unsigned long sz = 0;
+    const struct mach_header_64 *mh = (const struct mach_header_64 *)_dyld_get_image_header(0);   // (image 0: the program)
+    uint8_t *lo = mh ? getsegmentdata(mh, seg, &sz) : NULL;
+    if (!lo || a < (uint64_t)(uintptr_t)lo || a + n > (uint64_t)(uintptr_t)lo + sz) return 0;
+    mach_vm_address_t at = a;
+    return mach_vm_allocate(mach_task_self(), &at, n, VM_FLAGS_FIXED | VM_FLAGS_OVERWRITE) == KERN_SUCCESS && at == a;
+#endif
+}
 int xa_reserve(void) {
     if (g_arena_hi) return 1;                                  // (visionOS: the app reserves it first, xros/app)
     if (getenv("VXRT_AOT_MAPDUMP")) {
@@ -154,7 +172,7 @@ int xa_reserve(void) {
     }
     mach_vm_address_t a = xa_arena_base();
     mach_vm_size_t n = xa_arena_size();
-    if (mach_vm_allocate(mach_task_self(), &a, n, VM_FLAGS_FIXED) == KERN_SUCCESS) { g_arena_lo = a; g_arena_hi = a + n; return 1; }
+    if (xa_take_reserved("__VXARN", a, n) || mach_vm_allocate(mach_task_self(), &a, n, VM_FLAGS_FIXED) == KERN_SUCCESS) { g_arena_lo = a; g_arena_hi = a + n; return 1; }
     else {
         vx_log("aot: the image arena at %#llx is taken: modules there are not used", (unsigned long long)a);
         mach_vm_address_t r = a; mach_vm_size_t rs; vm_region_basic_info_data_64_t info; mach_port_t o;
