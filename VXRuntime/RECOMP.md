@@ -179,8 +179,10 @@ menu to El Coyote (`runs/avp_mem/tools/table.py`).
   run what is not. The profile loop (misses → roots) is how coverage gets there.
 - **Ordering.** No TSO there, as here: the ordered accesses (LDAPR / STLR) and the split profile carry over as they
   are. Any split the profile missed is still a signal, which works on visionOS but is slow.
-- **Arena.** The arena's fixed address (0xf00000000) has to be reserved before the system's randomized regions fall.
-  Here the process starts again when it is covered; an app can reserve it in its first initializer instead.
+- **Arena.** The arena's fixed address (0x300000000 on the Mac; the earlier 0xf00000000 was inside the band where macOS
+  places two random 12 GB GPU carveouts, which are always at or above 0x400000000) has to be reserved before anything
+  else lands there. Here the process starts again when it is covered; an app can reserve it in its first initializer
+  instead. Modules made for another arena need `VXRT_AOT_ARENA=<hex>` to match.
 - **Mac-only today.** Steam's DLLs and the Windows Steam client are not part of the visionOS app. `dlopen` from a
   hash-named directory, `_NSGetExecutablePath` with `execv` for the restart, and the `vxrt-npu` helper process
   (`posix_spawn`, not allowed on visionOS) all have to change.
