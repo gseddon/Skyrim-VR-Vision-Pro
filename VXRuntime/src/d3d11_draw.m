@@ -809,8 +809,15 @@ static void trace_shared_bind(d3d_view *v) {
         vx_log("shared slot %d (%ux%u, DXGI format %u): bound for shaders %u times", slot, t->desc[TD_WIDTH], t->desc[TD_HEIGHT], t->desc[TD_FORMAT], k);
     }
 }
+int vx_draw_trace_active;                                     // (VXRT_TRACE_DRAWS is logging: set below)
 static void set_srvs(d3d_context *c, int st, uint32_t start, uint32_t n, d3d_view *const *v) {
     d3d_draw_state *s = state_of(c);
+    if (vx_draw_trace_active && st == STAGE_PS) {
+        char line[400]; size_t k = 0;
+        for (uint32_t i = 0; i < n && i < 16 && k < sizeof line - 24; i++)
+            k += (size_t)snprintf(line + k, sizeof line - k, " t%u=@%05lx", start + i, v && v[i] && v[i]->resource ? (unsigned long)((uintptr_t)v[i]->resource >> 4 & 0xfffff) : 0ul);
+        vx_log("set ps srvs%s", line);
+    }
     for (uint32_t i = 0; i < n && start + i < 64; i++) { bind(&s->srv[st][start + i], v ? v[i] : NULL); if (v) trace_shared_bind(v[i]); }
 }
 static WINAPI void vs_set_srvs(void *this, uint32_t start, uint32_t n, d3d_view *const *v) { set_srvs(this, STAGE_VS, start, n, v); }
@@ -1822,35 +1829,46 @@ static void trace_draw(d3d_context *c, d3d_draw_state *s) {
     if (left == -2) return;
     if (!left) { static int polls; if (++polls % 64 || access(path, F_OK)) return; left = 300; }
     left--;
+    vx_draw_trace_active = left > 0;
     char line[1024]; size_t k = 0;
     d3d_shader *vs = s->shader[STAGE_VS], *ps = s->shader[STAGE_PS];
     k += (size_t)snprintf(line + k, sizeof line - k, "draw vs %08x ps %08x", vs ? vs->hash : 0, ps ? ps->hash : 0);
     for (int i = 0; i < 8; i++) if (c->rtv[i]) {
         d3d_texture *t = (d3d_texture *)c->rtv[i]->resource;
-        k += (size_t)snprintf(line + k, sizeof line - k, " rt%d %ux%u f%u%s", i, t->desc[TD_WIDTH], t->desc[TD_HEIGHT], c->rtv[i]->format, t->shared ? "S" : "");
+        k += (size_t)snprintf(line + k, sizeof line - k, " rt%d %ux%u f%u%s @%05lx", i, t->desc[TD_WIDTH], t->desc[TD_HEIGHT], c->rtv[i]->format, t->shared ? "S" : "", (unsigned long)((uintptr_t)t >> 4 & 0xfffff));
     }
     for (int i = 0; i < 16 && k < sizeof line - 64; i++) if (s->srv[STAGE_PS][i] && s->srv[STAGE_PS][i]->resource->kind == K_TEXTURE) {
         d3d_view *v = s->srv[STAGE_PS][i]; d3d_texture *t = (d3d_texture *)v->resource;
-        k += (size_t)snprintf(line + k, sizeof line - k, " t%d %ux%u f%u d%u%s", i, t->desc[TD_WIDTH], t->desc[TD_HEIGHT], v->format, v->dim, t->shared ? "S" : "");
+        k += (size_t)snprintf(line + k, sizeof line - k, " t%d %ux%u f%u d%u%s @%05lx", i, t->desc[TD_WIDTH], t->desc[TD_HEIGHT], v->format, v->dim, t->shared ? "S" : "", (unsigned long)((uintptr_t)t >> 4 & 0xfffff));
     }
+    if (s->blend && k < sizeof line - 80) {
+        const uint32_t *rt = s->blend->desc + 2;
+        snprintf(line + k, sizeof line - k, " blend %u rgb %u,%u,%u a %u,%u,%u mask %x", rt[0], rt[1], rt[2], rt[3], rt[4], rt[5], rt[6], rt[7]);
+    } else if (k < sizeof line - 16) snprintf(line + k, sizeof line - k, " noblend");
     vx_log("%s", line);
-    // VXRT_DRAW_SNAPSHOT=<ps hash>:<file prefix>: the textures that pixel shader reads, as PNGs, once.
-    static int done;
+    // VXRT_DRAW_SNAPSHOT=<ps hash>:<file prefix>[,<ps hash>:<file prefix>...]: the textures each of those pixel shaders reads
+    // (and the constants it is given), as PNGs, once each.
+    static int done[8];
     const char *ds = getenv("VXRT_DRAW_SNAPSHOT");
-    char want[16];
-    if (!done && ds && ps && sscanf(ds, "%8[0-9a-f]", want) == 1 && strtoul(want, NULL, 16) == ps->hash && strchr(ds, ':')) {
-        done = 1;
+    for (int n = 0; ds && ps && n < 8; n++) {
+        char want[16];
+        const char *colon = strchr(ds, ':');
+        if (!colon || sscanf(ds, "%8[0-9a-f]", want) != 1) break;
+        char prefix[900]; size_t pl = strcspn(colon + 1, ","); snprintf(prefix, sizeof prefix, "%.*s", (int)pl, colon + 1);
+        const char *next = colon + 1 + pl; ds = *next == ',' ? next + 1 : NULL;
+        if (done[n] || strtoul(want, NULL, 16) != ps->hash) continue;
+        done[n] = 1;
         d3d_flush(c->base.dev, 1);
         for (int b = 0; b < 4; b++) if (s->cb[STAGE_PS][b]) {
             id<MTLBuffer> mb = (__bridge id<MTLBuffer>)s->cb[STAGE_PS][b]->mtl;
             if (mb.storageMode != MTLStorageModeShared) continue;
             const float *f = (const float *)((const uint8_t *)mb.contents + s->cb[STAGE_PS][b]->off + s->cb_offset[STAGE_PS][b]);
             for (NSUInteger r = 0; r < MIN(s->cb[STAGE_PS][b]->desc[0] / 16, 16u); r++)
-                vx_log("ps cb%d[%lu] = %g %g %g %g", b, (unsigned long)r, f[4 * r], f[4 * r + 1], f[4 * r + 2], f[4 * r + 3]);
+                vx_log("ps %08x cb%d[%lu] = %g %g %g %g", ps->hash, b, (unsigned long)r, f[4 * r], f[4 * r + 1], f[4 * r + 2], f[4 * r + 3]);
         }
         for (int i = 0; i < 16; i++) if (s->srv[STAGE_PS][i] && s->srv[STAGE_PS][i]->resource->kind == K_TEXTURE) {
             char path[1024];
-            snprintf(path, sizeof path, "%s.t%d.png", strchr(ds, ':') + 1, i);
+            snprintf(path, sizeof path, "%s.t%d.png", prefix, i);
             d3d_texture_png(c->base.dev, ((d3d_texture *)s->srv[STAGE_PS][i]->resource)->mtl, path);
         }
     }
@@ -2773,6 +2791,7 @@ static WINAPI void ctx_resolve(void *this, d3d_object *dst, uint32_t dst_sub, d3
     (void)format;
     d3d_context *c = this;
     HELD_OP(4);
+    if (vx_draw_trace_active && dst && src) vx_log("resolve dst @%05lx sub %u <- src @%05lx sub %u", (unsigned long)((uintptr_t)dst >> 4 & 0xfffff), dst_sub, (unsigned long)((uintptr_t)src >> 4 & 0xfffff), src_sub);
     if (!dst || !src || dst->kind != K_TEXTURE || src->kind != K_TEXTURE) return;
     d3d_texture *ds = (d3d_texture *)dst, *ss = (d3d_texture *)src;
     id<MTLTexture> st = (__bridge id<MTLTexture>)ss->mtl, dt = (__bridge id<MTLTexture>)ds->mtl;

@@ -173,6 +173,15 @@ class ProbeTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 probe.capture(self.args)
 
+    def test_stay_active_is_opt_in_and_labelled(self):
+        result = probe.capture(self.args)
+        self.assertNotIn('VXRT_STAY_ACTIVE', result['environment'])
+        self.args.stay_active = True
+        self.args.out = str(Path(self.args.out).parent/'stay-active-out')
+        result = probe.capture(self.args)
+        self.assertEqual(result['environment']['VXRT_STAY_ACTIVE'], '1')
+        self.assertIn('not an input or tracking claim', result['diagnostic']['stay_active'])
+
     def test_null_target_cli_flag_reaches_capture(self):
         args = ['probe', '--exe', 'x', '--runtime', 'r', '--aot-dir', 'a',
                 '--asset-root', 'assets', '--out', 'out', '--trace-null-target']

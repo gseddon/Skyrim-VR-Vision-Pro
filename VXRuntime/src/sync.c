@@ -1038,7 +1038,7 @@ static WINAPI DWORD WaitForMultipleObjects(DWORD n, const HANDLE *hs, BOOL all, 
 // waiting for over 3 seconds: the thread's name, what it waits for (the first object's type and name, the timeout)
 // and the program's return addresses on its stack. A thread blocked for good (a deadlock, a wake-up that never came)
 // shows up there.
-typedef struct wait_note { DWORD tid, n, ms; uint64_t since; int type; char name[96], from[200]; struct wait_note *next; } wait_note;
+typedef struct wait_note { DWORD tid, n, ms; uint64_t since; int type; char name[96], from[480]; struct wait_note *next; } wait_note;
 static wait_note *g_wait_notes;
 static pthread_mutex_t g_wait_notes_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_wait_dump = -1;
@@ -1074,9 +1074,12 @@ static void wait_note_begin(DWORD n, DWORD ms, vx_object *first) {
     wait_note *w = t_wait_note;
     char tname[48] = "";
     pthread_getname_np(pthread_self(), tname, sizeof tname);
-    char from[200] = ""; size_t len = 0;
+    char from[480] = ""; size_t len = 0;
     uint64_t *sp = __builtin_frame_address(0);
-    for (int i = 0, found = 0; i < 600 && found < 5 && len < sizeof from; i++) {
+    uint64_t *top = (uint64_t *)pthread_get_stackaddr_np(pthread_self());   // (up to the stack's end: a worker's program frames can sit far up)
+    int limit = top > sp ? (int)(top - sp) : 600;
+    if (limit > 32768) limit = 32768;
+    for (int i = 0, found = 0; i < limit && found < 12 && len + 40 < sizeof from; i++) {
         const vx_image *m = vx_image_at(sp[i]);
         if (!m) continue;
         len += (size_t)snprintf(from + len, sizeof from - len, " %s+%#llx", m->name, (unsigned long long)(sp[i] - (uint64_t)(uintptr_t)m->base));

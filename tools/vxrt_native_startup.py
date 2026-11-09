@@ -255,6 +255,9 @@ def capture(args):
             env['VXRT_XINPUT_SCRIPT'] = spec
             result.setdefault('diagnostic', {})['xinput_script'] = spec
             result['diagnostic']['xinput_script_scope'] = 'scripted virtual gamepad (times from process start); not a physical controller or tracking claim'
+        if getattr(args, 'stay_active', False):
+            env['VXRT_STAY_ACTIVE'] = '1'
+            result.setdefault('diagnostic', {})['stay_active'] = 'game window stays the active window when the Mac is busy elsewhere (as in a headset session); not an input or tracking claim'
         if getattr(args, 'fault_objects', False):
             env['VXRT_FAULT_OBJECTS'] = '1'
             result.setdefault('diagnostic', {})['fault_objects'] = 'register pointee dump at an unhandled fault'
@@ -335,6 +338,7 @@ def main():
     ap.add_argument('--dump-eyes', action='store_true', help='diagnostic only: the experimental dev host writes raw RGBA of the published eyes for frames 1, 2, 60, 300 and 600 under <out>/eyes')
     ap.add_argument('--diag-env', action='append', metavar='NAME[=VALUE]', help='diagnostic only, repeatable: one of the renderer tracing knobs (%s)' % ', '.join(sorted(DIAG_ENV)))
     ap.add_argument('--xinput-script', default=None, metavar='SPEC', help='diagnostic only: VXRT_XINPUT_SCRIPT, a scripted virtual gamepad START_S:BUTTONS:HOLD_S[,...] (e.g. 40:A:0.3) with times from process start')
+    ap.add_argument('--stay-active', action='store_true', help='VXRT_STAY_ACTIVE=1: the game window stays the active window when the Mac moves on to another app (a game played in a headset is seldom frontmost; an inactive Skyrim pauses its world)')
     ap.add_argument('--aot-splits', default=None, metavar='FILE', help='diagnostic only: VXRT_AOT_SPLITS file the runtime writes with the x86 instructions whose ordered access crossed 16 bytes (input for vxrt-aot)')
     ap.add_argument('--wait-dump', default=None, help='diagnostic only: VXRT_WAIT_DUMP seconds list, e.g. 30,50: log threads blocked in waits, with their guest return addresses')
     ap.add_argument('--fault-objects', action='store_true', help='diagnostic only: at an unhandled fault, log what each register points at (VXRT_FAULT_OBJECTS=1)')
