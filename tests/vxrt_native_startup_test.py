@@ -163,6 +163,16 @@ class ProbeTest(unittest.TestCase):
         self.assertEqual(sealed['derived'], [])
         self.assertEqual(sealed['level'], None)
 
+    def test_xinput_script_is_validated_and_labelled_diagnostic(self):
+        self.args.xinput_script = '40:A:0.3,50:START+B:0.5'
+        result = probe.capture(self.args)
+        self.assertEqual(result['environment']['VXRT_XINPUT_SCRIPT'], '40:A:0.3,50:START+B:0.5')
+        self.assertIn('not a physical controller', result['diagnostic']['xinput_script_scope'])
+        for bad in ('A', '40:A', '40:A:x', '40::1', '40:A:1,'):
+            self.args.xinput_script = bad
+            with self.assertRaises(ValueError):
+                probe.capture(self.args)
+
     def test_null_target_cli_flag_reaches_capture(self):
         args = ['probe', '--exe', 'x', '--runtime', 'r', '--aot-dir', 'a',
                 '--asset-root', 'assets', '--out', 'out', '--trace-null-target']
