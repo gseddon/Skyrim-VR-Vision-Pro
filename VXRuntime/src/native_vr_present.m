@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "xros_vr.h"
+#include "xrizer_xros_optics.h"
 void vx_log(const char *fmt, ...);
 static void mul4(const float *a, const float *b, float *o) {
     for (int c=0; c<4; c++) for (int r=0; r<4; r++) {
@@ -15,6 +16,10 @@ static void mul4(const float *a, const float *b, float *o) {
 // pair and the display pose; without scene depth translation cannot be reconstructed.
 #include "native_vr.h"
 #include "native_openvr.h"
+#ifdef VXRT_XRIZER_XROS_FIXTURE
+#include "xrizer_xros_fixture.h"
+static int g_fixture_held;
+#endif
 static vx_native_vr_frame g_native_frame;
 static vx_native_vr *g_native_queue;
 static int g_native_held;
@@ -38,9 +43,17 @@ int vx_xros_native_begin(const float head[16], const float eyes[32], const float
     if (!vx_xros_native_acquire_succeeded(vx_native_vr_acquire(g_native_queue, &g_native_frame))) return 0;
     g_native_held = 1;
     // Do not keep showing a previously submitted frame indefinitely after loading or tracking loss.
-    double age = time - g_native_frame.pose.pose_time;
-    return g_native_frame.pose.tracking_valid && isfinite(age) && age >= -0.1 && age <= 1.0;
+    return vx_xros_pose_is_current(time, g_native_frame.pose.pose_time, g_native_frame.pose.tracking_valid);
 }
+
+#ifdef VXRT_XRIZER_XROS_FIXTURE
+int vx_xros_fixture_present_begin(double time) {
+    g_native_held=0; g_fixture_held=0;
+    if(vx_xros_fixture_acquire(&g_native_frame))return 0;
+    g_native_held=1;g_fixture_held=1;
+    return vx_xros_pose_is_current(time, g_native_frame.pose.pose_time, g_native_frame.pose.tracking_valid);
+}
+#endif
 
 // float4-aligned layout matches the Metal shader's parameter structure.
 typedef struct { float rot[12], src[4], dst[4], bounds[4]; } native_params;
@@ -113,6 +126,19 @@ void vx_xros_native_end(void *cbp) {
     vx_native_vr *q = g_native_queue; uint64_t lease = g_native_frame.lease;
     g_native_held = 0;
     id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)cbp;
+#ifdef VXRT_XRIZER_XROS_FIXTURE
+    if(g_fixture_held) {
+        g_fixture_held=0;
+        if(!cb) { vx_xros_fixture_release(lease); return; }
+        uint64_t frame_id=g_native_frame.pose.frame_id, pose_id=g_native_frame.pose.pose_id;
+        [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+            vx_log("xrizer xros fixture: drawable command completion frame=%llu pose=%llu status=%lu error=%s",
+                (unsigned long long)frame_id,(unsigned long long)pose_id,(unsigned long)done.status,done.error ? "yes" : "no");
+            vx_xros_fixture_release(lease);
+        }];
+        return;
+    }
+#endif
     if (!cb) { vx_native_vr_release(q, lease); return; }
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) { (void)done; vx_native_vr_release(q, lease); }];
 }

@@ -65,6 +65,8 @@ int main(void) {
             .local_from_head={.orientation.w=1},.head_from_eye={{.orientation.w=1},{.orientation.w=1}},
             .fov={{-.8f,.8f,.8f,-.8f},{-.8f,.8f,.8f,-.8f}}};
         assert(vx_xros_xrizer_offer(h,&sample)==0 && wait_frame(h,&sample)==XR_SUCCESS);
+        KlNativeFrameSample repeat_id=sample; repeat_id.ticket=NULL;
+        assert(vx_xros_xrizer_offer(h,&repeat_id)==-1); /* the same producer id is not a fresh pair */
         FakeTexture *src=[FakeTexture new];src.device=device;src.pixelFormat=MTLPixelFormatRGBA8Unorm;src.textureType=MTLTextureType2DArray;
         src.width=8;src.height=8;src.arrayLength=2;src.sampleCount=1;
         KlNativeFramePair pair={.sample=sample};
@@ -76,16 +78,34 @@ int main(void) {
         vx_native_vr_frame frame; assert(vx_xros_xrizer_acquire(h,&frame)==-1);
         queue.fail=NO; assert(publish_pair(h,&pair)==XR_SUCCESS && queue.last.blit.copies==2);
         assert(vx_xros_xrizer_acquire(h,&frame)==0 && frame.pose.frame_id==10 && frame.pose.pose_id==20 &&
-               frame.eye[0].width==4 && frame.eye[0].height==3 && frame.eye[1].width==4 && frame.eye[1].height==3);
+               frame.eye[0].width==4 && frame.eye[0].height==3 && frame.eye[1].width==4 && frame.eye[1].height==3 &&
+               frame.eye[0].color_space==VX_NATIVE_VR_COLOR_LINEAR && frame.eye[1].color_space==VX_NATIVE_VR_COLOR_LINEAR &&
+               frame.eye[0].u_min==0 && frame.eye[0].v_min==0 && frame.eye[0].u_max==1 && frame.eye[0].v_max==1);
         uint64_t lease=frame.lease;
         assert(vx_xros_xrizer_acquire(h,&frame)==-1);
         assert(vx_xros_xrizer_release(h,lease)==0 && vx_xros_xrizer_release(h,lease)==-1);
         assert(vx_xros_xrizer_acquire(h,&frame)==0 && frame.pose.frame_id==10 && frame.pose.pose_id==20 && frame.lease!=lease);
-        assert(vx_xros_xrizer_retire(h)==-1);
         vx_native_vr_frame blocked; assert(vx_xros_xrizer_acquire(h,&blocked)==-1);
         assert(vx_xros_xrizer_release(h,frame.lease)==0);
+        KlNativeFrameSample fresh=sample;
+        fresh.frame_id=11; fresh.pose_id=21; fresh.predicted_display_time=200; fresh.ticket=NULL;
+        assert(vx_xros_xrizer_offer(h,&fresh)==0 && wait_frame(h,&fresh)==XR_SUCCESS);
+        FakeTexture *srgb=[FakeTexture new]; srgb.device=device; srgb.pixelFormat=MTLPixelFormatBGRA8Unorm_sRGB;
+        srgb.textureType=MTLTextureType2DArray; srgb.width=8; srgb.height=8; srgb.arrayLength=2; srgb.sampleCount=1;
+        KlNativeFramePair next={.sample=fresh};
+        for (unsigned i=0;i<2;++i) next.eye[i]=(KlNativeFrameEye){.texture=(__bridge void *)srgb,.image_lease=(void *)(uintptr_t)(i+3),
+            .format=MTLPixelFormatBGRA8Unorm_sRGB,.array_layer=i,.rect={{1,2},{2,2}},.local_from_render_eye={.orientation.w=1},.fov=fresh.fov[i]};
+        assert(publish_pair(h,&next)==XR_SUCCESS);
+        assert(vx_xros_xrizer_acquire(h,&frame)==0 && frame.pose.frame_id==11 && frame.pose.pose_id==21 &&
+               frame.eye[0].width==2 && frame.eye[0].height==2 && frame.eye[1].color_space==VX_NATIVE_VR_COLOR_SRGB &&
+               frame.eye[0].u_min==0 && frame.eye[0].v_min==0 && frame.eye[0].u_max==1 && frame.eye[0].v_max==1);
+        uint64_t fresh_lease=frame.lease;
+        assert(vx_xros_xrizer_release(h,fresh_lease)==0);
+        assert(vx_xros_xrizer_acquire(h,&frame)==0 && frame.pose.frame_id==11 && frame.pose.pose_id==21 && frame.lease!=fresh_lease);
+        assert(vx_xros_xrizer_retire(h)==-1); /* a reader still owns this pair, and retire does not rewind it */
+        assert(vx_xros_xrizer_release(h,frame.lease)==0);
         assert(vx_xros_xrizer_retire(h)==0);
-        puts("XR host mock pair: pass; fake Metal completion/leases, no GPU pixels or headset");
+        puts("XR host mock pair: pass; fresh 11/21, repeat keeps those ids, crop is the copied rect, no GPU pixels or headset");
     }
     return 0;
 }

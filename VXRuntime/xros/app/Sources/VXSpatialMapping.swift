@@ -1,5 +1,6 @@
 // Canonical, provider-independent spatial-controller snapshot. This is not an
-// OpenXR interaction profile, and is not registered with the v1 input host.
+// OpenXR interaction profile. v1 input stays disconnected; xrizer_xros_sense.c
+// retains a hand without setting the v1 connection bits.
 import Foundation
 import simd
 
