@@ -39,6 +39,7 @@ typedef struct d3d_object {
     void **vtbl2;                    // a second interface, or NULL
     volatile LONG refs;
     int kind;
+    int native_listed;               // a D3D11 texture on the native-VR list (d3d11.m); D3D12 kinds overlap K_TEXTURE, so the kind alone cannot say
     d3d_device *dev;                 // the device a resource or view belongs to
     pdata *pdata;                    // SetPrivateData
     void (*destroy)(struct d3d_object *);
@@ -58,6 +59,7 @@ void **d3d_vtable(const char *const *names, void *const *stubs, int count, const
 #define D3D_VTABLE(iface, impl) d3d_vtable(vt_##iface, vtstub_##iface, VT_COUNT_##iface, impl)
 
 void    *d3d_alloc(size_t size, int kind, void **vtbl, d3d_device *dev);   // refs = 1
+void    *d3d_alloc_plain(size_t size, int kind, void **vtbl, d3d_device *dev);   // the same, never a D3D11 texture on the native-VR list
 uint32_t d3d_addref(d3d_object *o);
 uint32_t d3d_release(d3d_object *o);
 HRESULT  d3d_get_private(d3d_object *o, const GUID *g, uint32_t *size, void *data);

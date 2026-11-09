@@ -68,10 +68,18 @@ d3d_texture *d3d_texture_acquire(const void *handle) {
     pthread_mutex_unlock(&g_native_textures_lock);
     return t;
 }
+// (D3D12's objects: their kinds (src/d3d12.m K12_*) overlap D3D11's, K12_QUEUE is K_TEXTURE, and are not D3D11 textures)
+void *d3d_alloc_plain(size_t size, int kind, void **vtbl, d3d_device *dev) {
+    d3d_object *o = calloc(1, size);
+    o->vtbl = vtbl; o->refs = 1; o->kind = kind; o->dev = dev;
+    __atomic_add_fetch(&g_live[kind & 15], 1, __ATOMIC_RELAXED);
+    return o;
+}
 void *d3d_alloc(size_t size, int kind, void **vtbl, d3d_device *dev) {
     d3d_object *o = calloc(1, size);
     o->vtbl = vtbl; o->refs = 1; o->kind = kind; o->dev = dev;
     if (kind == K_TEXTURE) {
+        o->native_listed = 1;
         // A submitted texture may outlive the guest's last device reference.
         if (dev) d3d_addref(&dev->base);
         pthread_mutex_lock(&g_native_textures_lock);
@@ -85,7 +93,7 @@ void *d3d_alloc(size_t size, int kind, void **vtbl, d3d_device *dev) {
 uint32_t d3d_addref(d3d_object *o) { return (uint32_t)__sync_add_and_fetch(&o->refs, 1); }
 uint32_t d3d_release(d3d_object *o) {
     // Serialize final destruction with native VR's validate-and-retain lookup.
-    int texture = o->kind == K_TEXTURE;
+    int texture = o->native_listed;
     if (texture) pthread_mutex_lock(&g_native_textures_lock);
     LONG r = __sync_sub_and_fetch(&o->refs, 1);
     if (texture) {
