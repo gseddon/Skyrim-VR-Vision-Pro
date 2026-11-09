@@ -696,6 +696,33 @@ static int in_arena(uint64_t a, uint64_t n) {
 #else
 #define in_arena(a, n) 0
 #endif
+#ifdef __aarch64__
+// The program's own image goes at its preferred base (0x140000000 for most x64 programs), which is where its recompiled
+// modules were made for it: an image mapped anywhere else is relocated and none of its modules' code is used (strict
+// AOT stops at its entry point). That range is in the middle of where macOS puts ordinary mappings (a 60 MB read of the
+// file, the modules' own dylibs, frameworks), so with the address only hinted for mmap it was taken in about every other
+// start. The range is reserved first thing in main, before anything is mapped, and load_pe maps over the reservation.
+static uint64_t g_main_resv_base, g_main_resv_size;
+static int reserve_main_image(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 1;                                           // (load_pe reports it)
+    uint8_t h[4096]; size_t n = fread(h, 1, sizeof h, f); fclose(f);
+    if (n < 0x100 || h[0] != 'M' || h[1] != 'Z') return 1;
+    uint32_t pe; memcpy(&pe, h + 0x3c, 4);
+    if ((uint64_t)pe + 24 + 60 > n || memcmp(h + pe, "PE\0\0", 4)) return 1;
+    uint16_t magic; memcpy(&magic, h + pe + 24, 2);
+    if (magic != 0x20b) return 1;                               // (PE32+ only: a 32-bit image's base is below 4 GB, other rules)
+    uint64_t base; uint32_t size; memcpy(&base, h + pe + 24 + 24, 8); memcpy(&size, h + pe + 24 + 56, 4);
+    if (!base || !size || base < 0x100000000ull) return 1;
+    mach_vm_address_t a = base;
+    if (mach_vm_allocate(mach_task_self(), &a, size, VM_FLAGS_FIXED) != KERN_SUCCESS) {
+        vx_log("loader: the program's preferred range %#llx-%#llx is already taken", (unsigned long long)base, (unsigned long long)(base + size));
+        return 0;
+    }
+    g_main_resv_base = base; g_main_resv_size = size;
+    return 1;
+}
+#endif
 static vx_image *load_pe(const char *path, int is_main) {
     FILE *f = fopen(path, "rb");
     if (!f) { vx_log("cannot open %s: %s", path, strerror(errno)); vx_set_last_error(2); return NULL; }
@@ -759,8 +786,13 @@ static vx_image *load_pe(const char *path, int is_main) {
     }
 #endif
     // Map at the preferred base when free, anywhere otherwise (then relocate).
+#ifdef __aarch64__
+    int reserved = is_main && want == pref_base && g_main_resv_base == pref_base && image_size <= g_main_resv_size;   // (reserve_main_image)
+#else
+    int reserved = 0;
+#endif
     uint8_t *base = reuse >= 0 ? mmap(g_images[reuse]->base, image_size, VX_PROT_CODE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0)
-                               : mmap((void *)want, image_size, VX_PROT_CODE, MAP_PRIVATE | MAP_ANON | (want != pref_base || in_arena(want, image_size) ? MAP_FIXED : 0), -1, 0);
+                               : mmap((void *)want, image_size, VX_PROT_CODE, MAP_PRIVATE | MAP_ANON | (reserved || want != pref_base || in_arena(want, image_size) ? MAP_FIXED : 0), -1, 0);
     if (base == MAP_FAILED) { vx_log("cannot map %u bytes", image_size); free(file); return NULL; }
 #if VX_XROS
     // visionOS kills a process that fetches an instruction from a page it could make executable but whose code is not
@@ -1532,7 +1564,7 @@ int main(int argc, char **argv, char **envp) {
 #ifdef __aarch64__
     // (before anything is mapped where the modules' images go; when the system's randomized regions already cover it,
     // the program starts again, up to 5 times: they fall elsewhere)
-    if (getenv("VXRT_AOT_DIR") && !xa_reserve()) {
+    if (getenv("VXRT_AOT_DIR") && !(xa_reserve() & reserve_main_image(argv[1]))) {   // (both always: each reserves what it can)
         int tries = getenv("VXRT_AOT_RESTARTS") ? atoi(getenv("VXRT_AOT_RESTARTS")) : 0;
         if (tries < 5 && !VX_XROS) {                // (visionOS: the app reserved it before anything else, or never will)
             char n[8]; snprintf(n, sizeof n, "%d", tries + 1);
