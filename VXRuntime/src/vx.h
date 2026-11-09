@@ -84,6 +84,7 @@ typedef struct {
 } vx_image;
 const vx_image *vx_image_at(uint64_t pc);    // the image containing an address, or NULL
 int vx_image_list(const vx_image **out, int cap);   // the loaded images (all of them is the return value)
+void vx_diag_rtti_array_tick(void);   // seh.c: VXRT_DIAG_RTTI_ARRAY, an off-by-default periodic read of a guest object-pointer array
 int vx_overlay_file(const char *unix_path, char *out, size_t cap);   // files.c: VXRT_OVERLAY's copy of a file, if any
 int vx_overlay_deletable(const char *unix_path, char *out, size_t cap);   // files.c: what deleting a path may remove (never an overlaid original)
 void vx_wininet_init(void);                  // wininet.m: HTTP and HTTPS on NSURLSession

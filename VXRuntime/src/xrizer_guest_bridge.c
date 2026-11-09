@@ -266,6 +266,7 @@ static WINAPI int wait_poses(guest_object *self, void *render, uint32_t render_c
     require(self == &compositor); native_wait_fn fn = (native_wait_fn)native_table(self)[2];
     int r = fn(self->native, render, render_count, game, game_count);
     note_poses("WaitGetPoses", r, render, render_count);
+    vx_diag_rtti_array_tick();
     return r;
 }
 static WINAPI int last_poses(guest_object *self, void *render, uint32_t render_count, void *game, uint32_t game_count) {

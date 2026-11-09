@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <sys/mman.h>
 #include <sys/ucontext.h>
 #include <execinfo.h>
@@ -440,6 +441,78 @@ static void fault_objects(const CONTEXT *ctx) {
                (unsigned)((hd2 >> 16) & 0xff), (unsigned long long)bf, (unsigned long long)bfh, (unsigned long long)pc, (unsigned long long)pch);
     }
 }
+// VXRT_DIAG_RTTI_ARRAY=<global>,<array>,<count>,<period s>[,<field>...] (off by default; diagnostic data reads only):
+// every <period> seconds, called from a frame path (xrizer WaitGetPoses), read the object pointer stored at <global> (an
+// offset into the program's image when below its size, else an address), the pointer array at object+<array> and its
+// 32-bit count at object+<count>, and log each element's MSVC RTTI class name (vtable slot -1, the x64 complete object
+// locator) plus the 32-bit words at the given element offsets. VXRT_DIAG_RTTI_ARRAY_WORDS=<off>,<n> also logs n
+// 32-bit words of the object from <off>. For Skyrim VR's UI menu stack: <global> 0x1f83200, array 0x110, count 0x120.
+static int diag_read(uint64_t addr, void *out, size_t n) {
+    mach_vm_size_t got = 0;
+    return addr >= 0x10000 && mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)addr, n, (mach_vm_address_t)(uintptr_t)out, &got) == KERN_SUCCESS && got == n;
+}
+static void diag_rtti_name(uint64_t obj, char *buf, size_t n) {
+    uint64_t vt = 0, col = 0; uint32_t c[6]; char name[128] = { 0 };
+    if (!diag_read(obj, &vt, 8)) { snprintf(buf, n, "unreadable object"); return; }
+    if (!diag_read(vt - 8, &col, 8) || !diag_read(col, c, sizeof c) || c[0] != 1) { snprintf(buf, n, "vtable %#llx, no RTTI", (unsigned long long)vt); return; }
+    uint64_t image = col - c[5];   // pSelf is the locator's own image offset
+    if (!diag_read(image + c[3] + 16, name, sizeof name - 1) && !diag_read(image + c[3] + 16, name, 32)) { snprintf(buf, n, "vtable %#llx, unreadable name", (unsigned long long)vt); return; }
+    name[sizeof name - 1] = 0;
+    const vx_image *m = vx_image_at(vt);
+    snprintf(buf, n, "%s (vtable %s+%#llx, this-offset %u)", name, m ? m->name : "?", (unsigned long long)(m ? vt - (uint64_t)(uintptr_t)m->base : vt), c[1]);
+}
+void vx_diag_rtti_array_tick(void) {
+    static int state; static uint64_t global, aoff, coff, period_ns, last; static uint64_t fields[8]; static unsigned nfields, dumps;
+    static uint64_t woff, wn;
+    if (state == 1) return;
+    if (!state) {
+        const char *e = getenv("VXRT_DIAG_RTTI_ARRAY"); double period = 0; char *end;
+        state = 1;
+        if (!e || !*e) return;
+        global = strtoull(e, &end, 0); if (*end != ',') goto bad;
+        aoff = strtoull(end + 1, &end, 0); if (*end != ',') goto bad;
+        coff = strtoull(end + 1, &end, 0); if (*end != ',') goto bad;
+        period = strtod(end + 1, &end); if (period <= 0) goto bad;
+        while (*end == ',' && nfields < 8) fields[nfields++] = strtoull(end + 1, &end, 0);
+        if (*end) goto bad;
+        if (global < vx_proc.image_size) global += (uint64_t)(uintptr_t)vx_proc.image_base;
+        period_ns = (uint64_t)(period * 1e9);
+        if ((e = getenv("VXRT_DIAG_RTTI_ARRAY_WORDS"))) { woff = strtoull(e, &end, 0); if (*end == ',') wn = strtoull(end + 1, NULL, 0); if (wn > 32) wn = 32; }
+        vx_log("diag-rtti-array: on, global %#llx, array +%#llx, count +%#llx, every %.1f s", (unsigned long long)global, (unsigned long long)aoff, (unsigned long long)coff, period);
+        state = 2;
+        goto go;
+    bad:
+        vx_log("diag-rtti-array: cannot parse VXRT_DIAG_RTTI_ARRAY=%s (want <global>,<array>,<count>,<period s>[,<field>...]); off", e);
+        return;
+    }
+go:;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    if (last && now - last < period_ns) return;
+    last = now; dumps++;
+    uint64_t obj = 0, data = 0; uint32_t count = 0;
+    if (!diag_read(global, &obj, 8) || !obj) { vx_log("diag-rtti-array #%u: global %#llx unreadable or null", dumps, (unsigned long long)global); return; }
+    if (!diag_read(obj + aoff, &data, 8) || !diag_read(obj + coff, &count, 4)) { vx_log("diag-rtti-array #%u: object %#llx unreadable", dumps, (unsigned long long)obj); return; }
+    vx_log("diag-rtti-array #%u: object %#llx, array %#llx, count %u", dumps, (unsigned long long)obj, (unsigned long long)data, count);
+    if (wn) {
+        char line[512]; size_t at = 0; uint32_t w;
+        for (uint64_t i = 0; i < wn && at < sizeof line - 16; i++)
+            at += (size_t)snprintf(line + at, sizeof line - at, diag_read(obj + woff + 4 * i, &w, 4) ? " %08x" : " ????????", w);
+        vx_log("diag-rtti-array #%u: object words from +%#llx:%s", dumps, (unsigned long long)woff, line);
+    }
+    for (uint32_t i = 0; i < count && i < 64; i++) {
+        uint64_t el = 0; char name[256], extra[160]; size_t at = 0; extra[0] = 0;
+        if (!diag_read(data + 8 * i, &el, 8)) { vx_log("diag-rtti-array #%u: [%u] unreadable", dumps, i); continue; }
+        if (!el) { vx_log("diag-rtti-array #%u: [%u] null", dumps, i); continue; }
+        diag_rtti_name(el, name, sizeof name);
+        for (unsigned f = 0; f < nfields && at < sizeof extra - 24; f++) {
+            uint32_t w = 0;
+            at += (size_t)snprintf(extra + at, sizeof extra - at, diag_read(el + fields[f], &w, 4) ? " +%#llx=%08x" : " +%#llx=????????", (unsigned long long)fields[f], w);
+        }
+        vx_log("diag-rtti-array #%u: [%u] %#llx %s%s", dumps, i, (unsigned long long)el, name, extra);
+    }
+}
+
 static int seh_trace(void) {                       // VXRT_TRACE_SEH=1: every raise, and what runs when nothing handles one
     static int on = -1;
     if (on < 0) { const char *e = getenv("VXRT_TRACE_SEH"); on = e && *e == '1'; }
