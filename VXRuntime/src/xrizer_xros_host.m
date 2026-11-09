@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "xrizer_xros_host.h"
+#include "xrizer_xros_optics.h"
 #include "xrizer_xros_mailbox.h"
 #include "apple_metal_host.h"
 #include "image_sync_host.h"
@@ -89,10 +90,7 @@ static XrResult cancel_frame(void *ctx, void *ticket) {
     return vx_xros_mailbox_finish(((vx_xros_xrizer_host *)ctx)->mailbox,ticket) ? XR_ERROR_HANDLE_INVALID : XR_SUCCESS;
 }
 static void pose_matrix(XrPosef p, float m[16]) {
-    float x=p.orientation.x,y=p.orientation.y,z=p.orientation.z,w=p.orientation.w;
-    const float v[16]={1-2*y*y-2*z*z,2*x*y+2*w*z,2*x*z-2*w*y,0,2*x*y-2*w*z,1-2*x*x-2*z*z,2*y*z+2*w*x,0,
-        2*x*z+2*w*y,2*y*z-2*w*x,1-2*x*x-2*y*y,0,p.position.x,p.position.y,p.position.z,1};
-    memcpy(m,v,sizeof v);
+    vx_xros_pose_matrix(p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w, p.position.x, p.position.y, p.position.z, m);
 }
 static XrResult publish_pair(void *ctx, const KlNativeFramePair *pair) {
     vx_xros_xrizer_host *h=ctx; if (!pair || !pair->sample.ticket) return XR_ERROR_VALIDATION_FAILURE;

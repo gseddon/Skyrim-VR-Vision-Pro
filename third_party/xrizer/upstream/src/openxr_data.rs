@@ -450,8 +450,11 @@ impl<C: Compositor> OpenXrData<C> {
         // A host may asynchronously deliver events. Never spin or infer a
         // transition: missing acknowledgment retains all session resources.
         for desired in [xr::SessionState::STOPPING, xr::SessionState::EXITING] {
-            let mut reached = false;
+            // STOPPING may already have been consumed by the regular event
+            // pump after the host lost its surface, before guest cleanup.
+            let mut reached = desired == xr::SessionState::STOPPING && session_data.state == desired;
             for _ in 0..64 {
+                if reached { break; }
                 match self.instance.poll_event(&mut buf) {
                     Ok(Some(xr::Event::SessionStateChanged(event))) if event.state() == desired => {
                         reached = true;

@@ -128,9 +128,16 @@ int main(void) {
             fi.displayTime=sample.predicted_display_time;
             assert(end_frame(session,&fi)==XR_SUCCESS);
         }
-        assert(exit_xr(session)==XR_SUCCESS);
+        /* Surface loss stops fresh work but must retain a claimed ticket until
+         * the provider ends/cancels it; no synthetic completion is allowed. */
+        sample.frame_id=4;sample.pose_id=5;sample.predicted_display_time=130;
+        assert(vx_xros_xrizer_offer(h,&sample)==0 && wait_xr(session,NULL,&state)==XR_SUCCESS);
+        assert(begin_frame(session,NULL)==XR_SUCCESS && vx_xros_xrizer_surface(h,0,NULL)==0);
         assert(vx_xros_xrizer_event(h,(KlNativeSessionEvent){KL_NATIVE_SESSION_STOPPING,30})==0);
+        assert(vx_xros_xrizer_offer(h,&sample)==-1 && exit_xr(session)==XR_SUCCESS);
         assert(poll_state(poll,instance)==XR_SESSION_STATE_STOPPING);
+        assert(end_xr(session)==XR_ERROR_CALL_ORDER_INVALID);
+        fi.displayTime=130;assert(end_frame(session,&fi)==XR_SUCCESS);
         assert(end_xr(session)==XR_SUCCESS && poll_state(poll,instance)==XR_SESSION_STATE_IDLE);
         assert(vx_xros_xrizer_event(h,(KlNativeSessionEvent){KL_NATIVE_SESSION_EXITING,41})==0);
         assert(poll_state(poll,instance)==XR_SESSION_STATE_EXITING);

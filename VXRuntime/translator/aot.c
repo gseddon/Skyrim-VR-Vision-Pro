@@ -163,6 +163,15 @@ int xa_reserve(void) {
     if (mach_vm_allocate(mach_task_self(), &a, n, VM_FLAGS_FIXED) == KERN_SUCCESS) { g_arena_lo = a; g_arena_hi = a + n; return 1; }
     else {
         vx_log("aot: the image arena at %#llx is taken: modules there are not used", (unsigned long long)a);
+#if VX_XROS
+        // (the visionOS SDK has neither mach_vm_region_recurse nor proc_regionfilename: the 64-bit vm_ form, no names)
+        vm_address_t r = (vm_address_t)a; natural_t depth = 0;
+        for (int i = 0; i < 12; i++) {
+            vm_size_t rs = 0; struct vm_region_submap_info_64 info; mach_msg_type_number_t cnt = VM_REGION_SUBMAP_INFO_COUNT_64;
+            if (vm_region_recurse_64(mach_task_self(), &r, &rs, &depth, (vm_region_recurse_info_t)&info, &cnt) != KERN_SUCCESS || r >= a + n) break;
+            if (info.is_submap) { depth++; continue; }
+            const char *file = "";
+#else
         mach_vm_address_t r = a; natural_t depth = 0;     // (what sits there: permissions, tag, sharing, file)
         for (int i = 0; i < 12; i++) {
             mach_vm_size_t rs = 0; struct vm_region_submap_info_64 info; mach_msg_type_number_t cnt = VM_REGION_SUBMAP_INFO_COUNT_64;
@@ -170,6 +179,7 @@ int xa_reserve(void) {
             if (info.is_submap) { depth++; continue; }
             char file[512] = "";
             if (info.share_mode != SM_EMPTY) proc_regionfilename(getpid(), r, file, sizeof file);
+#endif
             vx_log("aot:   %#llx-%#llx prot=%d/%d user_tag=%u share=%d %s", (unsigned long long)r, (unsigned long long)(r + rs),
                    info.protection, info.max_protection, info.user_tag, info.share_mode, file);
             r += rs;

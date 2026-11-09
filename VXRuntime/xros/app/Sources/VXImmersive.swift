@@ -24,6 +24,15 @@ final class VXImmersiveRenderer: @unchecked Sendable {
     private var nativeXRTracking: VXNativeXRTracking?
     private var spatialClockCalibrated = false
     private var lastSpatialSample = 0.0
+#if XRIZER_XROS_FIXTURE
+    private var xrizerFixtureAttempted = false
+    private var xrizerFixtureObserved = false
+    private var xrizerFixtureOffscreenOffers = 0
+    private var xrizerHeadFrames = 0
+    private var xrizerHeadLogged = false
+    private var xrizerFixtureSurface = VXFixtureSurfaceState()
+    private var xrizerFixtureStarted = false
+#endif
     private static let near: Float = 0.1, far: Float = 10000
 
     static func start(_ layerRenderer: LayerRenderer) {
@@ -95,16 +104,35 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         return compositor.isFinite && compositor >= low - 0.001 && compositor <= high + 0.001
     }
 
+#if XRIZER_XROS_FIXTURE
+    private func loseFixtureSurface() {
+        if vx_xros_fixture_enabled() != 0 {
+            xrizerFixtureAttempted = true
+            xrizerFixtureStarted = false
+            let result = vx_xros_fixture_surface_lost()
+            vxrt_jlog("xrizer_fixture_surface_lost", "\"result\":\(result),\"resume\":\"unavailable\"")
+        }
+    }
+#endif
+
     private func loop() {
         let cfg = layerRenderer.configuration
         vxrt_jlog("vr_start", "\"layout\":\"\(cfg.layout)\",\"color\":\(cfg.colorFormat.rawValue),\"depth\":\(cfg.depthFormat.rawValue),\"tracking\":\(tracking)")
         while true {
             switch layerRenderer.state {
             case .invalidated:
+#if XRIZER_XROS_FIXTURE
+                if xrizerFixtureSurface.invalidated() { loseFixtureSurface() }
+#endif
                 vxrt_jlog("vr_end", "\"why\":\"layer invalidated\"")
                 if let adapter = nativeXRTracking { Task { await adapter.stop() } }
                 return
             case .paused:
+#if XRIZER_XROS_FIXTURE
+                // CompositorServices may initially be paused before its first
+                // drawable; only an already started fixture can lose a surface.
+                if xrizerFixtureSurface.paused() { loseFixtureSurface() }
+#endif
                 layerRenderer.waitUntilRunning()
                 continue
             default:
@@ -130,9 +158,76 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         }
         let anchor = tracking ? trackingGate.read { worldTracking.queryDeviceAnchor(atTimestamp: presentation) } ?? nil : nil
         var head = anchor?.originFromAnchorTransform ?? matrix_identity_float4x4
-        let native = vx_xros_native_enabled() != 0
-        var have: Int32 = 0
-        if native {
+        let nativeDiagnostic = vx_xros_native_enabled() != 0
+#if XRIZER_XROS_FIXTURE
+        let fixture = vx_xros_fixture_enabled() != 0
+        let offscreen = fixture && ProcessInfo.processInfo.environment["VXRT_XRIZER_XROS_OFFSCREEN"] == "1"
+        let monoPresent = offscreen && vx_xros_fixture_present_enabled() != 0
+        var monoHave: Int32 = 0
+        var monoAcquired = false
+        if offscreen && !drawables[0].colorTextures.isEmpty && tracking {
+            xrizerHeadFrames += 1
+            let headTracked: Int32 = anchor?.isTracked == true ? 1 : 0
+            if xrizerHeadFrames <= 3 || (headTracked != 0 && !xrizerHeadLogged) {
+                let t = head.columns.3
+                vxrt_jlog("xrizer_fixture_head", "\"tracked\":\(headTracked),\"present\":\(anchor != nil),\"frame\":\(xrizerHeadFrames),\"x\":\(t.x),\"y\":\(t.y),\"z\":\(t.z)")
+                if headTracked != 0 { xrizerHeadLogged = true }
+            }
+            // Give ARKit a short chance to report a tracked device anchor before
+            // the guest consumes its two pairs. An absent anchor stays untracked.
+            let readyToOffer = headTracked != 0 || xrizerHeadFrames >= 45
+            if readyToOffer && !xrizerFixtureAttempted {
+                xrizerFixtureAttempted = true
+                if Self.clockMatchesMach() {
+                    let device = Unmanaged.passUnretained(layerRenderer.device as AnyObject).toOpaque()
+                    let commandQueue = Unmanaged.passUnretained(queue as AnyObject).toOpaque()
+                    xrizerFixtureStarted = vx_xros_fixture_start(device, commandQueue) == 0
+                        if xrizerFixtureStarted { _ = xrizerFixtureSurface.started() }
+                }
+                vxrt_jlog("xrizer_offscreen_start", "\"started\":\(xrizerFixtureStarted),\"optics\":\"injected_32mm_pi4\",\"head\":\"device_anchor_or_untracked\",\"controllers\":\"disconnected\"")
+            }
+            if xrizerFixtureStarted {
+                var eyes = [Float](repeating: 0, count: 32)
+                for eye in 0..<2 {
+                    for j in [0, 5, 10, 15] { eyes[eye * 16 + j] = 1 }
+                    eyes[eye * 16 + 12] = eye == 0 ? -0.032 : 0.032
+                }
+                let frustums: [Float] = [-1, 1, -1, 1, -1, 1, -1, 1]
+                let texture = drawables[0].colorTextures[0]
+                let offered = eyes.withUnsafeBufferPointer { e in
+                    frustums.withUnsafeBufferPointer { f in
+                        withUnsafePointer(to: &head) { hp in
+                            hp.withMemoryRebound(to: Float.self, capacity: 16) { h in
+                                vx_xros_fixture_offer(UInt32(texture.width), UInt32(texture.height), e.baseAddress, f.baseAddress, presentation, headTracked != 0 ? h : nil, headTracked)
+                            }
+                        }
+                    }
+                }
+                // Inspection: the simulator's one view shows the acquired pair side
+                // by side; the fixture audits that drawable's pixels per frame id.
+                if monoPresent && offered == 0 && drawables[0].views.count == 1 {
+                    monoHave = vx_xros_fixture_present_begin(presentation)
+                    monoAcquired = true
+                }
+                if xrizerFixtureOffscreenOffers < 2 {
+                    xrizerFixtureOffscreenOffers += 1
+                    if xrizerFixtureOffscreenOffers == 1 {
+                        let depthCount = drawables[0].depthTextures.count
+                        vxrt_jlog("xrizer_offscreen_drawable", "\"views\":\(drawables[0].views.count),\"color_textures\":\(drawables[0].colorTextures.count),\"depth_textures\":\(depthCount),\"color_w\":\(texture.width),\"color_h\":\(texture.height),\"layout_raw\":\(layerRenderer.configuration.layout.rawValue)")
+                    }
+                    vxrt_jlog("xrizer_offscreen_sample", "\"result\":\(offered),\"sample\":\(xrizerFixtureOffscreenOffers)")
+                }
+            }
+        }
+#else
+        let fixture = false
+        let offscreen = false
+        let monoHave: Int32 = 0
+        let monoAcquired = false
+#endif
+        let native = nativeDiagnostic || (fixture && !offscreen) || monoAcquired
+        var have: Int32 = monoHave
+        if native && !monoAcquired {
             let d = drawables[0]
             var eyes = [Float](repeating: 0, count: 32)
             var frustums = [Float](repeating: 0, count: 8)
@@ -140,7 +235,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
             if dedicated {
                 let l = d.colorTextures[0], r = d.colorTextures[1]
                 dedicated = l.width == r.width && l.height == r.height
-                if dedicated { _ = vx_xros_native_set_render_size(UInt32(l.width), UInt32(l.height)) }
+                if dedicated && !fixture { _ = vx_xros_native_set_render_size(UInt32(l.width), UInt32(l.height)) }
             }
             if d.views.count == 2 && dedicated {
                 for i in 0..<2 {
@@ -157,6 +252,39 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                     frustums[i * 4 + 3] = (1 - p.columns.2.y) / p.columns.1.y
                 }
             }
+#if XRIZER_XROS_FIXTURE
+            if fixture {
+                if !xrizerFixtureObserved {
+                    xrizerFixtureObserved = true
+                    vxrt_jlog("xrizer_fixture_drawable", "\"views\":\(d.views.count),\"color_textures\":\(d.colorTextures.count),\"dedicated\":\(dedicated)")
+                }
+                if !xrizerFixtureAttempted && dedicated && d.views.count == 2 {
+                    xrizerFixtureAttempted = true
+                    if Self.clockMatchesMach() {
+                        let device = Unmanaged.passUnretained(layerRenderer.device as AnyObject).toOpaque()
+                        let commandQueue = Unmanaged.passUnretained(queue as AnyObject).toOpaque()
+                        xrizerFixtureStarted = vx_xros_fixture_start(device, commandQueue) == 0
+                        if xrizerFixtureStarted { _ = xrizerFixtureSurface.started() }
+                    }
+                    vxrt_jlog("xrizer_fixture_start", "\"started\":\(xrizerFixtureStarted),\"head\":\"device_anchor_or_untracked\",\"controllers\":\"disconnected\"")
+                }
+                if xrizerFixtureStarted && dedicated && d.views.count == 2 {
+                    let texture = d.colorTextures[0]
+                    let headTracked: Int32 = anchor?.isTracked == true ? 1 : 0
+                    let offered = eyes.withUnsafeBufferPointer { e in
+                        frustums.withUnsafeBufferPointer { f in
+                            withUnsafePointer(to: &head) { hp in
+                                hp.withMemoryRebound(to: Float.self, capacity: 16) { h in
+                                    vx_xros_fixture_offer(UInt32(texture.width), UInt32(texture.height), e.baseAddress, f.baseAddress, presentation, headTracked != 0 ? h : nil, headTracked)
+                                }
+                            }
+                        }
+                    }
+                    if offered == 0 { have = vx_xros_fixture_present_begin(presentation) }
+                }
+            }
+#endif
+            if !fixture {
             let controllers = trackingGate.read { nativeInput.controllers() } ?? [vx_native_openvr_controller(), vx_native_openvr_controller()]
             have = withUnsafePointer(to: &head) { hp in
                 hp.withMemoryRebound(to: Float.self, capacity: 16) { h in
@@ -171,7 +299,8 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                     }
                 }
             }
-        } else {
+            }
+        } else if !native {
             have = withUnsafePointer(to: &head) {
                 $0.withMemoryRebound(to: Float.self, capacity: 16) { vx_xros_vr_begin_frame($0, presentation) }
             }
@@ -201,6 +330,9 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                                 tp.withMemoryRebound(to: Float.self, capacity: 4) { t in
                                     let colorp = Unmanaged.passUnretained(color as AnyObject).toOpaque()
                                     let depthp = Unmanaged.passUnretained(depth as AnyObject).toOpaque()
+#if XRIZER_XROS_FIXTURE
+                                    if monoAcquired { return vx_xros_fixture_draw_inspection(cbp, Int32(i), colorp, depthp) }
+#endif
                                     if native { return vx_xros_native_draw_eye(cbp, Int32(i), v, t, colorp, depthp) }
                                     return vx_xros_vr_draw_eye(cbp, Int32(i), v, t, Self.near, colorp, depthp)
                                 }

@@ -1,0 +1,65 @@
+// Owned freestanding MSVC guest; real drawable optics, injected simulator head.
+#include "openvr-guest-abi.h"
+extern "C" {
+__declspec(dllimport) void *__stdcall LoadLibraryA(const char *);
+__declspec(dllimport) void *__stdcall GetProcAddress(void *,const char *);
+__declspec(dllimport) void *__stdcall GetStdHandle(unsigned);
+__declspec(dllimport) int __stdcall WriteFile(void *,const void *,unsigned,unsigned *,void *);
+__declspec(dllimport) void __stdcall ExitProcess(unsigned);
+}
+static void check(bool ok,unsigned code){if(!ok)ExitProcess(code);}
+struct Desc {unsigned width,height,mips,array,format,samples,quality,usage,bind,cpu,misc;};
+struct Init {const void *data;unsigned row,slice;};
+typedef int (*create_device_fn)(void *,unsigned,void *,unsigned,const unsigned *,unsigned,unsigned,void **,unsigned *,void **);
+typedef int (*create_texture_fn)(void *,const Desc *,const Init *,void **);
+typedef void (*update_fn)(void *,void *,unsigned,const void *,const void *,unsigned,unsigned);
+typedef unsigned (*release_fn)(void *);
+static void **table(void *p){return *(void ***)p;}
+static unsigned char pixels[2][256];
+static void fill(unsigned variant,unsigned eye){for(unsigned y=0;y<8;y++)for(unsigned x=0;x<8;x++){
+ unsigned char *p=pixels[eye]+(y*8+x)*4;
+ p[0]=(unsigned char)(40+variant*80+x*11+y*3);p[1]=(unsigned char)(20+eye*130+x*3+y*2);
+ p[2]=(unsigned char)(30+variant*70+eye*50+x+y);p[3]=255;
+}}
+extern "C" void mainCRTStartup(){
+ void *module=LoadLibraryA("openvr_api.dll"),*audit=LoadLibraryA("vxrt_xros_fixture_audit.dll"),*d3d=LoadLibraryA("d3d11.dll");
+ auto init=(unsigned (*)(int *,int,const char *))GetProcAddress(module,"VR_InitInternal2");
+ auto get=(void *(*)(const char *,int *))GetProcAddress(module,"VR_GetGenericInterface");
+ auto shutdown=(void (*)())GetProcAddress(module,"VR_ShutdownInternal");
+ auto verify=(int (*)(unsigned))GetProcAddress(audit,"VXRT_XrosFixtureVerifyPair");
+ auto prepare=(int (*)())GetProcAddress(audit,"VXRT_XrosFixturePrepareShutdown");
+ auto finished=(int (*)())GetProcAddress(audit,"VXRT_XrosFixtureVerifyShutdown");
+ auto loss=(int (*)())GetProcAddress(audit,"VXRT_XrosFixtureInjectLoss");
+ auto create=(create_device_fn)GetProcAddress(d3d,"D3D11CreateDevice");
+ check(module && audit && d3d && init && get && shutdown && verify && prepare && finished && loss && create,1);
+ int error=-1;check(init(&error,1,nullptr)!=0 && !error,2);
+ auto system=(vr::IVRSystem *)get(vr::IVRSystem_Version,&error);check(system && !error,3);
+ for(unsigned eye=0;eye<2;eye++){
+  vr::HmdMatrix34_t transform=system->GetEyeToHeadTransform((vr::EVREye)eye);
+  vr::HmdMatrix44_t projection=system->GetProjectionMatrix((vr::EVREye)eye,.1f,100.f);
+  check(transform.m[0][0]==transform.m[0][0] && transform.m[0][0]!=0 && projection.m[0][0]>0 && projection.m[1][1]>0,4);
+ }
+ auto compositor=(vr::IVRCompositor *)get(vr::IVRCompositor_Version,&error);check(compositor && !error,5);
+ compositor->SetTrackingSpace(vr::TrackingUniverseSeated);
+ void *device=nullptr,*context=nullptr;check(create(nullptr,1,nullptr,0,nullptr,0,7,&device,nullptr,&context)==0 && device && context,6);
+ Desc desc={8,8,1,1,28,1,0,0,0x20,0,0};void *textures[2]={};
+ for(unsigned eye=0;eye<2;eye++){fill(0,eye);Init data={pixels[eye],32,256};check(((create_texture_fn)table(device)[5])(device,&desc,&data,&textures[eye])==0 && textures[eye],7);}
+ const vr::VRTextureBounds_t bounds={.25f,.125f,.75f,.5f};
+ for(unsigned n=0;n<2;n++){
+  vr::TrackedDevicePose_t pose[3]={};check(compositor->WaitGetPoses(pose,3,nullptr,0)==0,8);
+  check(pose[0].bPoseIsValid && pose[0].bDeviceIsConnected && !pose[1].bDeviceIsConnected && !pose[2].bDeviceIsConnected,9);
+  for(unsigned eye=0;eye<2;eye++){
+   if(n){fill(n,eye);((update_fn)table(context)[48])(context,textures[eye],0,nullptr,pixels[eye],32,256);}
+   vr::Texture_t image={textures[eye],vr::TextureType_DirectX,vr::ColorSpace_Linear};
+   check(compositor->Submit((vr::EVREye)eye,&image,&bounds,vr::Submit_Default)==0,10+eye);
+  }
+  compositor->PostPresentHandoff();check(verify(n)==0,12);
+ }
+ for(unsigned eye=0;eye<2;eye++)((release_fn)table(textures[eye])[2])(textures[eye]);
+ ((release_fn)table(context)[2])(context);((release_fn)table(device)[2])(device);check(prepare()==0,14);check(loss()==0,16);
+ check(compositor->WaitGetPoses(nullptr,0,nullptr,0)==vr::VRCompositorError_RequestFailed,17);
+ shutdown();check(finished()==0,15);
+ const char text[]="xrizer_xros_guest: OpenVR geometry, two D3D pairs and provider readback passed\n";unsigned written=0;
+ check(WriteFile(GetStdHandle((unsigned)-11),text,sizeof text-1,&written,nullptr) && written==sizeof text-1,13);
+ ExitProcess(0);
+}

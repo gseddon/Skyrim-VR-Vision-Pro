@@ -34,7 +34,8 @@ static int view_configured;
 static KlNativeViewGeometryHost view_geometry_host;
 static int view_geometry_configured;
 static KlNativeInputHost input_host;
-static int input_configured;
+static KlNativeInputHost2 input_host2;
+static int input_configured; /* 0, 1, or 2 */
 static int metal_extension_available(void) {
 #ifdef KL_NATIVE_TEST_METAL_PARTIAL
     return metal_configured;
@@ -88,6 +89,8 @@ struct XrSession_T {
     uint64_t last_input_id;
     XrTime last_input_time;
     unsigned input_valid;
+    unsigned has_input2;
+    KlNativeInputSample2 last_input2;
 };
 struct XrSwapchain_T {
     unsigned used, live;
@@ -216,12 +219,24 @@ static XrResult XRAPI_CALL klxr_GetVxStaticViewGeometry(XrInstance instance, XrS
     *out=value; return XR_SUCCESS;
 }
 
+static void clear_input_host(void) {
+    memset(&input_host, 0, sizeof input_host);
+    memset(&input_host2, 0, sizeof input_host2);
+    input_configured = 0;
+}
 XrResult kl_native_configure_input(const KlNativeInputHost *host) {
     for (unsigned i = 0; i < INSTANCE_LIMIT; ++i)
         if (instances[i].live) return XR_ERROR_CALL_ORDER_INVALID;
-    if (!host) { memset(&input_host, 0, sizeof input_host); input_configured = 0; return XR_SUCCESS; }
+    if (!host) { clear_input_host(); return XR_SUCCESS; }
     if (host->version != KL_NATIVE_INPUT_HOST_VERSION || host->struct_size < sizeof(*host) || !host->sample) return XR_ERROR_VALIDATION_FAILURE;
-    input_host = *host; input_configured = 1; return XR_SUCCESS;
+    clear_input_host(); input_host = *host; input_configured = 1; return XR_SUCCESS;
+}
+XrResult kl_native_configure_input2(const KlNativeInputHost2 *host) {
+    for (unsigned i = 0; i < INSTANCE_LIMIT; ++i)
+        if (instances[i].live) return XR_ERROR_CALL_ORDER_INVALID;
+    if (!host) { clear_input_host(); return XR_SUCCESS; }
+    if (host->version != KL_NATIVE_INPUT_HOST_VERSION_2 || host->struct_size < sizeof(*host) || !host->sample) return XR_ERROR_VALIDATION_FAILURE;
+    clear_input_host(); input_host2 = *host; input_configured = 2; return XR_SUCCESS;
 }
 
 /* Klepton enumeration two-call behavior; no extensions or API layers are
@@ -656,6 +671,21 @@ static XrResult XRAPI_CALL klxr_AttachSessionActionSets(XrSession session, const
     session->attached_count = info->countActionSets;
     return XR_SUCCESS;
 }
+static int xr_bool(XrBool32 value) { return value == XR_FALSE || value == XR_TRUE; }
+static int hand2_ok(const KlNativeInputHand2 *hand) {
+    if (!xr_bool(hand->connected) || !xr_bool(hand->grip_position_tracked) || !xr_bool(hand->aim_position_tracked) ||
+        !xr_bool(hand->primary_pressed) || !xr_bool(hand->secondary_pressed) || !xr_bool(hand->grip_pressed) ||
+        !xr_bool(hand->menu_pressed) || !xr_bool(hand->stick_pressed)) return 0;
+    int trigger_absent = isnan(hand->trigger), stick_absent = isnan(hand->stick_x) && isnan(hand->stick_y);
+    int stick_pair = isnan(hand->stick_x) == isnan(hand->stick_y);
+    if (!hand->connected)
+        return !hand->grip_position_tracked && !hand->aim_position_tracked && !hand->primary_pressed && !hand->secondary_pressed &&
+            !hand->grip_pressed && !hand->menu_pressed && !hand->stick_pressed && trigger_absent && stick_absent;
+    if (!trigger_absent && !(isfinite(hand->trigger) && hand->trigger >= 0.f && hand->trigger <= 1.f)) return 0;
+    if (!stick_pair) return 0;
+    if (!stick_absent && !(isfinite(hand->stick_x) && isfinite(hand->stick_y) && hand->stick_x >= -1.f && hand->stick_x <= 1.f && hand->stick_y >= -1.f && hand->stick_y <= 1.f)) return 0;
+    return 1;
+}
 static XrResult XRAPI_CALL klxr_SyncActions(XrSession session, const XrActionsSyncInfo *info) {
     if (!valid_session(session)) return XR_ERROR_HANDLE_INVALID;
     session->input_valid = 0; /* a failed sync cannot leave stale input observable */
@@ -670,6 +700,16 @@ static XrResult XRAPI_CALL klxr_SyncActions(XrSession session, const XrActionsSy
     if (!session->running) return XR_ERROR_SESSION_NOT_RUNNING;
     if (session->state != XR_SESSION_STATE_FOCUSED) return XR_SESSION_NOT_FOCUSED;
     if (!input_configured) return XR_ERROR_FUNCTION_UNSUPPORTED;
+    if (input_configured == 2) {
+        KlNativeInputSample2 sample = {0};
+        XrResult result = input_host2.sample(input_host2.context, &sample);
+        if (result != XR_SUCCESS) return XR_FAILED(result) ? result : XR_ERROR_RUNTIME_FAILURE;
+        if (!sample.sample_id || sample.sample_id < session->last_input_id || sample.sample_time <= 0 || sample.sample_time < session->last_input_time || (sample.sample_id == session->last_input_id && sample.sample_time != session->last_input_time)) return XR_ERROR_VALIDATION_FAILURE;
+        if (!hand2_ok(&sample.hand[0]) || !hand2_ok(&sample.hand[1])) return XR_ERROR_VALIDATION_FAILURE;
+        if (session->has_input2 && sample.sample_id == session->last_input2.sample_id && memcmp(sample.hand, session->last_input2.hand, sizeof sample.hand)) return XR_ERROR_VALIDATION_FAILURE;
+        session->last_input_id = sample.sample_id; session->last_input_time = sample.sample_time; session->last_input2 = sample; session->has_input2 = 1; session->input_valid = 1;
+        return XR_SUCCESS; /* Profile stays unset and action state stays inactive. */
+    }
     KlNativeInputSample sample = {0};
     XrResult result = input_host.sample(input_host.context, &sample);
     if (result != XR_SUCCESS) return XR_FAILED(result) ? result : XR_ERROR_RUNTIME_FAILURE;
