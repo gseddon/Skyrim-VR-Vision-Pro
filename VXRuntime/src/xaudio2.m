@@ -77,10 +77,12 @@ struct engine {
     float *ring; uint32_t ring_frames; volatile uint64_t written, read;
     uint32_t quantum, out_channels;               // frames per pass, the device's channels
     pthread_t thread; int thread_running, stop, engine_started;
+    int v27;                                      // created through COM as XAudio2 2.7 (xaudio2_7.dll): its own method tables
 };
 
 #define ROOM(e) ((__bridge dispatch_semaphore_t)(e)->room)
 static void **g_engine_vtbl, **g_source_vtbl, **g_submix_vtbl, **g_master_vtbl;
+static void **g_engine27_vtbl, **g_source27_vtbl, **g_submix27_vtbl, **g_master27_vtbl;
 static void lock(engine *e) { pthread_mutex_lock(&e->lock); }
 static void unlock(engine *e) { pthread_mutex_unlock(&e->lock); }
 
@@ -286,6 +288,7 @@ static void set_sends(voice *v, const VOICE_SENDS *sends) {
 }
 static voice *vself(void *this) { return this; }
 static WINAPI void voice_details(void *this, uint32_t *d) { voice *v = vself(this); d[0] = v->flags; d[1] = v->flags; d[2] = v->channels; d[3] = v->rate; }
+static WINAPI void voice_details27(void *this, uint32_t *d) { voice *v = vself(this); d[0] = v->flags; d[1] = v->channels; d[2] = v->rate; }   // 2.7: no ActiveFlags
 static WINAPI HRESULT voice_set_outputs(void *this, const VOICE_SENDS *s) { voice *v = vself(this); lock(v->eng); set_sends(v, s); unlock(v->eng); return S_OK; }
 // Effects and filters are accepted but not applied yet.
 static WINAPI HRESULT voice_set_effects(void *this, const void *chain) { (void)this; if (chain) d3d_not_implemented("IXAudio2Voice::SetEffectChain (effects)"); return S_OK; }
@@ -388,6 +391,7 @@ static WINAPI void source_get_state(void *this, uint8_t *st, uint32_t flags) {
     memcpy(st + 12, &n, 8);
     unlock(v->eng);
 }
+static WINAPI void source_get_state27(void *this, uint8_t *st) { source_get_state(this, st, 0); }
 static WINAPI HRESULT source_set_ratio(void *this, float r, uint32_t op) { (void)op; voice *v = vself(this); v->ratio = r < 1.0f / 1024 ? 1.0f / 1024 : r > v->max_ratio ? v->max_ratio : r; return S_OK; }
 static WINAPI void source_get_ratio(void *this, float *r) { *r = vself(this)->ratio; }
 static WINAPI HRESULT source_set_rate(void *this, uint32_t rate) { voice *v = vself(this); if (v->queue) return XAUDIO2_E_INVALID_CALL; v->rate = rate; v->fmt.rate = rate; return S_OK; }
@@ -395,8 +399,16 @@ static WINAPI HRESULT master_channel_mask(void *this, DWORD *mask) { voice *v = 
 
 // ---- the engine ---------------------------------------------------------------------------------------------------------------
 static engine *eself(void *this) { return this; }
+// XAudio2 2.7, the version the DirectX SDK (June 2010) shipped and games of that time (Skyrim) use: a COM class
+// {5A508685-A254-4FBA-9B82-9A24B00306AF} (the debug engine {DB05EA35-0329-4D4B-A53A-6DEAD03D3852} is the same here)
+// with interface {8BCF1F58-9FE7-4583-8AC6-E2ADC465C8BB}. The engine's table differs from 2.8's (device enumeration,
+// Initialize, a device index in CreateMasteringVoice); voices differ in GetVoiceDetails (no ActiveFlags) and
+// GetState (no flags); the rest is shared.
+static const GUID CLSID_XAudio2_27 = { 0x5a508685, 0xa254, 0x4fba, { 0x9b, 0x82, 0x9a, 0x24, 0xb0, 0x03, 0x06, 0xaf } };
+static const GUID CLSID_XAudio2_27_Debug = { 0xdb05ea35, 0x0329, 0x4d4b, { 0xa5, 0x3a, 0x6d, 0xea, 0xd0, 0x3d, 0x38, 0x52 } };
+static const GUID IID_IXAudio2_27 = { 0x8bcf1f58, 0x9fe7, 0x4583, { 0x8a, 0xc6, 0xe2, 0xad, 0xc4, 0x65, 0xc8, 0xbb } };
 static WINAPI HRESULT engine_qi(void *this, const GUID *iid, void **out) {
-    if (d3d_same_guid(iid, &IID_IUnknown_) || d3d_same_guid(iid, &IID_IXAudio2)) { d3d_addref(this); *out = this; return S_OK; }
+    if (d3d_same_guid(iid, &IID_IUnknown_) || d3d_same_guid(iid, ((engine *)this)->v27 ? &IID_IXAudio2_27 : &IID_IXAudio2)) { d3d_addref(this); *out = this; return S_OK; }
     *out = NULL;
     return E_NOINTERFACE;
 }
@@ -424,7 +436,7 @@ static WINAPI HRESULT engine_create_source(void *this, voice **out, const WAVEFO
     int kind = fmt ? sample_kind(fmt) : 0;
     if (!kind || !fmt->channels || fmt->channels > MAX_CHANNELS) { vx_log("XAudio2: source format (tag %#x, %u bits) is not supported yet", fmt ? fmt->tag : 0, fmt ? fmt->bits : 0); return XAUDIO2_E_INVALID_CALL; }
     if (!e->master) return XAUDIO2_E_INVALID_CALL;
-    voice *v = make_voice(e, V_SOURCE, fmt->channels, fmt->rate, g_source_vtbl);
+    voice *v = make_voice(e, V_SOURCE, fmt->channels, fmt->rate, e->v27 ? g_source27_vtbl : g_source_vtbl);
     v->fmt = *fmt; v->sample_kind = kind; v->callback = callback; v->flags = flags;
     if (!v->fmt.block) v->fmt.block = (uint16_t)(fmt->channels * fmt->bits / 8);
     v->max_ratio = max_ratio > 0 ? max_ratio : 2.0f;
@@ -438,7 +450,7 @@ static WINAPI HRESULT engine_create_source(void *this, voice **out, const WAVEFO
 static WINAPI HRESULT engine_create_submix(void *this, voice **out, uint32_t channels, uint32_t rate, uint32_t flags, uint32_t stage, const VOICE_SENDS *sends, const void *effects) {
     engine *e = eself(this);
     if (!e->master || !channels || channels > MAX_CHANNELS) return XAUDIO2_E_INVALID_CALL;
-    voice *v = make_voice(e, V_SUBMIX, channels, rate ? rate : e->master->rate, g_submix_vtbl);
+    voice *v = make_voice(e, V_SUBMIX, channels, rate ? rate : e->master->rate, e->v27 ? g_submix27_vtbl : g_submix_vtbl);
     v->flags = flags; v->stage = stage < 4 ? stage : 3;
     set_sends(v, sends);
     if (effects) voice_set_effects(v, effects);
@@ -455,7 +467,7 @@ static WINAPI HRESULT engine_create_master(void *this, voice **out, uint32_t cha
     if (channels > MAX_CHANNELS) return XAUDIO2_E_INVALID_CALL;
     e->quantum = rate / 100;
     if (e->quantum > MAX_QUANTUM) e->quantum = MAX_QUANTUM;
-    voice *m = make_voice(e, V_MASTER, channels, rate, g_master_vtbl);
+    voice *m = make_voice(e, V_MASTER, channels, rate, e->v27 ? g_master27_vtbl : g_master_vtbl);
     m->flags = flags;
     if (effects) voice_set_effects(m, effects);
     e->ring_frames = e->quantum * 6;
@@ -491,7 +503,39 @@ static WINAPI HRESULT engine_commit(void *this, uint32_t op) { (void)this; (void
 static WINAPI void engine_perf(void *this, uint8_t *data) { (void)this; memset(data, 0, 64); }
 static WINAPI void engine_debug(void *this, const void *cfg, void *r) { (void)this; (void)cfg; (void)r; }
 
+// ---- XAudio2 2.7's engine methods ---------------------------------------------------------------------------------------
+static WINAPI HRESULT engine27_device_count(void *this, uint32_t *count) { (void)this; *count = 1; return S_OK; }   // the default output
+// XAUDIO2_DEVICE_DETAILS (packed): DeviceID[256], DisplayName[256] (WCHAR), Role, a WAVEFORMATEXTENSIBLE (40 bytes).
+static WINAPI HRESULT engine27_device_details(void *this, uint32_t index, uint8_t *d) {
+    (void)this;
+    if (index != 0) return XAUDIO2_E_INVALID_CALL;
+    memset(d, 0, 1068);
+    static const char id[] = "0", name[] = "Default Output";
+    for (size_t i = 0; i < sizeof id; i++) ((uint16_t *)d)[i] = (uint16_t)id[i];
+    for (size_t i = 0; i < sizeof name; i++) ((uint16_t *)(d + 512))[i] = (uint16_t)name[i];
+    uint32_t role = 0xF;                                                     // GlobalDefaultDevice
+    memcpy(d + 1024, &role, 4);
+    uint8_t *w = d + 1028;                                                   // 2 ch, 48 kHz, 16 bit PCM (what the device mixes)
+    uint16_t tag = 0xFFFE, ch = 2, block = 4, bits = 16, extra = 22, valid = 16; uint32_t rate = 48000, bps = 192000, mask = 3;
+    memcpy(w, &tag, 2); memcpy(w + 2, &ch, 2); memcpy(w + 4, &rate, 4); memcpy(w + 8, &bps, 4);
+    memcpy(w + 12, &block, 2); memcpy(w + 14, &bits, 2); memcpy(w + 16, &extra, 2); memcpy(w + 18, &valid, 2);
+    memcpy(w + 20, &mask, 4); memcpy(w + 24, &SUBTYPE_PCM, 16);
+    return S_OK;
+}
+static WINAPI HRESULT engine27_initialize(void *this, uint32_t flags, uint32_t processor) { (void)this; (void)flags; (void)processor; return S_OK; }
+static WINAPI HRESULT engine27_create_master(void *this, voice **out, uint32_t channels, uint32_t rate, uint32_t flags, uint32_t device_index, const void *effects) {
+    (void)device_index;
+    return engine_create_master(this, out, channels, rate, flags, NULL, effects, 0);
+}
+
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
+// A copy of a vtable with the named methods replaced.
+static void **patched(void **base, const char *const *names, int count, const d3d_method *impl) {
+    void **vt = calloc((size_t)count, sizeof(void *));
+    memcpy(vt, base, (size_t)count * sizeof(void *));
+    for (int i = 0; i < count; i++) for (const d3d_method *m = impl; m->name; m++) if (!strcmp(m->name, names[i])) vt[i] = m->fn;
+    return vt;
+}
 static void make_tables(void) {
     static const d3d_method eng[] = { { "QueryInterface", (void *)engine_qi }, { "AddRef", (void *)engine_addref }, { "Release", (void *)engine_release },
         { "RegisterForCallbacks", (void *)engine_register }, { "UnregisterForCallbacks", (void *)engine_unregister },
@@ -518,29 +562,63 @@ static void make_tables(void) {
     g_source_vtbl = D3D_VTABLE(IXAudio2SourceVoice, source);
     g_submix_vtbl = D3D_VTABLE(IXAudio2SubmixVoice, submix);
     g_master_vtbl = D3D_VTABLE(IXAudio2MasteringVoice, master);
+    // 2.7: the same voices with GetVoiceDetails and (source voices) GetState replaced, and its own engine table.
+    static const d3d_method v27_details[] = { { "GetVoiceDetails", (void *)voice_details27 }, { NULL, NULL } };
+    static const d3d_method src27[] = { { "GetVoiceDetails", (void *)voice_details27 }, { "GetState", (void *)source_get_state27 }, { NULL, NULL } };
+    g_source27_vtbl = patched(g_source_vtbl, vt_IXAudio2SourceVoice, VT_COUNT_IXAudio2SourceVoice, src27);
+    g_submix27_vtbl = patched(g_submix_vtbl, vt_IXAudio2SubmixVoice, VT_COUNT_IXAudio2SubmixVoice, v27_details);
+    g_master27_vtbl = patched(g_master_vtbl, vt_IXAudio2MasteringVoice, VT_COUNT_IXAudio2MasteringVoice, v27_details);
+    static const char *const vt_engine27[] = { "QueryInterface", "AddRef", "Release", "GetDeviceCount", "GetDeviceDetails", "Initialize",
+        "RegisterForCallbacks", "UnregisterForCallbacks", "CreateSourceVoice", "CreateSubmixVoice", "CreateMasteringVoice", "StartEngine",
+        "StopEngine", "CommitChanges", "GetPerformanceData", "SetDebugConfiguration" };
+    static void *const stub_engine27[16] = { 0 };               // (every method of the table is implemented)
+    static const d3d_method eng27[] = { { "QueryInterface", (void *)engine_qi }, { "AddRef", (void *)engine_addref }, { "Release", (void *)engine_release },
+        { "GetDeviceCount", (void *)engine27_device_count }, { "GetDeviceDetails", (void *)engine27_device_details },
+        { "Initialize", (void *)engine27_initialize },
+        { "RegisterForCallbacks", (void *)engine_register }, { "UnregisterForCallbacks", (void *)engine_unregister },
+        { "CreateSourceVoice", (void *)engine_create_source }, { "CreateSubmixVoice", (void *)engine_create_submix },
+        { "CreateMasteringVoice", (void *)engine27_create_master }, { "StartEngine", (void *)engine_start }, { "StopEngine", (void *)engine_stop },
+        { "CommitChanges", (void *)engine_commit }, { "GetPerformanceData", (void *)engine_perf }, { "SetDebugConfiguration", (void *)engine_debug },
+        { NULL, NULL } };
+    g_engine27_vtbl = d3d_vtable(vt_engine27, stub_engine27, 16, eng27);
 }
 
-static WINAPI HRESULT XAudio2Create(void **out, uint32_t flags, uint32_t processor) {
-    (void)flags; (void)processor;
-    if (xa_trace()) vx_log("XAudio2: XAudio2Create (flags %#x)", flags);
+static engine *new_engine(int v27) {
     pthread_once(&g_once, make_tables);
-    engine *e = d3d_alloc(sizeof *e, K_STATE, g_engine_vtbl, NULL);
+    engine *e = d3d_alloc(sizeof *e, K_STATE, v27 ? g_engine27_vtbl : g_engine_vtbl, NULL);
+    e->v27 = v27;
     pthread_mutexattr_t a; pthread_mutexattr_init(&a); pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
     pthread_mutex_init(&e->lock, &a);
     pthread_mutexattr_destroy(&a);
     e->room = (__bridge_retained void *)dispatch_semaphore_create(0);
     e->engine_started = 1;                                       // XAudio2Create returns a running engine
     e->base.destroy = engine_destroy;
-    *out = e;
+    return e;
+}
+static WINAPI HRESULT XAudio2Create(void **out, uint32_t flags, uint32_t processor) {
+    (void)processor;
+    if (xa_trace()) vx_log("XAudio2: XAudio2Create (flags %#x)", flags);
+    *out = new_engine(0);
     return S_OK;
+}
+// CoCreateInstance of the 2.7 engine.
+static HRESULT create_engine27(const void *iid, void **out) {
+    if (xa_trace()) vx_log("XAudio2: CoCreateInstance (2.7 engine)");
+    engine *e = new_engine(1);
+    HRESULT r = engine_qi(e, iid, out);
+    d3d_release(&e->base);
+    return r;
 }
 static WINAPI HRESULT XAudio2CreateWithVersionInfo(void **out, uint32_t flags, uint32_t processor, DWORD version) { (void)version; return XAudio2Create(out, flags, processor); }
 
+void vx_com_register_class(const void *clsid, HRESULT (*create)(const void *iid, void **out));
 static const vx_export xaudio2[] = { VX_EXPORT(XAudio2Create), VX_EXPORT(XAudio2CreateWithVersionInfo) };
 void vx_xaudio2_init(void) {
     vx_register_module("xaudio2_9.dll", xaudio2, sizeof xaudio2 / sizeof xaudio2[0]);
     vx_register_module("xaudio2_9redist.dll", xaudio2, sizeof xaudio2 / sizeof xaudio2[0]);
     vx_register_module("xaudio2_8.dll", xaudio2, sizeof xaudio2 / sizeof xaudio2[0]);
+    vx_com_register_class(&CLSID_XAudio2_27, create_engine27);
+    vx_com_register_class(&CLSID_XAudio2_27_Debug, create_engine27);
 }
 
 #ifdef __aarch64__

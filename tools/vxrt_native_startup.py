@@ -129,6 +129,26 @@ def validate(result):
     return problems
 
 
+def expand_xinput_repeat(repeat, script=None):
+    """BUTTONS@FROM-TO/EVERY[:HOLD] (seconds from process start, HOLD defaults to 0.2) as START:BUTTONS:HOLD entries,
+    merged with an explicit --xinput-script and ordered by start time."""
+    m = re.fullmatch(r'([A-Za-z]+(?:\+[A-Za-z]+)*|0x[0-9a-fA-F]+|[0-9]+)@([0-9]+(?:\.[0-9]+)?)-([0-9]+(?:\.[0-9]+)?)/([0-9]+(?:\.[0-9]+)?)(?::([0-9]+(?:\.[0-9]+)?))?', repeat)
+    if not m:
+        raise ValueError('--xinput-repeat: expected BUTTONS@FROM_S-TO_S/EVERY_S[:HOLD_S], e.g. A@30-120/3')
+    buttons, start, end, every, hold = m.group(1), float(m.group(2)), float(m.group(3)), float(m.group(4)), float(m.group(5) or 0.2)
+    if every <= hold or every < 0.5 or end < start or (end - start) / every > 500:
+        raise ValueError('--xinput-repeat: EVERY must exceed HOLD (and be at least 0.5 s), TO must not precede FROM, at most 500 presses')
+    entries = []
+    t = start
+    while t <= end + 1e-9:
+        entries.append((t, '%g:%s:%g' % (t, buttons, hold)))
+        t += every
+    if script:
+        for item in script.split(','):
+            entries.append((float(item.split(':')[0]), item))
+    return ','.join(item for _, item in sorted(entries, key=lambda e: e[0]))
+
+
 def capture(args):
     out = Path(args.out).resolve()
     if out == REPO or not out.is_relative_to(REPO) or out.exists():
@@ -247,6 +267,8 @@ def capture(args):
             splits = os.path.abspath(args.aot_splits)
             env['VXRT_AOT_SPLITS'] = splits
             result.setdefault('diagnostic', {})['aot_splits'] = splits
+        if getattr(args, 'xinput_repeat', None):
+            args.xinput_script = expand_xinput_repeat(args.xinput_repeat, getattr(args, 'xinput_script', None))
         if getattr(args, 'xinput_script', None):
             spec = args.xinput_script
             entry = r'[0-9]+(\.[0-9]+)?:([A-Za-z]+(\+[A-Za-z]+)*|0x[0-9a-fA-F]+|[0-9]+):[0-9]+(\.[0-9]+)?'
@@ -338,6 +360,7 @@ def main():
     ap.add_argument('--dump-eyes', action='store_true', help='diagnostic only: the experimental dev host writes raw RGBA of the published eyes for frames 1, 2, 60, 300 and 600 under <out>/eyes')
     ap.add_argument('--diag-env', action='append', metavar='NAME[=VALUE]', help='diagnostic only, repeatable: one of the renderer tracing knobs (%s)' % ', '.join(sorted(DIAG_ENV)))
     ap.add_argument('--xinput-script', default=None, metavar='SPEC', help='diagnostic only: VXRT_XINPUT_SCRIPT, a scripted virtual gamepad START_S:BUTTONS:HOLD_S[,...] (e.g. 40:A:0.3) with times from process start')
+    ap.add_argument('--xinput-repeat', default=None, metavar='SPEC', help='diagnostic only: press a scripted-gamepad button repeatedly, BUTTONS@FROM_S-TO_S/EVERY_S[:HOLD_S] (e.g. A@30-120/3), merged with --xinput-script; the same virtual gamepad as --xinput-script')
     ap.add_argument('--stay-active', action='store_true', help='VXRT_STAY_ACTIVE=1: the game window stays the active window when the Mac moves on to another app (a game played in a headset is seldom frontmost; an inactive Skyrim pauses its world)')
     ap.add_argument('--aot-splits', default=None, metavar='FILE', help='diagnostic only: VXRT_AOT_SPLITS file the runtime writes with the x86 instructions whose ordered access crossed 16 bytes (input for vxrt-aot)')
     ap.add_argument('--wait-dump', default=None, help='diagnostic only: VXRT_WAIT_DUMP seconds list, e.g. 30,50: log threads blocked in waits, with their guest return addresses')
