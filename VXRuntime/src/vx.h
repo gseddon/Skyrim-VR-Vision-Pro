@@ -162,6 +162,10 @@ static inline void vx_unlow_at(uint64_t p) {                  // (an output the 
 
 #define VX_LOW(p) ((void *)(uintptr_t)vx_low((uint64_t)(uintptr_t)(p)))
 #else
+// (the x86-64 build runs in the program's own address space: nothing moves)
+static inline uint64_t vx_low(uint64_t v) { return v; }
+static inline uint64_t vx_unlow(uint64_t v) { return v; }
+static inline void vx_unlow_at(uint64_t p) { (void)p; }
 #define VX_LOW(p) ((void *)(p))
 #endif
 // A new Metal buffer whose memory a Map will hand the program: the vCPU guest must not keep an older page at that

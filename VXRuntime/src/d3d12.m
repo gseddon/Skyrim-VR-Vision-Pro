@@ -529,7 +529,7 @@ static WINAPI HRESULT child_get_device(void *this, const GUID *iid, void **out) 
     { "SetPrivateDataInterface", (void *)obj_set_private_iface }, { "GetDevice", (void *)child_get_device }
 
 static void *alloc12(size_t size, int kind, void **vtbl, dev12 *dev) {
-    obj12 *o = d3d_alloc(size, kind, vtbl, NULL);
+    obj12 *o = d3d_alloc_plain(size, kind, vtbl, NULL);
     o->dev = dev;
     if (dev) d3d_addref(&dev->base);
     return o;
