@@ -189,6 +189,37 @@ static uint64_t insn_before(uint64_t va) {
 static int decode_at(uint64_t va, x86_insn *d) { return x86_decode(G->mem + (va - G->base), 15, d) > 0; }
 static int is_mem(const x86_insn *d) { return d->has_modrm && d->mod != 3; }
 
+// Whether an instruction may write general register r (a conservative reading: an operand we cannot tell is taken as written),
+// and, for a plain register copy, the register it copies from in *src (else -1).
+static int writes_reg(const x86_insn *d, int r, int *src) {
+    *src = -1;
+    int op = d->opcode;
+    if (!d->has_modrm) {
+        if (d->map != X86_MAP_1) return 0;
+        if (op < 0x40 && (op & 7) >= 4 && (op & 7) < 6) return (op & 0x38) != 0x38 && r == 0;   // ALU AL/eAX, imm (not CMP)
+        if (op >= 0xB0 && op <= 0xBF) return (op & 7) == (r & 7);                                // MOV r, imm
+        if (op >= 0x58 && op <= 0x5F) return (op & 7) == (r & 7);                                // POP r
+        if (op >= 0x91 && op <= 0x97) return r == 0 || (op & 7) == (r & 7);                      // XCHG eAX, r
+        if (op == 0x98) return r == 0;                                                           // CDQE / CWDE
+        if (op == 0x99) return r == 2;                                                           // CDQ / CQO
+        if (op == 0xE8) return r <= 2 || (r >= 8 && r <= 11);                                    // a call: the volatile registers
+        return 0;
+    }
+    int reg = d->reg & 15, rm = d->rm & 15, regop = d->mod == 3;
+    if (d->map == X86_MAP_1) {
+        if (op < 0x40 && (op & 7) < 6) {                                                         // ALU r/m, r and r, r/m
+            if ((op & 0x38) == 0x38) return 0;                                                   // CMP
+            return (op & 2) ? reg == r : (regop && rm == r);
+        }
+        if (op >= 0x80 && op <= 0x83) return (d->reg & 7) != 7 && regop && rm == r;              // ALU r/m, imm (not CMP)
+        if (op == 0x84 || op == 0x85) return 0;                                                  // TEST
+        if (op == 0x88 || op == 0x89) { if (!regop || rm != r) return 0; if (op == 0x89) *src = reg; return 1; }    // MOV r/m, r
+        if (op == 0x8A || op == 0x8B || op == 0x63) { if (reg != r) return 0; if (op != 0x8A && regop) *src = rm; return 1; }    // MOV r, r/m; MOVSXD
+        if (op == 0x8D) return reg == r;                                                         // LEA
+    }
+    return reg == r || (regop && rm == r);
+}
+
 // A jump table before `jmp reg` at site: the table's address, its entries' size and signedness, and the base they are
 // added to, from the instructions before it (in this block or the one falling into it). Entries are read while they
 // are in bounds (a CMP with the index and a JA/JAE before the jump) or, without one, while their targets are code of
@@ -198,13 +229,23 @@ static void jump_table(uint64_t site) {
     int reg = j.rm;
     uint64_t at = site;
     int64_t table = -1, add_base = 0; int esize = 0, sign = 0, have_add = 0, add_reg = -1, idx = -1, load_base = -1; int32_t disp = 0;
-    int64_t bound = -1;
+    int64_t bound = -1, bound2 = -1; int idx2 = -1, idx2_dead = 0, frozen = 0;
     // (back through the code before it in address order, to the function's start at most: a table's base is often
     //  loaded once before the loop that dispatches through it)
     for (int n = 0; n < 256 && (at = insn_before(at)); n++) {
         x86_insn d; if (!decode_at(at, &d)) break;
         if (g_mark[at - G->base] & M_FUNC) n = 256 - 1;   // (this instruction, then stop)
         int op = d.opcode;
+        if (idx2 < 0 && !idx2_dead && idx >= 0) idx2 = idx;   // (the index register as the table's load has it, then followed back through copies)
+        if (frozen) {
+            // (the table and its base are settled, the legacy bound is what it is: only the compare of the register the index was
+            //  copied from is still wanted, so nothing else is read again, a farther LEA of the base register would replace the base)
+            if (n >= 16) break;
+            if (d.map == X86_MAP_1 && (op == 0x83 || op == 0x81 || op == 0x3D) && ((op == 0x3D && (idx2 & 15) == 0) || (d.mod == 3 && (d.reg & 7) == 7 && (d.rm & 15) == (idx2 & 15)))) { bound2 = d.imm + 1; break; }
+            int from;
+            if (writes_reg(&d, idx2 & 15, &from)) { idx2 = from; if (from < 0) break; }
+            continue;
+        }
         if (d.map == X86_MAP_1 && (op == 0x01 || op == 0x03) && d.mod == 3 && !have_add) {        // ADD reg, X
             int dst = op == 0x01 ? d.rm : d.reg, src = op == 0x01 ? d.reg : d.rm;
             if (dst == reg) { have_add = 1; add_reg = src; continue; }
@@ -229,10 +270,22 @@ static void jump_table(uint64_t site) {
         if (idx >= 0 && d.map == X86_MAP_1 && (op == 0x83 || op == 0x81 || op == 0x3D) && ((op == 0x3D && (idx & 15) == 0) || (d.mod == 3 && (d.reg & 7) == 7 && (d.rm & 15) == (idx & 15)))) {
             // CMP idx, imm: then the JA / JAE after it (the first conditional branch we passed)
             if (bound < 0 && n < 16) bound = d.imm + 1;
+            if (table >= 0 && (!have_add || add_base)) { if (bound2 >= 0 || idx2 < 0) break; frozen = 1; }
+            continue;
+        }
+        if (idx2 >= 0 && d.map == X86_MAP_1 && (op == 0x83 || op == 0x81 || op == 0x3D) && ((op == 0x3D && (idx2 & 15) == 0) || (d.mod == 3 && (d.reg & 7) == 7 && (d.rm & 15) == (idx2 & 15)))) {
+            // the same compare of the register the index was copied from (`cmp ebx, 7; ja; movsxd rax, ebx; jmp [.. + rax*4]`): the
+            // legacy search above looks for the index register's own number, which an unrelated compare of it earlier can match
+            if (bound2 < 0 && n < 16) bound2 = d.imm + 1;
             if (table >= 0 && (!have_add || add_base)) break;
             continue;
         }
+        if (idx2 >= 0 && bound2 < 0) {
+            int from;
+            if (writes_reg(&d, idx2 & 15, &from)) { idx2 = from; if (from < 0) idx2_dead = 1; }
+        }
     }
+    if (bound2 > bound) bound = bound2;   // (only ever more entries than the legacy bound gave: candidates that are not code are skipped)
     if (esize == 4 && have_add && (table < 0 || add_base == 0)) {
         // (the base's LEA not on the straight line before it: the last LEA of that register from the function's start,
         //  in address order, a loop's table base hoisted above the loop)
