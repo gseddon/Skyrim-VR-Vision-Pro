@@ -7,6 +7,7 @@
 #include "aot.h"
 #include <ctype.h>
 #include <dlfcn.h>
+#include <libproc.h>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 #include <pthread.h>
@@ -111,10 +112,15 @@ int xa_load(const char *path, uint64_t base, uint64_t size, uint64_t hash) {
     return 0;
 }
 
-// The arena: 512 MB at 0xf00000000 (VXRT_AOT_ARENA=<hex>, VXRT_AOT_ARENA_MB), where modules' images are made for
-// (vxrt-aot with VXRT_AOT_BASE: the exe relocated too), reserved at start. Below 0x1000000000 (a macOS 14 process's end) the system
-// has already placed randomized regions by main (malloc's 128 MB chunks, two 12 GB ones, the runtime's own dylibs near
-// 0x140000000 as ASLR falls); this range is free about 9 times in 10, and main starts again when it is not.
+// The arena: 512 MB at 0x300000000 (VXRT_AOT_ARENA=<hex>, VXRT_AOT_ARENA_MB), where modules' images are made for
+// (vxrt-aot with VXRT_AOT_BASE: the exe relocated too), reserved at start. Why there: macOS arm64 gives every process, at
+// exec and before any of our code runs, two 12 GB "GPU Carveout (reserved)" ranges (and 1 GB at 0xfc0000000) at random
+// addresses, always at or above 0x400000000 (measured over 4000 samples: lowest start 0x400000000, highest end
+// 0xfbe000000; vmmap shows them). The old arena at 0xf00000000 was inside that band and was taken in about a third of
+// starts (carveouts alone: 12.7%); below it nothing is ever placed by the system. 0x300000000 is above the system's shared
+// cache submaps (0x180000000-0x1ea000000, 0x1fc000000-0x294000000) and below 0x400000000. Modules made for another arena
+// (the earlier 0xf00000000) need VXRT_AOT_ARENA=f00000000 to be used; a restart (main starts again, up to 5 times) still
+// covers the odd collision with a library ASLR placed there.
 // An image whose base is in the arena is mapped over the reservation.
 // visionOS: the system maps 0x2e4000000-0xfc0000000 in every app on the headset, so the arena is wherever the
 // modules linked into (or embedded in) the app were made for: the registry says (vxrt_aot_arena_base/_size, from
@@ -129,7 +135,7 @@ uint64_t xa_arena_base(void) {
 #if VX_XROS
     return vxrt_aot_arena_base;
 #else
-    return 0xf00000000ull;
+    return 0x300000000ull;
 #endif
 }
 uint64_t xa_arena_size(void) {
@@ -157,11 +163,15 @@ int xa_reserve(void) {
     if (mach_vm_allocate(mach_task_self(), &a, n, VM_FLAGS_FIXED) == KERN_SUCCESS) { g_arena_lo = a; g_arena_hi = a + n; return 1; }
     else {
         vx_log("aot: the image arena at %#llx is taken: modules there are not used", (unsigned long long)a);
-        mach_vm_address_t r = a; mach_vm_size_t rs; vm_region_basic_info_data_64_t info; mach_port_t o;
-        for (int i = 0; i < 8; i++) {
-            mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64;
-            if (mach_vm_region(mach_task_self(), &r, &rs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&info, &cnt, &o) || r >= a + n) break;
-            vx_log("aot:   %#llx-%#llx is mapped", (unsigned long long)r, (unsigned long long)(r + rs));
+        mach_vm_address_t r = a; natural_t depth = 0;     // (what sits there: permissions, tag, sharing, file)
+        for (int i = 0; i < 12; i++) {
+            mach_vm_size_t rs = 0; struct vm_region_submap_info_64 info; mach_msg_type_number_t cnt = VM_REGION_SUBMAP_INFO_COUNT_64;
+            if (mach_vm_region_recurse(mach_task_self(), &r, &rs, &depth, (vm_region_recurse_info_t)&info, &cnt) != KERN_SUCCESS || r >= a + n) break;
+            if (info.is_submap) { depth++; continue; }
+            char file[512] = "";
+            if (info.share_mode != SM_EMPTY) proc_regionfilename(getpid(), r, file, sizeof file);
+            vx_log("aot:   %#llx-%#llx prot=%d/%d user_tag=%u share=%d %s", (unsigned long long)r, (unsigned long long)(r + rs),
+                   info.protection, info.max_protection, info.user_tag, info.share_mode, file);
             r += rs;
         }
     }

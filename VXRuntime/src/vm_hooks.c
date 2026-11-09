@@ -47,7 +47,10 @@ static kern_return_t my_mach_vm_map(vm_map_t t, mach_vm_address_t *a, mach_vm_si
 enum { HEAP_RANGE = 16ull << 30 };
 static xh_heap *g_heap;
 __attribute__((constructor)) static void heap_init(void) {
-    uint8_t *r = mmap(NULL, HEAP_RANGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    // (Hinted to just above the AOT arena, translator/aot.c: with no hint the kernel puts 16 GB in the lowest hole big
+    // enough, and when the system's GPU carveouts leave one at 0x300000000 -- about every other start -- that took
+    // the arena. Where the hint is not free the kernel chooses, as before.)
+    uint8_t *r = mmap((void *)0x320000000ull, HEAP_RANGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (r == MAP_FAILED) return;
     xh_heap *h = (xh_heap *)r;
     h->base = (uint64_t)(uintptr_t)r; h->limit = h->base + HEAP_RANGE;
