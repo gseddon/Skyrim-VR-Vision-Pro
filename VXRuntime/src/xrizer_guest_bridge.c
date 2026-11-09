@@ -267,6 +267,11 @@ static WINAPI int one_pose(guest_object *self, uint32_t index, void *render, voi
 static WINAPI uint32_t controller_index(guest_object *self, int role) {
     require(self == &system_object); native_role_fn fn = (native_role_fn)native_table(self)[18]; return fn(self->native, role);
 }
+// IVRSystem slot 19, GetControllerRoleForTrackedDeviceIndex(uint32_t index) -> ETrackedControllerRole (a 32-bit enum); scalars only.
+typedef int (*native_index_role_fn)(void *, uint32_t);
+static WINAPI int controller_role(guest_object *self, uint32_t index) {
+    require(self == &system_object); native_index_role_fn fn = (native_index_role_fn)native_table(self)[19]; return fn(self->native, index);
+}
 // System019 Windows VREvent_t data is at byte 16; the pinned Apple native
 // VREvent_t data is at byte 12. Current xrizer emits controller-sized payloads.
 static WINAPI uint8_t poll_event(guest_object *self, void *event, uint32_t size) {
@@ -499,7 +504,7 @@ void *vx_xrizer_guest_core(void *native_core) {
     system_fns[46] = unsupported_fns_46;
     core_table[0] = core_init; core_table[1] = core_cleanup; core_table[2] = core_version; core_table[3] = core_interface; core_table[4] = core_present;
     system_table[0] = render_size; system_table[1] = member_projection; system_table[2] = projection_raw; system_table[4] = member_transform;
-    system_table[7] = dxgi_output; system_table[18] = controller_index; system_table[28] = string_property; system_table[30] = poll_event; system_table[33] = hidden_area_mesh; system_table[39] = input_available;
+    system_table[7] = dxgi_output; system_table[18] = controller_index; system_table[19] = controller_role; system_table[28] = string_property; system_table[30] = poll_event; system_table[33] = hidden_area_mesh; system_table[39] = input_available;
     compositor_table[0] = tracking_space; compositor_table[2] = wait_poses; compositor_table[3] = last_poses; compositor_table[4] = one_pose; compositor_table[5] = submit; compositor_table[7] = handoff; compositor_table[8] = frame_timing; compositor_table[24] = can_render_scene;
     system_fns[1] = fntable_projection; system_fns[2] = fntable_raw; system_fns[4] = fntable_transform;
     cleaned = 0; core.native = native_core; return &core;
