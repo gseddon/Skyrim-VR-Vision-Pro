@@ -516,6 +516,11 @@ void d3d_texture_png(d3d_device *dev, void *texture, const char *path) {
     }
     const uint8_t *mid = (const uint8_t *)buf.contents + (h / 2) * row + (w / 2) * 4;
     vx_log("snapshot: centre texel bytes %02x %02x %02x %02x", mid[0], mid[1], mid[2], mid[3]);
+    if (!bpp) {                                     // the PNG leaves alpha out: its spread, for 8-bit formats
+        uint64_t sum = 0, opaque = 0, clear = 0; const uint8_t *px = buf.contents;
+        for (NSUInteger i = 0; i < w * h; i++) { uint8_t a = px[i * 4 + 3]; sum += a; opaque += a == 255; clear += a == 0; }
+        vx_log("snapshot: alpha mean %.1f, %.1f%% of texels 255, %.1f%% 0", (double)sum / (double)(w * h), 100.0 * (double)opaque / (double)(w * h), 100.0 * (double)clear / (double)(w * h));
+    }
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
     CGBitmapInfo info = bgra ? (kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst) : (kCGBitmapByteOrder32Big | kCGImageAlphaNoneSkipLast);
     CGContextRef ctx = CGBitmapContextCreate(buf.contents, w, h, 8, row, cs, info);

@@ -183,6 +183,7 @@ static void render_source(voice *v, float *out, uint32_t n, uint32_t out_rate) {
                 void *ctx = q->b.context;
                 int eos = q->b.flags & XAUDIO2_END_OF_STREAM;
                 free_queued(q);
+                if (v->xwma && xa_trace()) { static int n; if (n++ < 300) vx_log("XAudio2: xWMA buffer played out on voice %p%s", (void *)v, eos ? " (end of stream)" : ""); }
                 if (v->callback) { CALL(v->callback, buffer_end, ctx); if (eos) CALL(v->callback, stream_end); }
                 continue;
             }
@@ -362,11 +363,14 @@ static WINAPI HRESULT source_submit(void *this, const XA_BUFFER *b, const void *
     if (xw) {
         if (!xw->cumulative || !xw->packets) return XAUDIO2_E_INVALID_CALL;
         uint32_t bytes = xw->cumulative[xw->packets - 1];
-        if (!bytes || bytes > (256u << 20)) return XAUDIO2_E_INVALID_CALL;
+        if (!bytes || bytes > (256u << 20)) { if (xa_trace()) vx_log("XAudio2: xWMA buffer refused (%u packets, %u decoded bytes)", xw->packets, bytes); return XAUDIO2_E_INVALID_CALL; }
         bytes -= bytes % v->fmt.block;
         silence = calloc(1, bytes);
+        uint32_t data_bytes = b->bytes;
         sb = *b; sb.data = silence; sb.bytes = bytes; sb.play_begin = sb.play_length = 0; b = &sb;
-        static int noted; if (!noted++ && xa_trace()) vx_log("XAudio2: xWMA voice (%u packets, %u decoded bytes): played as silence", xw->packets, bytes);
+        static int noted; if (noted++ < 300 && xa_trace())
+            vx_log("XAudio2: xWMA buffer on voice %p (%u ch %u Hz): %u packets, cumulative %u..%u, %u data bytes, flags %#x, loops %u: %.2f s of silence",
+                   (void *)v, v->fmt.channels, v->fmt.rate, xw->packets, xw->cumulative[0], bytes, data_bytes, b->flags, b->loop_count, (double)bytes / v->fmt.block / v->fmt.rate);
     }
     queued *q = calloc(1, sizeof *q);
     q->own = silence;
@@ -463,7 +467,7 @@ static WINAPI HRESULT engine_create_source(void *this, voice **out, const WAVEFO
     set_sends(v, sends);
     if (effects) voice_set_effects(v, effects);
     lock(e); v->next = e->voices; e->voices = v; unlock(e);
-    if (xa_trace()) { static int n; if (n++ < 10) vx_log("XAudio2: source voice tag %#x %u ch %u Hz %u bits", fmt->tag, fmt->channels, fmt->rate, fmt->bits); }
+    if (xa_trace()) { static int n; if (n++ < 10 || (kind == 4 && n < 400)) vx_log("XAudio2: source voice tag %#x %u ch %u Hz %u bits", fmt->tag, fmt->channels, fmt->rate, fmt->bits); }
     *out = v;
     return S_OK;
 }

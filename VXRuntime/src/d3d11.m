@@ -994,9 +994,29 @@ static void clear_later(d3d_context *c, d3d_view *v, const float *color, int dep
     p->clear_depth = (uint8_t)(depth != 0); p->depth = depth_value;
     p->clear_stencil = (uint8_t)(stencil != 0); p->stencil = stencil_value;
 }
+extern int vx_draw_trace_active;
+#ifdef __aarch64__
+void *vx_x86_return_address(void);   // (arm64.c: the guest's return address of the call into the runtime)
+int vx_x86_stack_words(uint64_t *out, int n, uint64_t lo, uint64_t hi);
+#else
+static void *vx_x86_return_address(void) { return __builtin_return_address(0); }
+static int vx_x86_stack_words(uint64_t *out, int n, uint64_t lo, uint64_t hi) { (void)out; (void)n; (void)lo; (void)hi; return 0; }
+#endif
 static WINAPI void ctx_clear_rtv(void *this, d3d_view *v, const float color[4]) {
     static int traced;
-    if (getenv("VXRT_TRACE_DRAWS") && v && v->resource->kind == K_TEXTURE && ((d3d_texture *)v->resource)->desc[TD_WIDTH] != 2048 && traced++ < 40)
+    if (vx_draw_trace_active && v && v->resource->kind == K_TEXTURE) {   // (VXRT_TRACE_DRAWS is logging: every clear, by texture identity)
+        // VXRT_TRACE_CLEAR_STACK=lo-hi (hex): also the guest stack words in that range (the callers above)
+        static const char *range; static uint64_t lo, hi; static int parsed;
+        if (!parsed) { parsed = 1; range = getenv("VXRT_TRACE_CLEAR_STACK"); if (range) sscanf(range, "%llx-%llx", (unsigned long long *)&lo, (unsigned long long *)&hi); }
+        if (hi > lo) {
+            uint64_t w[10]; int k = vx_x86_stack_words(w, 10, lo, hi); char line[256]; size_t at = 0;
+            for (int i = 0; i < k && at < sizeof line - 20; i++) at += (size_t)snprintf(line + at, sizeof line - at, " %llx", (unsigned long long)w[i]);
+            vx_log("clear rtv @%05lx stack:%s", (unsigned long)((uintptr_t)v->resource >> 4 & 0xfffff), k ? line : " (none)");
+        }
+        vx_log("clear rtv @%05lx %ux%u f%u to (%g, %g, %g, %g) from %p (colour at %p)", (unsigned long)((uintptr_t)v->resource >> 4 & 0xfffff), ((d3d_texture *)v->resource)->desc[TD_WIDTH],
+               ((d3d_texture *)v->resource)->desc[TD_HEIGHT], v->format, color[0], color[1], color[2], color[3], vx_x86_return_address(), (const void *)color);
+    }
+    else if (getenv("VXRT_TRACE_DRAWS") && v && v->resource->kind == K_TEXTURE && ((d3d_texture *)v->resource)->desc[TD_WIDTH] != 2048 && traced++ < 40)
         vx_log("ClearRenderTargetView %ux%u to (%g, %g, %g, %g)", ((d3d_texture *)v->resource)->desc[TD_WIDTH], ((d3d_texture *)v->resource)->desc[TD_HEIGHT], color[0], color[1], color[2], color[3]);
     if (v && v->resource->kind == K_TEXTURE) clear_later(this, v, color, 0, 0, 0, 0);
 }
@@ -1029,7 +1049,6 @@ static void hold(d3d_view **slot, d3d_view *v) {
     if (*slot) d3d_release(&(*slot)->base);
     *slot = v;
 }
-extern int vx_draw_trace_active;
 // (VXRT_TRACE_DRAWS: the copies between the draws, by texture identity, so a texture's path through a frame can be followed)
 static void trace_copy_op(const char *what, d3d_object *dst, uint32_t dsub, uint32_t x, uint32_t y, d3d_object *src, uint32_t ssub, const uint32_t *box) {
     if (!vx_draw_trace_active || !dst || !src) return;
