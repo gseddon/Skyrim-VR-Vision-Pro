@@ -1,7 +1,8 @@
 // XAudio2 2.7 (xaudio2_7.dll, the version Skyrim and other games of 2010-2013 use) through COM: the class
 // {5A508685-...}, interface {8BCF1F58-...} and its method table (device enumeration, Initialize, CreateMasteringVoice
 // with a device index; voices with a 12-byte GetVoiceDetails and a one-argument GetState). The table is written out
-// here by hand from the June 2010 DirectX SDK's xaudio2.h, not taken from MinGW's (2.8/2.9) header. Plays silence.
+// here by hand from the June 2010 DirectX SDK's xaudio2.h, not taken from MinGW's (2.8/2.9) header. Plays silence,
+// then xWMA: WMA Pro as silence of its decoded length, WMA v2 decoded (wma_v2).
 #define COBJMACROS
 #include <windows.h>
 #include <initguid.h>
@@ -40,6 +41,67 @@ static void WINAPI cb_be(IXAudio2VoiceCallback *i, void *c) { (void)c; Interlock
 static void WINAPI cb_le(IXAudio2VoiceCallback *i, void *c) { (void)i; (void)c; }
 static void WINAPI cb_er(IXAudio2VoiceCallback *i, void *c, HRESULT h) { (void)i; (void)c; (void)h; }
 static IXAudio2VoiceCallbackVtbl cbvt = { cb_ps, cb_pe, cb_se, cb_bs, cb_be, cb_le, cb_er };
+
+#include "wma/m22_24k_packets.h"
+typedef HRESULT (WINAPI *submit_fn)(void *, const XAUDIO2_BUFFER *, const void *);
+static void wait_stream_end(callback *cb, LONG n) { for (int i = 0; i < 500 && cb->stream_end < n; i++) Sleep(10); }
+static UINT64 played_of(void *src) {
+    BYTE st[20]; ((void (WINAPI *)(void *, void *))SLOT(src, S_GET_STATE))(src, st);
+    UINT64 p; memcpy(&p, st + 12, 8); return p;
+}
+// xWMA as WMA v2 (0x161, what Skyrim's voices and music are), decoded: an owned 22.05 kHz mono vector
+// (tests/wma/m22_24k: 13 packets that decode to 1024 frames each, less the first) through a mono 22.05 kHz
+// mastering voice, so the mix is the decoded samples themselves. With VXRT_XAUDIO2_CAPTURE set, the samples are
+// compared afterwards (tests/xaudio2_wma_check.py) to FFmpeg's decode of the same packets; here: lengths,
+// callbacks and samples played. Three plays on one voice: (a) one buffer; (b) the same packets in two buffers
+// whose tables split the stream off a packet boundary (5000 + 7288 frames); (c) one buffer, PlayBegin 2048 and
+// PlayLength 3000.
+static void wma_v2(void) {
+    void *xa = NULL;
+    CHECK(CoCreateInstance(&CLSID_X27, NULL, CLSCTX_INPROC_SERVER, &IID_X27, &xa) == S_OK && xa);
+    if (!xa) return;
+    void *master = NULL;
+    CHECK(((HRESULT (WINAPI *)(void *, void **, UINT32, UINT32, UINT32, UINT32, const void *))SLOT(xa, X_CREATE_MASTER))(xa, &master, 1, 22050, 0, 0, NULL) == S_OK && master);
+    if (!master) return;
+    BYTE fmt[18 + 10] = { 0 };                                               // WAVEFORMATEX + FFmpeg's encoder's 10 extra bytes (flags2 = 1)
+    WAVEFORMATEX w = { 0x161, 1, 22050, 3000, 139, 16, 10 };
+    memcpy(fmt, &w, 18); fmt[18 + 4] = 1;
+    callback cb = { { &cbvt }, 0, 0 };
+    void *src = NULL;
+    CHECK(((HRESULT (WINAPI *)(void *, void **, const void *, UINT32, float, void *, const void *, const void *))SLOT(xa, X_CREATE_SOURCE))(xa, &src, fmt, 0, 2.0f, &cb.iface, NULL, NULL) == S_OK && src);
+    if (!src) return;
+    submit_fn submit = SLOT(src, S_SUBMIT);
+    static UINT32 whole[13], first[6], second[7];
+    for (int k = 0; k < 13; k++) whole[k] = 2048u * k;                       // bytes after each packet (the first: none)
+    for (int k = 0; k < 6; k++) first[k] = k < 5 ? 2048u * k : 10000;          // 5000 frames (the packets make 5120)
+    for (int k = 0; k < 7; k++) second[k] = 2048u * (k + 6) - 10000;           // the rest: 7288 frames
+    XAUDIO2_BUFFER b; memset(&b, 0, sizeof b);
+    XAUDIO2_BUFFER_WMA t = { whole, 13 };
+    b.AudioBytes = sizeof wma_m22_24k; b.pAudioData = wma_m22_24k; b.Flags = XAUDIO2_END_OF_STREAM;
+    XAUDIO2_BUFFER_WMA bad = { whole, 14 };                                  // more packets than the data has
+    CHECK(submit(src, &b, &bad) != S_OK);
+    CHECK(submit(src, &b, &t) == S_OK);                                      // (a)
+    CHECK(((HRESULT (WINAPI *)(void *, UINT32, UINT32))SLOT(src, S_START))(src, 0, 0) == S_OK);
+    wait_stream_end(&cb, 1);
+    CHECK(cb.stream_end == 1 && cb.buffer_end == 1 && played_of(src) == 12288);
+    Sleep(100);                                                              // (silence between the plays)
+    XAUDIO2_BUFFER b1 = b, b2 = b;                                           // (b)
+    b1.AudioBytes = 6 * 139; b1.Flags = 0;
+    b2.pAudioData = wma_m22_24k + 6 * 139; b2.AudioBytes = 7 * 139;
+    XAUDIO2_BUFFER_WMA t1 = { first, 6 }, t2 = { second, 7 };
+    CHECK(submit(src, &b1, &t1) == S_OK && submit(src, &b2, &t2) == S_OK);
+    wait_stream_end(&cb, 2);
+    CHECK(cb.stream_end == 2 && cb.buffer_end == 3 && played_of(src) == 2 * 12288);
+    Sleep(100);
+    XAUDIO2_BUFFER b3 = b; b3.PlayBegin = 2048; b3.PlayLength = 3000;        // (c)
+    CHECK(submit(src, &b3, &t) == S_OK);
+    wait_stream_end(&cb, 3);
+    CHECK(cb.stream_end == 3 && cb.buffer_end == 4 && played_of(src) == 2 * 12288 + 3000);
+    Sleep(100);
+    ((void (WINAPI *)(void *))SLOT(src, V_DESTROY))(src);
+    ((void (WINAPI *)(void *))SLOT(master, V_DESTROY))(master);
+    ((ULONG (WINAPI *)(void *))SLOT(xa, X_RELEASE))(xa);
+}
 
 int main(void) {
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -93,9 +155,9 @@ int main(void) {
     CHECK(queued == 0 && played == 9600);
     ((void (WINAPI *)(void *))SLOT(src, V_DESTROY))(src);
 
-    // xWMA (Skyrim's voices and music): no decoder, so the voice plays silence of the decoded length from the packet table.
+    // xWMA as WMA Pro (0x162): no decoder for it, so the voice plays silence of the decoded length from the packet table.
     callback xcb = { { &cbvt }, 0, 0 };
-    WAVEFORMATEX xw = { 0x161, 1, 22050, 4000, 372, 16, 0 };
+    WAVEFORMATEX xw = { 0x162, 1, 22050, 4000, 372, 16, 0 };
     void *xsrc = NULL;
     CHECK(((HRESULT (WINAPI *)(void *, void **, const WAVEFORMATEX *, UINT32, float, void *, const void *, const void *))SLOT(xa, X_CREATE_SOURCE))(xa, &xsrc, &xw, 0, 2.0f, &xcb.iface, NULL, NULL) == S_OK && xsrc);
     if (xsrc) {
@@ -118,6 +180,8 @@ int main(void) {
     }
     ((void (WINAPI *)(void *))SLOT(master, V_DESTROY))(master);
     ((ULONG (WINAPI *)(void *))SLOT(xa, X_RELEASE))(xa);
+
+    wma_v2();
     printf(failures ? "xaudio2 2.7: %d check(s) FAILED\n" : "xaudio2 2.7: ok\n", failures);
     return failures != 0;
 }
