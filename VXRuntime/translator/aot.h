@@ -43,7 +43,6 @@ int xa_link(uint64_t hash);
 int xa_any(void);
 int xa_module_exists(const char *path);             // a module of that file name (Mac: a dylib; visionOS: linked in)
 // The base the module for this file (dir/<name lowercased>-<hash>[.p0].dylib) was made for; 0 when there is none.
-int xa_take_reserved(const char *seg, uint64_t a, uint64_t n);   // [a, a+n) out of the host's own reserved segment (src/addr_resv.S); 0: not inside it
 int xa_reserve(void);                              // VXRT_AOT_DIR: at start (aot.c); 0: the range is taken
 int xa_in_arena(uint64_t a, uint64_t n);
 uint64_t xa_arena_base(void), xa_arena_size(void);   // (where the arena is or will be)
