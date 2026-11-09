@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "xros_vr.h"
+#include "xrizer_xros_optics.h"
 void vx_log(const char *fmt, ...);
 static void mul4(const float *a, const float *b, float *o) {
     for (int c=0; c<4; c++) for (int r=0; r<4; r++) {
@@ -15,6 +16,10 @@ static void mul4(const float *a, const float *b, float *o) {
 // pair and the display pose; without scene depth translation cannot be reconstructed.
 #include "native_vr.h"
 #include "native_openvr.h"
+#ifdef VXRT_XRIZER_XROS_FIXTURE
+#include "xrizer_xros_fixture.h"
+static int g_fixture_held;
+#endif
 static vx_native_vr_frame g_native_frame;
 static vx_native_vr *g_native_queue;
 static int g_native_held;
@@ -38,9 +43,17 @@ int vx_xros_native_begin(const float head[16], const float eyes[32], const float
     if (!vx_xros_native_acquire_succeeded(vx_native_vr_acquire(g_native_queue, &g_native_frame))) return 0;
     g_native_held = 1;
     // Do not keep showing a previously submitted frame indefinitely after loading or tracking loss.
-    double age = time - g_native_frame.pose.pose_time;
-    return g_native_frame.pose.tracking_valid && isfinite(age) && age >= -0.1 && age <= 1.0;
+    return vx_xros_pose_is_current(time, g_native_frame.pose.pose_time, g_native_frame.pose.tracking_valid);
 }
+
+#ifdef VXRT_XRIZER_XROS_FIXTURE
+int vx_xros_fixture_present_begin(double time) {
+    g_native_held=0; g_fixture_held=0;
+    if(vx_xros_fixture_acquire(&g_native_frame))return 0;
+    g_native_held=1;g_fixture_held=1;
+    return vx_xros_pose_is_current(time, g_native_frame.pose.pose_time, g_native_frame.pose.tracking_valid);
+}
+#endif
 
 // float4-aligned layout matches the Metal shader's parameter structure.
 typedef struct { float rot[12], src[4], dst[4], bounds[4]; } native_params;
@@ -108,11 +121,123 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [enc endEncoding];
     return 1;
 }
+#ifdef VXRT_XRIZER_XROS_FIXTURE
+// Simulator inspection of a mono drawable: each eye of the acquired provider pair
+// fills its own half of view 0, texel for texel (nearest, no reprojection). The
+// readback after it samples every 4x3 source texel centre in the drawable itself.
+static NSString *const g_inspect_shader = @
+"#include <metal_stdlib>\nusing namespace metal;\n"
+"struct V { float4 position [[position]]; float2 uv; };\n"
+"vertex V iv(uint i [[vertex_id]]) { float2 p=float2((i==1)?3:-1,(i==2)?3:-1); return {float4(p,0,1),float2((p.x+1)*.5,(1-p.y)*.5)}; }\n"
+"fragment float4 inf(V v [[stage_in]], texture2d<float> img [[texture(0)]], constant float4 &b [[buffer(0)]]) {\n"
+" constexpr sampler smp(coord::normalized,filter::nearest,address::clamp_to_edge);\n"
+" return img.sample(smp,mix(b.xy,b.zw,v.uv)); }\n";
+int vx_xros_fixture_draw_inspection(void *cbp, int view, void *outp, void *depthp) {
+    if (!g_native_held || !g_fixture_held || view != 0 || !g_native_frame.pose.tracking_valid) return 0;
+    id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)cbp;
+    id<MTLTexture> out = (__bridge id<MTLTexture>)outp, depth = (__bridge id<MTLTexture>)depthp;
+    static int refused;
+    MTLPixelFormat of = out.pixelFormat;
+    int bgra = of == MTLPixelFormatBGRA8Unorm || of == MTLPixelFormatBGRA8Unorm_sRGB;
+    if (!cb || !out || !depth || out.textureType != MTLTextureType2D || out.width < 8 || out.height < 3 ||
+        (!bgra && of != MTLPixelFormatRGBA8Unorm && of != MTLPixelFormatRGBA8Unorm_sRGB)) {
+        if (!refused++) vx_log("xrizer xros fixture: drawable inspection refused (format %lu, %lux%lu)", (unsigned long)of,
+                               (unsigned long)out.width, (unsigned long)out.height);
+        return 0;
+    }
+    id<MTLTexture> eyes[2];
+    for (int i = 0; i < 2; i++) {
+        vx_native_vr_eye *e = &g_native_frame.eye[i];
+        id<MTLTexture> tex = (__bridge id<MTLTexture>)e->resource;
+        if (!tex || tex.textureType != MTLTextureType2D || tex.sampleCount != 1 || e->sample_count != 1 || tex.width != e->width ||
+            tex.height != e->height || tex.pixelFormat != e->format || tex.device != cb.device ||
+            (e->color_space != VX_NATIVE_VR_COLOR_LINEAR && e->color_space != VX_NATIVE_VR_COLOR_SRGB)) return 0;
+        MTLPixelFormat f = tex.pixelFormat, want = f;
+        if (f == MTLPixelFormatRGBA8Unorm || f == MTLPixelFormatRGBA8Unorm_sRGB)
+            want = e->color_space == VX_NATIVE_VR_COLOR_SRGB ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm;
+        else if (f == MTLPixelFormatBGRA8Unorm || f == MTLPixelFormatBGRA8Unorm_sRGB)
+            want = e->color_space == VX_NATIVE_VR_COLOR_SRGB ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm;
+        else if (e->color_space != VX_NATIVE_VR_COLOR_LINEAR) return 0;
+        eyes[i] = want == f ? tex : [tex newTextureViewWithPixelFormat:want];
+        if (!eyes[i]) return 0;
+    }
+    static id<MTLRenderPipelineState> pipeline;
+    static MTLPixelFormat pc, pd;
+    if (!pipeline || pc != of || pd != depth.pixelFormat) {
+        NSError *err = nil;
+        id<MTLLibrary> lib = [cb.device newLibraryWithSource:g_inspect_shader options:nil error:&err];
+        if (!lib) { vx_log("xrizer xros fixture: inspection shader: %s", err.localizedDescription.UTF8String); return 0; }
+        MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
+        d.vertexFunction = [lib newFunctionWithName:@"iv"]; d.fragmentFunction = [lib newFunctionWithName:@"inf"];
+        d.colorAttachments[0].pixelFormat = of; d.depthAttachmentPixelFormat = depth.pixelFormat;
+        pipeline = [cb.device newRenderPipelineStateWithDescriptor:d error:&err];
+        pc = of; pd = depth.pixelFormat;
+        if (!pipeline) { vx_log("xrizer xros fixture: inspection pipeline: %s", err.localizedDescription.UTF8String); return 0; }
+    }
+    id<MTLBuffer> data = [cb.device newBufferWithLength:96 options:MTLResourceStorageModeShared];
+    if (!data) return 0;
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = out; pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1); pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    pass.depthAttachment.texture = depth; pass.depthAttachment.loadAction = MTLLoadActionClear;
+    pass.depthAttachment.clearDepth = 0; pass.depthAttachment.storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass];
+    if (!enc) return 0;
+    NSUInteger half = out.width / 2, h = out.height;
+    [enc setRenderPipelineState:pipeline];
+    for (int i = 0; i < 2; i++) {
+        vx_native_vr_eye *e = &g_native_frame.eye[i];
+        float b[4] = {e->u_min, e->v_min, e->u_max, e->v_max};
+        [enc setViewport:(MTLViewport){(double)(i * half), 0, (double)half, (double)h, 0, 1}];
+        [enc setFragmentTexture:eyes[i] atIndex:0]; [enc setFragmentBytes:b length:sizeof b atIndex:0];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    }
+    [enc endEncoding];
+    // Texel centres of each eye's source bounds, in drawable pixels. Only the
+    // 4x3 fixture eyes are sampled; other sizes are presented but not audited.
+    int audit = g_native_frame.eye[0].width == 4 && g_native_frame.eye[0].height == 3 &&
+                g_native_frame.eye[1].width == 4 && g_native_frame.eye[1].height == 3;
+    if (audit) {
+        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+        if (!blit) return 1;
+        for (int i = 0; i < 2; i++) for (int y = 0; y < 3; y++) for (int x = 0; x < 4; x++) {
+            NSUInteger px = i * half + (NSUInteger)((x + 0.5) * half / 4), py = (NSUInteger)((y + 0.5) * h / 3);
+            [blit copyFromTexture:out sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(px, py, 0) sourceSize:MTLSizeMake(1, 1, 1)
+                         toBuffer:data destinationOffset:((i * 3 + y) * 4 + x) * 4 destinationBytesPerRow:4 destinationBytesPerImage:4];
+        }
+        [blit endEncoding];
+        uint64_t frame_id = g_native_frame.pose.frame_id, pose_id = g_native_frame.pose.pose_id;
+        uint32_t format = (uint32_t)of;
+        [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+            unsigned char rgba[96]; const unsigned char *src = data.contents;
+            for (int k = 0; k < 24; k++) {
+                rgba[k * 4 + 0] = src[k * 4 + (bgra ? 2 : 0)]; rgba[k * 4 + 1] = src[k * 4 + 1];
+                rgba[k * 4 + 2] = src[k * 4 + (bgra ? 0 : 2)]; rgba[k * 4 + 3] = src[k * 4 + 3];
+            }
+            vx_xros_fixture_record_drawable(frame_id, pose_id, done.status == MTLCommandBufferStatusCompleted && !done.error, format, rgba);
+        }];
+    }
+    return 1;
+}
+#endif
 void vx_xros_native_end(void *cbp) {
     if (!g_native_held) return;
     vx_native_vr *q = g_native_queue; uint64_t lease = g_native_frame.lease;
     g_native_held = 0;
     id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)cbp;
+#ifdef VXRT_XRIZER_XROS_FIXTURE
+    if(g_fixture_held) {
+        g_fixture_held=0;
+        if(!cb) { vx_xros_fixture_release(lease); return; }
+        uint64_t frame_id=g_native_frame.pose.frame_id, pose_id=g_native_frame.pose.pose_id;
+        [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+            vx_log("xrizer xros fixture: drawable command completion frame=%llu pose=%llu status=%lu error=%s",
+                (unsigned long long)frame_id,(unsigned long long)pose_id,(unsigned long)done.status,done.error ? "yes" : "no");
+            vx_xros_fixture_release(lease);
+        }];
+        return;
+    }
+#endif
     if (!cb) { vx_native_vr_release(q, lease); return; }
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) { (void)done; vx_native_vr_release(q, lease); }];
 }

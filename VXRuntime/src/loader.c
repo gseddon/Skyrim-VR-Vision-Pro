@@ -21,6 +21,11 @@
 #include <pthread.h>
 #include "vx.h"
 #include "native_openvr.h"
+#ifdef VXRT_XRIZER_XROS_FIXTURE
+#include "xrizer_openvr_exports.h"
+#include "xrizer_xros_fixture.h"
+#include "xrizer_xros_fixture_guest.h"
+#endif
 #ifdef VXRT_XRIZER_DEV_HOST
 #include "xrizer_openvr_exports.h"
 #include "xrizer_dev_host.h"
@@ -706,6 +711,15 @@ static int in_arena(uint64_t a, uint64_t n) {
 static uint64_t g_main_resv_base, g_main_resv_size;
 // Says what already sits in [base, base+size): each mapping that overlaps it, with its permissions, tag and file.
 static void log_range_owners(uint64_t base, uint64_t size) {
+#if VX_XROS
+    // (the visionOS SDK has neither mach_vm_region_recurse nor proc_regionfilename: the 64-bit vm_ form, no file names)
+    vm_address_t a = (vm_address_t)base; natural_t depth = 0;
+    for (int i = 0; i < 16; i++) {
+        vm_size_t sz = 0; struct vm_region_submap_info_64 info; mach_msg_type_number_t cnt = VM_REGION_SUBMAP_INFO_COUNT_64;
+        if (vm_region_recurse_64(mach_task_self(), &a, &sz, &depth, (vm_region_recurse_info_t)&info, &cnt) != KERN_SUCCESS || a >= base + size) break;
+        if (info.is_submap) { depth++; continue; }
+        const char *file = "";
+#else
     mach_vm_address_t a = base; natural_t depth = 0;
     for (int i = 0; i < 16; i++) {
         mach_vm_size_t sz = 0; struct vm_region_submap_info_64 info; mach_msg_type_number_t cnt = VM_REGION_SUBMAP_INFO_COUNT_64;
@@ -713,6 +727,7 @@ static void log_range_owners(uint64_t base, uint64_t size) {
         if (info.is_submap) { depth++; continue; }
         char file[1024] = "";
         if (info.share_mode != SM_EMPTY) proc_regionfilename(getpid(), a, file, sizeof file);
+#endif
         vx_log("loader:   %#llx-%#llx prot=%d/%d user_tag=%u share=%d %s", (unsigned long long)a, (unsigned long long)(a + sz), info.protection, info.max_protection, info.user_tag, info.share_mode, file);
         a += sz;
     }
@@ -1645,11 +1660,29 @@ int main(int argc, char **argv, char **envp) {
     vx_dpapi_init();
     vx_client_init();
     vx_steambridge_init();
-#ifndef VXRT_XRIZER_DEV_HOST
+#if !defined(VXRT_XRIZER_DEV_HOST) && !defined(VXRT_XRIZER_XROS_FIXTURE)
     if (getenv("VXRT_XRIZER_OPENVR") && !strcmp(getenv("VXRT_XRIZER_OPENVR"), "1")) {
         vx_log("xrizer dev host: this runtime was built without experimental xrizer support");
         exit(1);
     }
+#endif
+#ifdef VXRT_XRIZER_XROS_FIXTURE
+    if (vx_xros_fixture_enabled()) {
+        if (vx_native_openvr_enabled() || vx_xros_fixture_wait_ready()) {
+            vx_log("xrizer xros fixture: compositor geometry unavailable; refusing startup");
+            exit(1);
+        }
+        size_t count = 0;
+        const vx_export *exports = vx_xrizer_openvr_exports(&count);
+        vx_register_module("openvr_api.dll", exports, count);
+        static const vx_export audit[] = {
+            {"VXRT_XrosFixtureVerifyPair", vx_xros_fixture_verify_pair},
+            {"VXRT_XrosFixturePrepareShutdown", vx_xros_fixture_prepare_shutdown},
+            {"VXRT_XrosFixtureInjectLoss", vx_xros_fixture_inject_loss},
+            {"VXRT_XrosFixtureVerifyShutdown", vx_xros_fixture_verify_shutdown},
+        };
+        vx_register_module("vxrt_xros_fixture_audit.dll", audit, sizeof(audit)/sizeof(audit[0]));
+    } else
 #endif
 #ifdef VXRT_XRIZER_DEV_HOST
     if (vx_xrizer_openvr_enabled()) {

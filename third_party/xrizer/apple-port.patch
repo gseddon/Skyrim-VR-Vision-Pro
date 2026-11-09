@@ -1917,7 +1917,7 @@ index 0000000..e5ec4bf
 +    }
 +}
 diff --git a/src/openxr_data.rs b/src/openxr_data.rs
-index e3e9eff..a3fbfca 100644
+index e3e9eff..cb49192 100644
 --- a/src/openxr_data.rs
 +++ b/src/openxr_data.rs
 @@ -5,6 +5,7 @@ use crate::{
@@ -2114,7 +2114,7 @@ index e3e9eff..a3fbfca 100644
          session_data.session.request_exit().unwrap();
          let mut state = session_data.state;
          while state != xr::SessionState::STOPPING {
-@@ -365,6 +437,46 @@ impl<C: Compositor> OpenXrData<C> {
+@@ -365,6 +437,49 @@ impl<C: Compositor> OpenXrData<C> {
                  state = s;
              }
          }
@@ -2131,8 +2131,11 @@ index e3e9eff..a3fbfca 100644
 +        // A host may asynchronously deliver events. Never spin or infer a
 +        // transition: missing acknowledgment retains all session resources.
 +        for desired in [xr::SessionState::STOPPING, xr::SessionState::EXITING] {
-+            let mut reached = false;
++            // STOPPING may already have been consumed by the regular event
++            // pump after the host lost its surface, before guest cleanup.
++            let mut reached = desired == xr::SessionState::STOPPING && session_data.state == desired;
 +            for _ in 0..64 {
++                if reached { break; }
 +                match self.instance.poll_event(&mut buf) {
 +                    Ok(Some(xr::Event::SessionStateChanged(event))) if event.state() == desired => {
 +                        reached = true;
@@ -2161,7 +2164,7 @@ index e3e9eff..a3fbfca 100644
      }
  }
  
-@@ -398,6 +510,9 @@ impl std::fmt::Display for GraphicalSession {
+@@ -398,6 +513,9 @@ impl std::fmt::Display for GraphicalSession {
      fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
          match self {
              GraphicalSession::Vulkan(_) => f.write_str("GraphicalSession::Vulkan"),
@@ -2171,7 +2174,7 @@ index e3e9eff..a3fbfca 100644
              GraphicalSession::OpenGL(_) => f.write_str("GraphicalSession::OpenGL"),
              #[cfg(test)]
              GraphicalSession::Fake(_) => f.write_str("GraphicalSession::Fake"),
-@@ -449,6 +564,7 @@ pub struct SessionData {
+@@ -449,6 +567,7 @@ pub struct SessionData {
      /// \- structs are dropped in declaration order, and if we drop our temporary Vulkan data
      /// before the session, the runtime will likely be very unhappy.
      temp_vulkan: Option<VulkanData>,
@@ -2179,7 +2182,7 @@ index e3e9eff..a3fbfca 100644
  }
  
  #[derive(Debug)]
-@@ -468,18 +584,28 @@ impl SessionData {
+@@ -468,18 +587,28 @@ impl SessionData {
          create_info: Option<&SessionCreateInfo>,
      ) -> Result<(Self, xr::FrameWaiter, FrameStream), SessionCreationError> {
          let info;
@@ -2213,7 +2216,7 @@ index e3e9eff..a3fbfca 100644
          };
  
          #[macros::any_graphics(SessionCreateInfo)]
-@@ -501,24 +627,13 @@ impl SessionData {
+@@ -501,24 +630,13 @@ impl SessionData {
                  "Creating OpenXR session with graphics API {}",
                  std::any::type_name::<G>()
              );
@@ -2245,7 +2248,7 @@ index e3e9eff..a3fbfca 100644
          }
  
          let (session, session_graphics, waiter, stream) = info
-@@ -526,28 +641,31 @@ impl SessionData {
+@@ -526,28 +644,31 @@ impl SessionData {
              .map_err(SessionCreationError::SessionCreationFailed)?;
  
          info!("New session created!");
@@ -2295,7 +2298,7 @@ index e3e9eff..a3fbfca 100644
              }
          }
  
-@@ -563,6 +681,7 @@ impl SessionData {
+@@ -563,6 +684,7 @@ impl SessionData {
          Ok((
              SessionData {
                  temp_vulkan,
@@ -2303,7 +2306,7 @@ index e3e9eff..a3fbfca 100644
                  session,
                  session_graphics,
                  state: xr::SessionState::READY,
-@@ -668,7 +787,7 @@ impl SessionData {
+@@ -668,7 +790,7 @@ impl SessionData {
      /// Returns true if this session is not using a temporary graphics setup.
      #[inline]
      pub fn is_real_session(&self) -> bool {

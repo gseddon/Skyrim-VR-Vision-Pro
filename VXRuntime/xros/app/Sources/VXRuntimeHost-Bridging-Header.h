@@ -2,6 +2,7 @@
 // immersive presenter (src/xros_vr.h).
 #import <UIKit/UIKit.h>
 #include "xros_vr.h"
+#include "xrizer_xros_fixture.h"
 
 UIViewController *vxrt_make_root_controller(void);   // (main.m: the window's controller; it starts the program)
 int vxrt_present_vr(void);                           // (main.m: -present vr (default) or flat)
