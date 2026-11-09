@@ -463,6 +463,33 @@ static void on_fault(int sig, siginfo_t *si, void *ucv) {
         if (at && t_ctx) { state_from_signal(t_ctx, uc, at); ss->__pc = (uint64_t)(uintptr_t)smc_restart; ss->__lr = 0; }
         return;                                               // (native code: the write again, now allowed)
     }
+    // A call of NULL from this runtime's own code (it is not a call into x86 code: there is none at 0), which would
+    // otherwise go on through the engine as an x86 call at 0 and show only as "executing 0": where it came from.
+    if ((sig == SIGSEGV || sig == SIGBUS) && !pc && !si->si_addr) {
+        char line[1024]; size_t k = 0;
+        uint64_t frames[10]; int n = 0;
+        frames[n++] = ss->__lr;
+        for (uint64_t fp = ss->__fp; n < 10 && fp && !(fp & 15); ) {
+            uint64_t *f = (uint64_t *)(uintptr_t)fp;
+            if (!f[1]) break;
+            frames[n++] = f[1];
+            if (f[0] <= fp) break;
+            fp = f[0];
+        }
+        for (int i = 0; i < n && k < sizeof line - 120; i++) {
+            Dl_info di = {0};
+            if (dladdr((void *)(uintptr_t)frames[i], &di) && di.dli_sname)
+                k += (size_t)snprintf(line + k, sizeof line - k, " %s+%#llx", di.dli_sname, (unsigned long long)(frames[i] - (uint64_t)(uintptr_t)di.dli_saddr));
+            else k += (size_t)snprintf(line + k, sizeof line - k, " %#llx", (unsigned long long)frames[i]);
+        }
+        for (int i = 0; i < n && i < 4; i++) {                // (which library each of the first frames is in, and where in it)
+            Dl_info di = {0};
+            if (dladdr((void *)(uintptr_t)frames[i], &di) && di.dli_fname)
+                vx_log("arm64:   frame %d %#llx = %s+%#llx", i, (unsigned long long)frames[i], di.dli_fname, (unsigned long long)(frames[i] - (uint64_t)(uintptr_t)di.dli_fbase));
+        }
+        vx_log("arm64: the runtime called NULL (x0 %#llx x1 %#llx x2 %#llx x3 %#llx) from:%s", (unsigned long long)ss->__x[0],
+               (unsigned long long)ss->__x[1], (unsigned long long)ss->__x[2], (unsigned long long)ss->__x[3], line);
+    }
     // An instruction fetch from a page that is not executable (native code always is): a call into x86 code.
     if ((sig == SIGSEGV || sig == SIGBUS) && (uint64_t)(uintptr_t)si->si_addr == pc && !code_owns(pc)) {
         ss->__x[9] = pc;                                      // a call into x86 code: on through the engine

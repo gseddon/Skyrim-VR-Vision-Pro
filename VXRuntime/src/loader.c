@@ -729,7 +729,7 @@ static int reserve_main_image(const char *path) {
     uint64_t base; uint32_t size; memcpy(&base, h + pe + 24 + 24, 8); memcpy(&size, h + pe + 24 + 56, 4);
     if (!base || !size || base < 0x100000000ull) return 1;
     mach_vm_address_t a = base;
-    if (!xa_take_reserved("__VXIMG", base, size) && mach_vm_allocate(mach_task_self(), &a, size, VM_FLAGS_FIXED) != KERN_SUCCESS) {
+    if (mach_vm_allocate(mach_task_self(), &a, size, VM_FLAGS_FIXED) != KERN_SUCCESS) {
         vx_log("loader: the program's preferred range %#llx-%#llx is already taken", (unsigned long long)base, (unsigned long long)(base + size));
         log_range_owners(base, size);
         return 0;
