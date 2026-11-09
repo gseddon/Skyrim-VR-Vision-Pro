@@ -23,6 +23,8 @@ static KlNativeInputSample2 input_sample2;
 static XrResult input_result = XR_SUCCESS;
 static XrResult sample_input(void *ctx, KlNativeInputSample *out) { (void)ctx; *out = input_sample; return input_result; }
 static XrResult sample_input2(void *ctx, KlNativeInputSample2 *out) { (void)ctx; *out = input_sample2; return input_result; }
+static KlNativeInputSample3 input_sample3;
+static XrResult sample_input3(void *ctx, KlNativeInputSample3 *out) { (void)ctx; *out = input_sample3; return input_result; }
 static KlNativeInputHand2 absent_hand(void) {
     KlNativeInputHand2 hand = {0};
     hand.trigger = hand.stick_x = hand.stick_y = NAN;
@@ -452,6 +454,141 @@ int main(void) {
     assert(poll_state(poll_event, instance) == XR_SESSION_STATE_IDLE);
     assert(destroy_session(session) == XR_SUCCESS);
     assert(destroy_instance(instance) == XR_SUCCESS);
+    {   /* Version 3: a host-observed profile becomes current only when suggested, with one change event. */
+        KlNativeInputHost3 host3 = { KL_NATIVE_INPUT_HOST_VERSION_3, sizeof(host3), NULL, sample_input3 };
+        host3.version = 2; assert(kl_native_configure_input3(&host3) == XR_ERROR_VALIDATION_FAILURE);
+        host3.version = KL_NATIVE_INPUT_HOST_VERSION_3; assert(kl_native_configure_input3(&host3) == XR_SUCCESS);
+        assert(new_instance(&ci, &instance) == XR_SUCCESS);
+        GET(PFN_xrCreateActionSpace, action_space, instance, "xrCreateActionSpace");
+        GET(PFN_xrSuggestInteractionProfileBindings, suggest, instance, "xrSuggestInteractionProfileBindings");
+        GET(PFN_xrBeginFrame, begin_frame3, instance, "xrBeginFrame");
+        GET(PFN_xrEndFrame, end_frame3, instance, "xrEndFrame");
+        assert(req(instance, 1, &r) == XR_SUCCESS);
+        assert(new_session(instance, &si, &session) == XR_SUCCESS);
+        XrActionSet set3; assert(create_set(instance, &asi, &set3) == XR_SUCCESS);
+        XrPath hands[2], touch, vive;
+        assert(to_path(instance, "/user/hand/left", &hands[0]) == XR_SUCCESS && to_path(instance, "/user/hand/right", &hands[1]) == XR_SUCCESS);
+        assert(to_path(instance, "/interaction_profiles/oculus/touch_controller", &touch) == XR_SUCCESS);
+        assert(to_path(instance, "/interaction_profiles/htc/vive_controller", &vive) == XR_SUCCESS);
+        XrAction a3[4];   /* a/x click (bool), trigger (float), stick (vector), grip (pose) */
+        for (unsigned i = 0; i < 4; ++i) {
+            XrActionCreateInfo ai = { .type = XR_TYPE_ACTION_CREATE_INFO, .actionType = types[i], .countSubactionPaths = 2, .subactionPaths = hands };
+            snprintf(ai.actionName, sizeof ai.actionName, "v3action%u", i);
+            snprintf(ai.localizedActionName, sizeof ai.localizedActionName, "V3 Action %u", i);
+            assert(create_action(set3, &ai, &a3[i]) == XR_SUCCESS);
+        }
+        const char *bound[6] = { "/user/hand/left/input/trigger/value", "/user/hand/right/input/a/click", "/user/hand/left/input/x/click",
+            "/user/hand/right/input/thumbstick", "/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose" };
+        XrActionSuggestedBinding sb[6];
+        const unsigned which[6] = { 1, 0, 0, 2, 3, 3 };
+        for (unsigned i = 0; i < 6; ++i) { sb[i].action = a3[which[i]]; assert(to_path(instance, bound[i], &sb[i].binding) == XR_SUCCESS); }
+        XrInteractionProfileSuggestedBinding suggestion = { .type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING, .interactionProfile = touch, .countSuggestedBindings = 6, .suggestedBindings = sb };
+        assert(suggest(instance, &suggestion) == XR_SUCCESS);
+        XrActionSpaceCreateInfo asc = { .type = XR_TYPE_ACTION_SPACE_CREATE_INFO, .action = a3[0], .subactionPath = hands[0], .poseInActionSpace.orientation.w = 1 };
+        XrSpace grip_left, grip_right, local3;
+        assert(action_space(session, &asc, &grip_left) == XR_ERROR_ACTION_TYPE_MISMATCH);
+        asc.action = a3[3]; assert(action_space(session, &asc, &grip_left) == XR_SUCCESS);
+        asc.subactionPath = hands[1]; asc.poseInActionSpace.position.z = -0.1f; assert(action_space(session, &asc, &grip_right) == XR_SUCCESS);
+        assert(create_space(session, &rs, &local3) == XR_SUCCESS);   /* rs is LOCAL here */
+        XrSessionActionSetsAttachInfo attach3 = { .type = XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO, .countActionSets = 1, .actionSets = &set3 };
+        assert(attach_sets(session, &attach3) == XR_SUCCESS);
+        XrActiveActionSet active3 = { .actionSet = set3 };
+        XrActionsSyncInfo sync3 = { .type = XR_TYPE_ACTIONS_SYNC_INFO, .countActiveActionSets = 1, .activeActionSets = &active3 };
+        injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_READY, 10 };
+        assert(poll_state(poll_event, instance) == XR_SESSION_STATE_READY);
+        ack_time = 20; assert(begin(session, &bi) == XR_SUCCESS);
+        assert(poll_state(poll_event, instance) == XR_SESSION_STATE_SYNCHRONIZED);
+        injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_VISIBLE, 21 };
+        assert(poll_state(poll_event, instance) == XR_SESSION_STATE_VISIBLE);
+        injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_FOCUSED, 22 };
+        assert(poll_state(poll_event, instance) == XR_SESSION_STATE_FOCUSED);
+        for (unsigned h = 0; h < 2; ++h) {
+            input_sample3.hand[h] = (KlNativeInputHand3){ .controls = absent_hand(), .profile = KL_NATIVE_INPUT_PROFILE_OCULUS_TOUCH,
+                .local_from_grip = { .orientation.w = 1, .position = { h ? 0.2f : -0.2f, 1.1f, -0.35f } },
+                .local_from_aim = { .orientation.w = 1, .position = { h ? 0.2f : -0.2f, 1.1f, -0.4f } } };
+            input_sample3.hand[h].controls.connected = XR_TRUE;
+            input_sample3.hand[h].controls.trigger = 0; input_sample3.hand[h].controls.stick_x = input_sample3.hand[h].controls.stick_y = 0;
+        }
+        input_sample3.sample_id = 1; input_sample3.sample_time = 30;
+        input_sample3.hand[0].profile = KL_NATIVE_INPUT_PROFILE_NONE;
+        assert(sync_actions(session, &sync3) == XR_ERROR_VALIDATION_FAILURE);   /* connected needs a profile */
+        input_sample3.hand[0].profile = KL_NATIVE_INPUT_PROFILE_OCULUS_TOUCH;
+        assert(sync_actions(session, &sync3) == XR_SUCCESS);
+        XrEventDataBuffer eb = { .type = XR_TYPE_EVENT_DATA_BUFFER };
+        assert(poll_event(instance, (eb.type = XR_TYPE_EVENT_DATA_BUFFER, &eb)) == XR_SUCCESS && eb.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED &&
+               ((XrEventDataInteractionProfileChanged *)&eb)->session == session);
+        assert(poll_event(instance, (eb.type = XR_TYPE_EVENT_DATA_BUFFER, &eb)) == XR_EVENT_UNAVAILABLE);
+        XrInteractionProfileState ps = { .type = XR_TYPE_INTERACTION_PROFILE_STATE };
+        assert(current_profile(session, hands[0], &ps) == XR_SUCCESS && ps.interactionProfile == touch);
+        assert(current_profile(session, hands[1], &ps) == XR_SUCCESS && ps.interactionProfile == touch);
+        XrActionStateGetInfo g3 = { .type = XR_TYPE_ACTION_STATE_GET_INFO, .action = a3[1], .subactionPath = hands[0] };
+        XrActionStateFloat f3 = { .type = XR_TYPE_ACTION_STATE_FLOAT, .currentState = 5 };
+        assert(float_state(session, &g3, &f3) == XR_SUCCESS && f3.isActive && f3.currentState == 0 && !f3.changedSinceLastSync);
+        g3.subactionPath = hands[1];   /* no trigger binding on the right */
+        assert(float_state(session, &g3, &f3) == XR_SUCCESS && !f3.isActive);
+        g3.action = a3[0]; g3.subactionPath = XR_NULL_PATH;
+        XrActionStateBoolean b3 = { .type = XR_TYPE_ACTION_STATE_BOOLEAN, .currentState = XR_TRUE };
+        assert(bool_state(session, &g3, &b3) == XR_SUCCESS && b3.isActive && !b3.currentState);
+        g3.action = a3[2]; g3.subactionPath = hands[1];
+        XrActionStateVector2f v3 = { .type = XR_TYPE_ACTION_STATE_VECTOR2F };
+        assert(vector_state(session, &g3, &v3) == XR_SUCCESS && v3.isActive && v3.currentState.x == 0 && v3.currentState.y == 0);
+        g3.action = a3[3]; g3.subactionPath = hands[0];
+        XrActionStatePose p3 = { .type = XR_TYPE_ACTION_STATE_POSE };
+        assert(pose_state(session, &g3, &p3) == XR_SUCCESS && p3.isActive);
+        next_sample = (KlNativeFrameSample){ .ticket = &dev, .frame_id = 1, .pose_id = 1,
+            .predicted_display_time = 35, .predicted_display_period = 10, .should_render = XR_TRUE,
+            .head_location_flags = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT,
+            .local_from_head = { .orientation.w = 1, .position = {0, 1.6f, 0} },
+            .head_from_eye = { { .orientation.w = 1, .position.x = -0.03f }, { .orientation.w = 1, .position.x = 0.03f } },
+            .fov = { {-.8f,.8f,.8f,-.8f}, {-.8f,.8f,.8f,-.8f} } };
+        XrFrameState fs3 = { .type = XR_TYPE_FRAME_STATE };
+        assert(wait_frame(session, NULL, &fs3) == XR_SUCCESS);
+        XrSpaceVelocity vel = { .type = XR_TYPE_SPACE_VELOCITY };
+        XrSpaceLocation loc = { .type = XR_TYPE_SPACE_LOCATION, .next = &vel };
+        const XrSpaceLocationFlags valid = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
+        assert(locate_space(grip_left, local3, 35, &loc) == XR_SUCCESS && loc.locationFlags == valid && !vel.velocityFlags &&
+               loc.pose.position.x == -0.2f && loc.pose.position.y == 1.1f && loc.pose.position.z == -0.35f);
+        assert(locate_space(grip_right, local3, 35, &loc) == XR_SUCCESS && loc.locationFlags == valid &&
+               loc.pose.position.x == 0.2f && fabsf(loc.pose.position.z + 0.45f) < 1e-6f);
+        input_sample3.sample_id = 2; input_sample3.sample_time = 40; input_sample3.hand[0].controls.trigger = 0.75f;
+        input_sample3.hand[0].controls.grip_position_tracked = XR_TRUE;
+        assert(sync_actions(session, &sync3) == XR_SUCCESS);
+        assert(poll_event(instance, (eb.type = XR_TYPE_EVENT_DATA_BUFFER, &eb)) == XR_EVENT_UNAVAILABLE);   /* same profiles, no event */
+        g3.action = a3[1]; g3.subactionPath = hands[0];
+        assert(float_state(session, &g3, &f3) == XR_SUCCESS && f3.isActive && f3.currentState == 0.75f && f3.changedSinceLastSync && f3.lastChangeTime == 40);
+        assert(locate_space(grip_left, local3, 35, &loc) == XR_SUCCESS && loc.locationFlags == valid);   /* tracked bits are and-ed with LOCAL, which reports valid only */
+        input_sample3.sample_id = 3; input_sample3.sample_time = 50; input_sample3.hand[1].profile = KL_NATIVE_INPUT_PROFILE_HTC_VIVE;
+        assert(sync_actions(session, &sync3) == XR_SUCCESS);   /* vive was not suggested: right hand has no profile */
+        assert(poll_event(instance, (eb.type = XR_TYPE_EVENT_DATA_BUFFER, &eb)) == XR_SUCCESS && eb.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED);
+        assert(current_profile(session, hands[1], &ps) == XR_SUCCESS && ps.interactionProfile == XR_NULL_PATH);
+        assert(locate_space(grip_right, local3, 35, &loc) == XR_SUCCESS && loc.locationFlags == 0);
+        g3.action = a3[0]; g3.subactionPath = hands[1];
+        assert(bool_state(session, &g3, &b3) == XR_SUCCESS && !b3.isActive);
+        input_sample3.sample_id = 4; input_sample3.sample_time = 60;
+        input_sample3.hand[1] = (KlNativeInputHand3){ .controls = absent_hand(), .local_from_grip.orientation.w = 1 };
+        assert(sync_actions(session, &sync3) == XR_ERROR_VALIDATION_FAILURE);   /* a disconnected hand carries no pose */
+        assert(locate_space(grip_left, local3, 35, &loc) == XR_SUCCESS && loc.locationFlags == 0);   /* failed sync: nothing located */
+        input_sample3.hand[1] = (KlNativeInputHand3){ .controls = absent_hand() };
+        assert(sync_actions(session, &sync3) == XR_SUCCESS);
+        assert(poll_event(instance, (eb.type = XR_TYPE_EVENT_DATA_BUFFER, &eb)) == XR_EVENT_UNAVAILABLE);   /* right was already without a profile */
+        XrFrameBeginInfo fb = { .type = XR_TYPE_FRAME_BEGIN_INFO };
+        XrFrameEndInfo fe = { .type = XR_TYPE_FRAME_END_INFO, .displayTime = 35, .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE };
+        assert(begin_frame3(session, &fb) == XR_SUCCESS && end_frame3(session, &fe) == XR_SUCCESS);
+        injected = (KlNativeSessionEvent){ KL_NATIVE_SESSION_STOPPING, 70 };
+        assert(poll_state(poll_event, instance) == XR_SESSION_STATE_STOPPING);
+        ack_time = 71; assert(end(session) == XR_SUCCESS);
+        assert(poll_state(poll_event, instance) == XR_SESSION_STATE_IDLE);
+        assert(destroy_session(session) == XR_SUCCESS);
+        assert(destroy_instance(instance) == XR_SUCCESS);
+        assert(kl_native_configure_input2(&host2) == XR_SUCCESS);   /* back to version 2: action spaces refused */
+        assert(new_instance(&ci, &instance) == XR_SUCCESS);
+        assert(req(instance, 1, &r) == XR_SUCCESS);
+        assert(new_session(instance, &si, &session) == XR_SUCCESS);
+        GET(PFN_xrCreateActionSpace, action_space2, instance, "xrCreateActionSpace");
+        XrSpace refused; assert(action_space2(session, &asc, &refused) == XR_ERROR_FUNCTION_UNSUPPORTED);
+        assert(destroy_session(session) == XR_SUCCESS);
+        assert(destroy_instance(instance) == XR_SUCCESS);
+    }
     assert(kl_native_configure_image_sync(NULL) == XR_SUCCESS);
     assert(new_instance(&ci, &instance) == XR_SUCCESS);
     assert(req(instance, 1, &r) == XR_SUCCESS);

@@ -1,7 +1,6 @@
     INSTANCE("xrResultToString", refuse_xrResultToString)
     INSTANCE("xrStructureTypeToString", refuse_xrStructureTypeToString)
     INSTANCE("xrGetReferenceSpaceBoundsRect", refuse_xrGetReferenceSpaceBoundsRect)
-    INSTANCE("xrCreateActionSpace", refuse_xrCreateActionSpace)
     INSTANCE("xrEnumerateBoundSourcesForAction", refuse_xrEnumerateBoundSourcesForAction)
     INSTANCE("xrGetInputSourceLocalizedName", refuse_xrGetInputSourceLocalizedName)
     INSTANCE("xrApplyHapticFeedback", refuse_xrApplyHapticFeedback)

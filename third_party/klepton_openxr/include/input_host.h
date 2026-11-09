@@ -49,6 +49,41 @@ typedef struct KlNativeInputHost2 {
     XrResult (*sample)(void *context, KlNativeInputSample2 *out);
 } KlNativeInputHost2;
 XrResult kl_native_configure_input2(const KlNativeInputHost2 *host);
+
+#define KL_NATIVE_INPUT_HOST_VERSION_3 3u
+/* Version 3 adds what version 2 leaves out: which kind of controller the host
+ * observes in each hand, and that hand's grip and aim poses in LOCAL space at
+ * sample_time. The provider makes the profile current for a hand only when
+ * the application suggested bindings for it, reports each change with
+ * XrEventDataInteractionProfileChanged, and then reports bound controls as
+ * active and action spaces as located. Poses are not predicted to a display
+ * time: xrLocateSpace reports the latest synced sample. Position/orientation
+ * "tracked" bits follow grip/aim_position_tracked; without them a connected
+ * hand's poses are valid but untracked. */
+enum {
+    KL_NATIVE_INPUT_PROFILE_NONE = 0,
+    KL_NATIVE_INPUT_PROFILE_OCULUS_TOUCH = 1,   /* /interaction_profiles/oculus/touch_controller */
+    KL_NATIVE_INPUT_PROFILE_VALVE_INDEX = 2,    /* /interaction_profiles/valve/index_controller */
+    KL_NATIVE_INPUT_PROFILE_HTC_VIVE = 3,       /* /interaction_profiles/htc/vive_controller */
+    KL_NATIVE_INPUT_PROFILE_KHR_SIMPLE = 4      /* /interaction_profiles/khr/simple_controller */
+};
+typedef struct KlNativeInputHand3 {
+    KlNativeInputHand2 controls;     /* same rules as version 2 */
+    uint32_t profile;                /* KL_NATIVE_INPUT_PROFILE_*; NONE exactly when disconnected */
+    XrPosef local_from_grip;         /* valid poses when connected, all zero when disconnected */
+    XrPosef local_from_aim;
+} KlNativeInputHand3;
+typedef struct KlNativeInputSample3 {
+    uint64_t sample_id;
+    XrTime sample_time;
+    KlNativeInputHand3 hand[2]; /* left, right */
+} KlNativeInputSample3;
+typedef struct KlNativeInputHost3 {
+    uint32_t version, struct_size;
+    void *context;
+    XrResult (*sample)(void *context, KlNativeInputSample3 *out);
+} KlNativeInputHost3;
+XrResult kl_native_configure_input3(const KlNativeInputHost3 *host);
 #ifdef __cplusplus
 }
 #endif

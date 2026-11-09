@@ -30,6 +30,24 @@ typedef void (*native_handoff_fn)(void *);
 typedef uint8_t (*native_frame_timing_fn)(void *, void *, uint32_t);
 typedef void (*native_tracking_fn)(void *, int);
 typedef int (*native_submit_fn)(void *, int, const void *, const void *, int);
+typedef int (*native_device_class_fn)(void *, uint32_t);
+typedef uint8_t (*native_device_bool_fn)(void *, uint32_t);
+typedef uint8_t (*native_bool_property_fn)(void *, uint32_t, int, int *);
+typedef float (*native_float_property_fn)(void *, uint32_t, int, int *);
+typedef int32_t (*native_int32_property_fn)(void *, uint32_t, int, int *);
+typedef uint64_t (*native_uint64_property_fn)(void *, uint32_t, int, int *);
+typedef uint8_t (*native_controller_state_fn)(void *, uint32_t, void *, uint32_t);
+typedef uint8_t (*native_controller_state_pose_fn)(void *, int, uint32_t, void *, uint32_t, void *);
+typedef void (*native_haptic_fn)(void *, uint32_t, uint32_t, uint16_t);
+// VRControllerState001_t (openvr.h): `#pragma pack(4)` on Linux/Apple only, so the native (xrizer) copy is 60 bytes
+// with the two button masks at 4 and 12, while the Windows guest's is 64 bytes with them at 8 and 16 (natural
+// alignment) and the five axes at 24 instead of 20.
+typedef struct { uint32_t packet; uint64_t pressed, touched; float axis[10]; } __attribute__((packed, aligned(4))) native_controller_state;
+typedef struct { uint32_t packet, pad; uint64_t pressed, touched; float axis[10]; } guest_controller_state;
+_Static_assert(sizeof(native_controller_state) == 60 && __builtin_offsetof(native_controller_state, pressed) == 4 &&
+               __builtin_offsetof(native_controller_state, axis) == 20, "Apple VRControllerState001_t");
+_Static_assert(sizeof(guest_controller_state) == 64 && __builtin_offsetof(guest_controller_state, pressed) == 8 &&
+               __builtin_offsetof(guest_controller_state, axis) == 24, "Windows VRControllerState001_t");
 static void *core_table[7], *system_table[47], *compositor_table[44], *system_fns[47];
 static guest_object core = {core_table, NULL}, system_object = {system_table, NULL}, compositor = {compositor_table, NULL};
 static void **native_system_fns;
@@ -261,6 +279,13 @@ static void note_poses(const char *what, int result, const void *render, uint32_
     if (p && count) { memcpy(m, p, sizeof m); memcpy(&tracking, p + 72, 4); }
     vx_log("xrizer_guest_bridge: %s call %u result %d, %u render poses; HMD tracking %d valid %u connected %u position %.3f %.3f %.3f", what, calls, result,
            count, tracking, p && count ? p[76] : 0, p && count ? p[77] : 0, m[3], m[7], m[11]);
+    // Read-only: every other device the array reports connected (index, tracking result, valid, position).
+    for (uint32_t i = 1; p && i < count && i < 64; i++) {
+        const uint8_t *d = p + 80 * (size_t)i;
+        if (!d[77]) continue;
+        float n[12]; int32_t t; memcpy(n, d, sizeof n); memcpy(&t, d + 72, 4);
+        vx_log("xrizer_guest_bridge: %s call %u device %u tracking %d valid %u connected 1 position %.3f %.3f %.3f", what, calls, i, t, d[76], n[3], n[7], n[11]);
+    }
 }
 static WINAPI int wait_poses(guest_object *self, void *render, uint32_t render_count, void *game, uint32_t game_count) {
     require(self == &compositor); native_wait_fn fn = (native_wait_fn)native_table(self)[2];
@@ -280,12 +305,20 @@ static WINAPI int one_pose(guest_object *self, uint32_t index, void *render, voi
     return fn(self->native, index, render, game);
 }
 static WINAPI uint32_t controller_index(guest_object *self, int role) {
-    require(self == &system_object); native_role_fn fn = (native_role_fn)native_table(self)[18]; return fn(self->native, role);
+    require(self == &system_object); native_role_fn fn = (native_role_fn)native_table(self)[18];
+    uint32_t r = fn(self->native, role);
+    static unsigned calls; calls++;
+    if (calls <= 8 || !(calls % 1000)) vx_log("xrizer_guest_bridge: System019 slot18 role %d -> device %u (call %u)", role, r, calls);
+    return r;
 }
 // IVRSystem slot 19, GetControllerRoleForTrackedDeviceIndex(uint32_t index) -> ETrackedControllerRole (a 32-bit enum); scalars only.
 typedef int (*native_index_role_fn)(void *, uint32_t);
 static WINAPI int controller_role(guest_object *self, uint32_t index) {
-    require(self == &system_object); native_index_role_fn fn = (native_index_role_fn)native_table(self)[19]; return fn(self->native, index);
+    require(self == &system_object); native_index_role_fn fn = (native_index_role_fn)native_table(self)[19];
+    int r = fn(self->native, index);
+    static unsigned calls; calls++;
+    if (calls <= 8 || !(calls % 1000)) vx_log("xrizer_guest_bridge: System019 slot19 device %u -> role %d (call %u)", index, r, calls);
+    return r;
 }
 // System019 Windows VREvent_t data is at byte 16; the pinned Apple native
 // VREvent_t data is at byte 12. Current xrizer emits controller-sized payloads.
@@ -299,7 +332,9 @@ static WINAPI uint8_t poll_event(guest_object *self, void *event, uint32_t size)
         memcpy(event,native_event,12);
         memcpy((unsigned char *)event+16,native_event+12,4);
     }
-    vx_log("xrizer_guest_bridge: System019 slot30 size %u result %u",size,(unsigned)result);
+    if (result) { uint32_t type, device; memcpy(&type, native_event, 4); memcpy(&device, native_event + 4, 4);
+        vx_log("xrizer_guest_bridge: System019 slot30 size %u result 1 event type %u device %u",size,type,device); }
+    else vx_log("xrizer_guest_bridge: System019 slot30 size %u result 0",size);
     return result;
 }
 static WINAPI hidden_mesh *hidden_area_mesh(guest_object *self, hidden_mesh *out, int eye, int kind) {
@@ -332,6 +367,79 @@ static WINAPI uint8_t input_available(guest_object *self) {
     static unsigned calls; calls++;
     if (calls <= 3 || !(calls % 1000)) vx_log("xrizer_guest_bridge: System019 slot39 IsInputAvailable %u (call %u)", r, calls);
     return r;
+}
+// IVRSystem_019 slots 20-25, 34-36: scalars, enums and the caller's error pointer pass through unchanged
+// (ETrackedPropertyError and ETrackedDeviceClass are 32-bit enums on both sides; TrackedDevicePose_t is 80 bytes on
+// both, see note_poses); only VRControllerState001_t is repacked.
+static WINAPI int device_class(guest_object *self, uint32_t device) {
+    require(self == &system_object); native_device_class_fn fn = (native_device_class_fn)native_table(self)[20];
+    int r = fn(self->native, device);
+    static unsigned calls; calls++;
+    if (calls <= 8 || !(calls % 1000)) vx_log("xrizer_guest_bridge: System019 slot20 device %u class %d (call %u)", device, r, calls);
+    return r;
+}
+static WINAPI uint8_t device_connected(guest_object *self, uint32_t device) {
+    require(self == &system_object); native_device_bool_fn fn = (native_device_bool_fn)native_table(self)[21];
+    uint8_t r = fn(self->native, device);
+    static unsigned calls; calls++;
+    if (calls <= 8 || !(calls % 1000)) vx_log("xrizer_guest_bridge: System019 slot21 device %u connected %u (call %u)", device, r, calls);
+    return r;
+}
+static void note_property(unsigned slot, uint32_t device, int property, const int *error, double value) {
+    static unsigned calls[4]; unsigned n = ++calls[slot - 22];
+    if (n <= 16 || !(n % 1000)) vx_log("xrizer_guest_bridge: System019 slot%u device %u property %d value %g error %d (call %u)",
+                                     slot, device, property, value, error ? *error : -1, n);
+}
+static WINAPI uint8_t bool_property(guest_object *self, uint32_t device, int property, int *error) {
+    require(self == &system_object); native_bool_property_fn fn = (native_bool_property_fn)native_table(self)[22];
+    uint8_t r = fn(self->native, device, property, error); note_property(22, device, property, error, r); return r;
+}
+static WINAPI float float_property(guest_object *self, uint32_t device, int property, int *error) {
+    require(self == &system_object); native_float_property_fn fn = (native_float_property_fn)native_table(self)[23];
+    float r = fn(self->native, device, property, error); note_property(23, device, property, error, r); return r;
+}
+static WINAPI int32_t int32_property(guest_object *self, uint32_t device, int property, int *error) {
+    require(self == &system_object); native_int32_property_fn fn = (native_int32_property_fn)native_table(self)[24];
+    int32_t r = fn(self->native, device, property, error); note_property(24, device, property, error, r); return r;
+}
+static WINAPI uint64_t uint64_property(guest_object *self, uint32_t device, int property, int *error) {
+    require(self == &system_object); native_uint64_property_fn fn = (native_uint64_property_fn)native_table(self)[25];
+    uint64_t r = fn(self->native, device, property, error); note_property(25, device, property, error, (double)r); return r;
+}
+static void copy_controller_state(void *guest, const native_controller_state *n) {
+    guest_controller_state g = { .packet = n->packet, .pressed = n->pressed, .touched = n->touched };
+    memcpy(g.axis, n->axis, sizeof g.axis);
+    memcpy(guest, &g, sizeof g);
+}
+static void note_controller_state(unsigned slot, uint32_t device, uint32_t size, uint8_t r, const native_controller_state *n) {
+    static unsigned calls[2]; unsigned c = ++calls[slot - 34];
+    if (c <= 8 || !(c % 1000)) vx_log("xrizer_guest_bridge: System019 slot%u device %u size %u result %u packet %u pressed %#llx touched %#llx "
+        "axis0 %.3f %.3f axis1 %.3f (call %u)", slot, device, size, r, n->packet, (unsigned long long)n->pressed,
+        (unsigned long long)n->touched, n->axis[0], n->axis[1], n->axis[2], c);
+}
+// The guest's size is the Windows struct's (64); xrizer is called with its own (60) and the result is repacked.
+// Another size is a struct this bridge does not know: refused, nothing written, as xrizer itself refuses one.
+static WINAPI uint8_t controller_state(guest_object *self, uint32_t device, void *state, uint32_t size) {
+    require(self == &system_object); native_controller_state_fn fn = (native_controller_state_fn)native_table(self)[34];
+    if (!state || size != sizeof(guest_controller_state)) { vx_log("xrizer_guest_bridge: System019 slot34 refused size %u state %p", size, state); return 0; }
+    native_controller_state n; memset(&n, 0, sizeof n);
+    uint8_t r = fn(self->native, device, &n, sizeof n);
+    copy_controller_state(state, &n); note_controller_state(34, device, size, r, &n);
+    return r;
+}
+static WINAPI uint8_t controller_state_pose(guest_object *self, int origin, uint32_t device, void *state, uint32_t size, void *pose) {
+    require(self == &system_object); native_controller_state_pose_fn fn = (native_controller_state_pose_fn)native_table(self)[35];
+    if (!state || size != sizeof(guest_controller_state)) { vx_log("xrizer_guest_bridge: System019 slot35 refused size %u state %p", size, state); return 0; }
+    native_controller_state n; memset(&n, 0, sizeof n);
+    uint8_t r = fn(self->native, origin, device, &n, sizeof n, pose);
+    copy_controller_state(state, &n); note_controller_state(35, device, size, r, &n);
+    return r;
+}
+static WINAPI void haptic_pulse(guest_object *self, uint32_t device, uint32_t axis, uint16_t duration_us) {
+    require(self == &system_object); native_haptic_fn fn = (native_haptic_fn)native_table(self)[36];
+    static unsigned calls; calls++;
+    if (calls <= 8 || !(calls % 1000)) vx_log("xrizer_guest_bridge: System019 slot36 device %u axis %u duration %u us (call %u)", device, axis, duration_us, calls);
+    fn(self->native, device, axis, duration_us);
 }
 static WINAPI void tracking_space(guest_object *self, int origin) {
     require(self == &compositor); native_tracking_fn fn = (native_tracking_fn)native_table(self)[0];
@@ -524,6 +632,9 @@ void *vx_xrizer_guest_core(void *native_core) {
     core_table[0] = core_init; core_table[1] = core_cleanup; core_table[2] = core_version; core_table[3] = core_interface; core_table[4] = core_present;
     system_table[0] = render_size; system_table[1] = member_projection; system_table[2] = projection_raw; system_table[4] = member_transform;
     system_table[7] = dxgi_output; system_table[18] = controller_index; system_table[19] = controller_role; system_table[28] = string_property; system_table[30] = poll_event; system_table[33] = hidden_area_mesh; system_table[39] = input_available;
+    system_table[20] = device_class; system_table[21] = device_connected; system_table[22] = bool_property; system_table[23] = float_property;
+    system_table[24] = int32_property; system_table[25] = uint64_property; system_table[34] = controller_state;
+    system_table[35] = controller_state_pose; system_table[36] = haptic_pulse;
     compositor_table[0] = tracking_space; compositor_table[2] = wait_poses; compositor_table[3] = last_poses; compositor_table[4] = one_pose; compositor_table[5] = submit; compositor_table[7] = handoff; compositor_table[8] = frame_timing; compositor_table[24] = can_render_scene;
     system_fns[1] = fntable_projection; system_fns[2] = fntable_raw; system_fns[4] = fntable_transform;
     cleaned = 0; core.native = native_core; return &core;

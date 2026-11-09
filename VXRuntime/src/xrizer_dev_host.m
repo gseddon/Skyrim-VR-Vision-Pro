@@ -37,6 +37,9 @@ extern int vx_xrizer_dev_audit_observe(uint32_t variant);
 @property(nonatomic) BOOL outstanding;
 /* Opt-in development choice (VXRT_XRIZER_DEV_STAGE=1): declare the synthetic local origin to be the floor. */
 @property(nonatomic) BOOL syntheticStage;
+/* Opt-in diagnostic (VXRT_XRIZER_DEV_CONTROLLERS=1|touch|index|vive): two connected, stationary synthetic controllers
+ * of that kind (KL_NATIVE_INPUT_PROFILE_*; 0 = off) through the provider's version-3 input host. Not physical input. */
+@property(nonatomic) uint32_t syntheticControllers;
 /* Opt-in diagnostic (VXRT_XRIZER_DEV_DUMP=<absolute dir>): write raw RGBA of the published eyes for a few frames. */
 @property(nonatomic,copy) NSString *dumpDir;
 #ifdef VXRT_XRIZER_DEV_AUDIT
@@ -109,6 +112,19 @@ static XrResult end_session(void *p,XrTime *out) {
 static XrResult input(void *p,KlNativeInputSample *out) {
     VXDevXRHost *h=host(p); if (!h || !out || !h.inputTime) return XR_ERROR_RUNTIME_FAILURE;
     *out=(KlNativeInputSample){.sample_id=1,.sample_time=h.inputTime,.hand_connected={XR_FALSE,XR_FALSE}}; return XR_SUCCESS;
+}
+/* Diagnostic: one unchanging observation (same id and time on every poll) of two connected controllers held still in
+ * front of the synthetic head (head at 1.6 m, controllers 0.5 m below it, 0.2 m to each side, 0.35 m ahead, pointing
+ * forward). Valid but untracked poses, no button pressed, trigger and stick at rest. Not physical input. */
+static XrResult synthetic_controllers(void *p,KlNativeInputSample3 *out) {
+    VXDevXRHost *h=host(p); if (!h || !out || !h.inputTime || !h.syntheticControllers) return XR_ERROR_RUNTIME_FAILURE;
+    *out=(KlNativeInputSample3){.sample_id=1,.sample_time=h.inputTime};
+    for (unsigned i=0;i<2;i++) {
+        float x=i ? .2f : -.2f;
+        out->hand[i]=(KlNativeInputHand3){.controls={.connected=XR_TRUE,.trigger=0,.stick_x=0,.stick_y=0},.profile=h.syntheticControllers,
+            .local_from_grip={.orientation={0,0,0,1},.position={x,1.1f,-.35f}},.local_from_aim={.orientation={0,0,0,1},.position={x,1.1f,-.4f}}};
+    }
+    return XR_SUCCESS;
 }
 static XrResult wait_frame(void *p,KlNativeFrameSample *out) {
     VXDevXRHost *h=host(p); if (!h || !out || h.outstanding) return XR_ERROR_RUNTIME_FAILURE;
@@ -260,6 +276,16 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
         h.syntheticStage=getenv("VXRT_XRIZER_DEV_STAGE") && !strcmp(getenv("VXRT_XRIZER_DEV_STAGE"),"1");
         { const char *dd=getenv("VXRT_XRIZER_DEV_DUMP"); if (dd && dd[0]=='/') h.dumpDir=[NSString stringWithUTF8String:dd]; }
         if (h.syntheticStage) vx_log("xrizer dev host: synthetic stage declared valid (local origin is the floor); development only");
+        { const char *c=getenv("VXRT_XRIZER_DEV_CONTROLLERS");
+          if (c && *c && strcmp(c,"0")) {
+              if (!strcmp(c,"1") || !strcmp(c,"touch")) h.syntheticControllers=KL_NATIVE_INPUT_PROFILE_OCULUS_TOUCH;
+              else if (!strcmp(c,"index")) h.syntheticControllers=KL_NATIVE_INPUT_PROFILE_VALVE_INDEX;
+              else if (!strcmp(c,"vive")) h.syntheticControllers=KL_NATIVE_INPUT_PROFILE_HTC_VIVE;
+              else { vx_log("xrizer dev host: VXRT_XRIZER_DEV_CONTROLLERS=%s: expected 1, touch, index or vive",c); return -1; }
+              vx_log("xrizer dev host: synthetic stationary controllers (%s profile), diagnostic, not physical input",
+                     h.syntheticControllers==KL_NATIVE_INPUT_PROFILE_OCULUS_TOUCH ? "oculus/touch_controller" :
+                     h.syntheticControllers==KL_NATIVE_INPUT_PROFILE_VALVE_INDEX ? "valve/index_controller" : "htc/vive_controller");
+          } }
         h.width=width; h.height=height; h.device=MTLCreateSystemDefaultDevice(); h.queue=[h.device newCommandQueue];
         h.inputTime=now_ns(); h.frames=vx_native_vr_create(keep,drop);
         if (!h.device || !h.queue || !h.inputTime || !h.frames) return -1;
@@ -274,11 +300,12 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
         KlNativeSessionHost session={KL_NATIVE_SESSION_HOST_VERSION,sizeof(session),ctx,poll_event,begin_session,end_session,request_exit};
         KlNativeFrameHost frame={KL_NATIVE_FRAME_HOST_VERSION,sizeof(frame),ctx,wait_frame,publish,cancel_frame};
         KlNativeInputHost inputHost={KL_NATIVE_INPUT_HOST_VERSION,sizeof(inputHost),ctx,input};
+        KlNativeInputHost3 controllerHost={KL_NATIVE_INPUT_HOST_VERSION_3,sizeof(controllerHost),ctx,synthetic_controllers};
         if (kl_native_configure(&system)!=XR_SUCCESS || kl_native_configure_views(&view)!=XR_SUCCESS ||
             kl_native_configure_view_geometry(&geometry)!=XR_SUCCESS ||
             kl_native_configure_metal(&metal)!=XR_SUCCESS || kl_native_configure_image_sync(&sync)!=XR_SUCCESS ||
             kl_native_configure_session(&session)!=XR_SUCCESS || kl_native_configure_frame(&frame)!=XR_SUCCESS ||
-            kl_native_configure_input(&inputHost)!=XR_SUCCESS) return -1;
+            (h.syntheticControllers ? kl_native_configure_input3(&controllerHost) : kl_native_configure_input(&inputHost))!=XR_SUCCESS) return -1;
         XrizerMetalHost source;
         if (vx_xrizer_guest_d3d_create((__bridge void *)h.device,(__bridge void *)h.queue,record_destination,ctx,&source)) return -1;
         h.source=source; h.library=dlopen(path,RTLD_NOW|RTLD_LOCAL); if (!h.library) return -1;
@@ -288,7 +315,8 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
             provider(kl_native_get_instance_proc_addr) || graphics(&source)) return -1;
         h.event=(KlNativeSessionEvent){KL_NATIVE_SESSION_READY,now_ns()};
         if (!h.event.time || vx_xrizer_openvr_configure(factory,ctx)) return -1;
-        vx_log("xrizer dev host: offscreen synthetic stationary head, disconnected controllers, %ux%u, CLOCK_MONOTONIC; no physical tracking or display",width,height);
+        vx_log("xrizer dev host: offscreen synthetic stationary head, %s controllers, %ux%u, CLOCK_MONOTONIC; no physical tracking or display",
+               h.syntheticControllers ? "synthetic stationary (diagnostic)" : "disconnected",width,height);
         return 0;
     }
 }
