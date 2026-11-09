@@ -20,6 +20,9 @@ SRC    += src/imagehlp.c src/spellcheck.c src/ime.c src/clipboard.m
 SRC    += src/npu_interp.m src/warp_core.m
 SRC    += src/upscale_core.m
 SRC    += src/native_vr.c src/native_openvr.m src/native_vr_present.m
+# xWMA (WMA v2) decoding for XAudio2: derived from FFmpeg, LGPL-2.1-or-later (src/wmadec/SOURCE.md)
+SRC    += src/wmadec/wmadec.c
+WMADEC_HDR = src/wmadec/wmadec.h src/wmadec/wmadec_internal.h src/wmadec/wmadata.h src/wmadec/aac_scalefactor.h
 MINGW   = x86_64-w64-mingw32-gcc
 MINGWXX = x86_64-w64-mingw32-g++
 
@@ -27,7 +30,7 @@ VXRT_ROSETTA_TARGET ?= build/vxrt
 
 all: $(VXRT_ROSETTA_TARGET) build/vxrt-npu tests
 
-$(VXRT_ROSETTA_TARGET): src/native_vr.h src/native_openvr.h $(SRC) src/vx.h src/npu_interp.h src/warp_core.h src/npu_proto.h src/pe.h src/dotnet_metadata.h src/dotnet_resources.h src/dotnet_baml.h src/dotnet_il.h src/dotnet_exec.h src/dotnet_host.h src/ui.h src/d3d_common.h src/d3d_format.h src/d3d12_view.h src/stereo.h src/upscale_core.h src/d3d_tables.h src/d3d12_tables.h src/dxil.h src/dxil_msl.h src/dxil_ir.h src/gpu_ir.h src/gpu_ir_msl.h src/gpu_ir_metal.h src/spirv.h src/spirv_ir.h src/vx_vulkan.h src/vk_impl.h src/vk_encode.h src/vk_msl.h src/vk_win32.h src/vk_dispatch_table.h src/directinput_buffer.h src/directinput_format.h src/audio_tables.h src/xaudio2_tables.h src/dwrite_tables.h src/dxbc.h src/aes_gcm.h
+$(VXRT_ROSETTA_TARGET): src/native_vr.h src/native_openvr.h $(SRC) src/vx.h src/npu_interp.h src/warp_core.h src/npu_proto.h src/pe.h src/dotnet_metadata.h src/dotnet_resources.h src/dotnet_baml.h src/dotnet_il.h src/dotnet_exec.h src/dotnet_host.h src/ui.h src/d3d_common.h src/d3d_format.h src/d3d12_view.h src/stereo.h src/upscale_core.h src/d3d_tables.h src/d3d12_tables.h src/dxil.h src/dxil_msl.h src/dxil_ir.h src/gpu_ir.h src/gpu_ir_msl.h src/gpu_ir_metal.h src/spirv.h src/spirv_ir.h src/vx_vulkan.h src/vk_impl.h src/vk_encode.h src/vk_msl.h src/vk_win32.h src/vk_dispatch_table.h src/directinput_buffer.h src/directinput_format.h src/audio_tables.h src/xaudio2_tables.h $(WMADEC_HDR) src/dwrite_tables.h src/dxbc.h src/aes_gcm.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -Ithird_party/vulkan -fobjc-arc -o $@.tmp $(SRC) -framework Cocoa -framework CoreFoundation -framework CoreServices -framework CoreText -framework Metal -framework MetalFX -framework QuartzCore -framework GameController -framework CoreGraphics -framework IOSurface -framework AudioToolbox -framework CoreAudio -framework ImageIO -framework OpenGL -framework IOKit -framework SystemConfiguration -framework CFNetwork -framework Security -Wl,-pagezero_size,0x10000 -licucore -lz && mv -f $@.tmp $@
 
@@ -323,7 +326,7 @@ build/libvxrt_vm.dylib: src/vm_hooks.c translator/xvheap.h
 	@mkdir -p build
 	$(CC) -arch arm64 -O1 -mmacosx-version-min=14.0 -dynamiclib -install_name @executable_path/libvxrt_vm.dylib -Itranslator -o $@ $<
 $(VXRT_ARM64_TARGET): $(VXRT_ARM64_EXTRA_OBJS)
-$(VXRT_ARM64_TARGET): src/native_vr.h src/native_openvr.h $(ARM64_SRC) src/npu_interp.h src/npu_proto.h $(VXRT_ARM64_THUNKS_ROOT)/thunks/stamp build/libvxrt_vm.dylib build/guest.o src/arm64.h src/pe.h src/dotnet_metadata.h src/dotnet_resources.h src/dotnet_baml.h src/ui.h src/d3d_common.h src/d3d_format.h src/d3d12_view.h src/stereo.h src/d3d_tables.h src/d3d12_tables.h src/dxil.h src/dxil_msl.h src/dxil_ir.h src/gpu_ir.h src/gpu_ir_msl.h src/gpu_ir_metal.h src/spirv.h src/spirv_ir.h src/vx_vulkan.h src/directinput_buffer.h src/directinput_format.h src/audio_tables.h src/xaudio2_tables.h src/dwrite_tables.h src/dxbc.h translator/xlat.h translator/xlat_sse.inc translator/a64.h translator/engine.h translator/x87.h translator/cpuid_table.h translator/aot.h
+$(VXRT_ARM64_TARGET): src/native_vr.h src/native_openvr.h $(ARM64_SRC) src/npu_interp.h src/npu_proto.h $(VXRT_ARM64_THUNKS_ROOT)/thunks/stamp build/libvxrt_vm.dylib build/guest.o src/arm64.h src/pe.h src/dotnet_metadata.h src/dotnet_resources.h src/dotnet_baml.h src/ui.h src/d3d_common.h src/d3d_format.h src/d3d12_view.h src/stereo.h src/d3d_tables.h src/d3d12_tables.h src/dxil.h src/dxil_msl.h src/dxil_ir.h src/gpu_ir.h src/gpu_ir_msl.h src/gpu_ir_metal.h src/spirv.h src/spirv_ir.h src/vx_vulkan.h src/directinput_buffer.h src/directinput_format.h src/audio_tables.h src/xaudio2_tables.h $(WMADEC_HDR) src/dwrite_tables.h src/dxbc.h translator/xlat.h translator/xlat_sse.inc translator/a64.h translator/engine.h translator/x87.h translator/cpuid_table.h translator/aot.h
 	@mkdir -p $(dir $@)
 	$(CC) -arch arm64 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -mmacosx-version-min=14.0 -Isrc -I$(VXRT_ARM64_THUNKS_ROOT) -Ibuild -Ithird_party/vulkan $(VXRT_ARM64_EXTRA_CFLAGS) -fobjc-arc -o $@ $(ARM64_SRC) $(VXRT_ARM64_EXTRA_OBJS) -framework Cocoa -framework CoreFoundation -framework CoreServices -framework CoreText -framework Metal -framework MetalFX -framework QuartzCore -framework GameController -framework CoreGraphics -framework IOSurface -framework AudioToolbox -framework CoreAudio -framework ImageIO -framework OpenGL -framework IOKit -framework SystemConfiguration -framework CFNetwork -framework Security -framework Hypervisor build/libvxrt_vm.dylib build/guest.o -licucore -lz $(VXRT_ARM64_EXTRA_LDFLAGS)
 	codesign -s - -f --entitlements translator/hypervisor.entitlements $@
@@ -1129,9 +1132,9 @@ build/xaudio2.exe: tests/xaudio2.c
 	@mkdir -p build
 	$(MINGW) -O1 -o $@ $< -lxaudio2_9 -lm
 
-build/xaudio2_27.exe: tests/xaudio2_27.c
+build/xaudio2_27.exe: tests/xaudio2_27.c tests/wma/m22_24k_packets.h
 	@mkdir -p build
-	$(MINGW) -O1 -o $@ $< -lole32 -luuid -lm
+	$(MINGW) -O1 -Itests -o $@ $< -lole32 -luuid -lm
 
 build/dwrite.exe: tests/dwrite.c
 	@mkdir -p build
@@ -1474,6 +1477,11 @@ build/aes_gcm_test: src/aes_gcm.c src/aes_gcm.h tests/aes_gcm.c
 	@mkdir -p build
 	$(HOSTCC) -Isrc -o $@ tests/aes_gcm.c src/aes_gcm.c
 
+# The WMA v2 decoder (src/wmadec) on the owned vectors in tests/wma, natively.
+build/wmadec_vectors: src/wmadec/wmadec.c $(WMADEC_HDR) tests/wmadec_vectors.c
+	@mkdir -p build
+	$(HOSTCC) -Isrc -o $@ tests/wmadec_vectors.c src/wmadec/wmadec.c
+
 build/dotnet_eh_test: src/pe.c src/pe.h src/dotnet_metadata.c src/dotnet_metadata.h src/dotnet_resources.c src/dotnet_resources.h src/dotnet_baml.c src/dotnet_baml.h src/dotnet_il.c src/dotnet_il.h src/dotnet_exec.c src/dotnet_runtime.c src/dotnet_exec.h tests/dotnet_eh.c
 	@mkdir -p build
 	$(HOSTCC) -Isrc -o $@ src/pe.c src/dotnet_metadata.c src/dotnet_resources.c src/dotnet_baml.c src/dotnet_il.c src/dotnet_exec.c src/dotnet_runtime.c tests/dotnet_eh.c -framework CoreFoundation -framework CoreServices -licucore -lz
@@ -1642,7 +1650,7 @@ check: all build/vkmsl build/x86dec_test build/x86dec_check build/ref_x86 build/
 VXRT ?= $(VXRT_ROSETTA_TARGET)
 runtime-tests: export VXRT_ROOT = build/root
 runtime-tests: export VXRT_NO_ACTIVATE = 1
-runtime-tests: $(VXRT) build/vxrt-npu tests
+runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors
 	$(VXRT) build/hello_k32.exe
 	$(VXRT) build/smc.exe
 	$(VXRT) build/order.exe
@@ -1747,7 +1755,10 @@ runtime-tests: $(VXRT) build/vxrt-npu tests
 	VXRT_XINPUT_SCRIPT=3:A+START:1 $(VXRT) build/xinput_script.exe
 	$(VXRT) build/audio.exe
 	$(VXRT) build/xaudio2.exe
-	VXRT_MUTE=1 $(VXRT) build/xaudio2_27.exe
+	build/wmadec_vectors tests/wma
+	rm -f build/xaudio2_27.capture
+	VXRT_MUTE=1 VXRT_XAUDIO2_CAPTURE=build/xaudio2_27.capture $(VXRT) build/xaudio2_27.exe
+	python3 tests/xaudio2_wma_check.py build/xaudio2_27.capture tests/wma/m22_24k.ref.s16
 	$(VXRT) build/dwrite.exe
 	$(VXRT) build/pipes.exe
 	$(VXRT) build/pipes.exe serve & server=$$!; $(VXRT) build/pipes.exe ask; client_status=$$?; wait $$server; server_status=$$?; test $$client_status -eq 0 -a $$server_status -eq 0
