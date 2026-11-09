@@ -35,7 +35,8 @@ static KlNativeViewGeometryHost view_geometry_host;
 static int view_geometry_configured;
 static KlNativeInputHost input_host;
 static KlNativeInputHost2 input_host2;
-static int input_configured; /* 0, 1, or 2 */
+static KlNativeInputHost3 input_host3;
+static int input_configured; /* 0, 1, 2 or 3 */
 static int metal_extension_available(void) {
 #ifdef KL_NATIVE_TEST_METAL_PARTIAL
     return metal_configured;
@@ -91,6 +92,12 @@ struct XrSession_T {
     unsigned input_valid;
     unsigned has_input2;
     KlNativeInputSample2 last_input2;
+    /* Version 3: the last two synced samples (for changedSinceLastSync) and
+     * the profile made current per hand; a change queues one event. */
+    unsigned has_input3, has_prev_input3, profile_event_pending;
+    KlNativeInputSample3 last_input3, prev_input3;
+    XrPath current_profile[2];
+    XrTime profile_time[2];
 };
 struct XrSwapchain_T {
     unsigned used, live;
@@ -105,7 +112,9 @@ struct XrSwapchain_T {
 static struct XrSession_T sessions[SESSION_LIMIT];
 static struct XrSwapchain_T swapchains[SWAPCHAIN_LIMIT];
 #define SPACE_LIMIT 128
-struct XrSpace_T { unsigned used, live; XrSession owner; XrReferenceSpaceType type; XrPosef offset; };
+/* type is KL_ACTION_SPACE for an action space (action, subaction). */
+#define KL_ACTION_SPACE ((XrReferenceSpaceType)0x7ffffff0)
+struct XrSpace_T { unsigned used, live; XrSession owner; XrReferenceSpaceType type; XrPosef offset; XrAction action; XrPath subaction; };
 static struct XrSpace_T spaces[SPACE_LIMIT];
 static void destroy_instance_sessions(XrInstance instance);
 static int instance_has_acquired_images(XrInstance instance);
@@ -222,6 +231,7 @@ static XrResult XRAPI_CALL klxr_GetVxStaticViewGeometry(XrInstance instance, XrS
 static void clear_input_host(void) {
     memset(&input_host, 0, sizeof input_host);
     memset(&input_host2, 0, sizeof input_host2);
+    memset(&input_host3, 0, sizeof input_host3);
     input_configured = 0;
 }
 XrResult kl_native_configure_input(const KlNativeInputHost *host) {
@@ -237,6 +247,13 @@ XrResult kl_native_configure_input2(const KlNativeInputHost2 *host) {
     if (!host) { clear_input_host(); return XR_SUCCESS; }
     if (host->version != KL_NATIVE_INPUT_HOST_VERSION_2 || host->struct_size < sizeof(*host) || !host->sample) return XR_ERROR_VALIDATION_FAILURE;
     clear_input_host(); input_host2 = *host; input_configured = 2; return XR_SUCCESS;
+}
+XrResult kl_native_configure_input3(const KlNativeInputHost3 *host) {
+    for (unsigned i = 0; i < INSTANCE_LIMIT; ++i)
+        if (instances[i].live) return XR_ERROR_CALL_ORDER_INVALID;
+    if (!host) { clear_input_host(); return XR_SUCCESS; }
+    if (host->version != KL_NATIVE_INPUT_HOST_VERSION_3 || host->struct_size < sizeof(*host) || !host->sample) return XR_ERROR_VALIDATION_FAILURE;
+    clear_input_host(); input_host3 = *host; input_configured = 3; return XR_SUCCESS;
 }
 
 /* Klepton enumeration two-call behavior; no extensions or API layers are
@@ -686,6 +703,87 @@ static int hand2_ok(const KlNativeInputHand2 *hand) {
     if (!stick_absent && !(isfinite(hand->stick_x) && isfinite(hand->stick_y) && hand->stick_x >= -1.f && hand->stick_x <= 1.f && hand->stick_y >= -1.f && hand->stick_y <= 1.f)) return 0;
     return 1;
 }
+
+/* Version 3 input: profiles, bound controls and action-space poses. */
+static const char *const profile_names[] = { NULL, "/interaction_profiles/oculus/touch_controller",
+    "/interaction_profiles/valve/index_controller", "/interaction_profiles/htc/vive_controller",
+    "/interaction_profiles/khr/simple_controller" };
+static const char *const hand_names[2] = { "/user/hand/left", "/user/hand/right" };
+static int hand3_ok(const KlNativeInputHand3 *hand) {
+    if (!hand2_ok(&hand->controls)) return 0;
+    if (!hand->controls.connected) {
+        static const XrPosef zero;
+        return hand->profile == KL_NATIVE_INPUT_PROFILE_NONE && !memcmp(&hand->local_from_grip, &zero, sizeof zero) && !memcmp(&hand->local_from_aim, &zero, sizeof zero);
+    }
+    return hand->profile >= KL_NATIVE_INPUT_PROFILE_OCULUS_TOUCH && hand->profile <= KL_NATIVE_INPUT_PROFILE_KHR_SIMPLE &&
+        kl_native_pose_valid(hand->local_from_grip) && kl_native_pose_valid(hand->local_from_aim);
+}
+/* The application's path for this profile, only when it suggested bindings for it. */
+static XrPath suggested_profile(XrInstance owner, uint32_t profile) {
+    if (profile == KL_NATIVE_INPUT_PROFILE_NONE || profile >= sizeof profile_names / sizeof profile_names[0]) return XR_NULL_PATH;
+    XrPath id = XR_NULL_PATH;
+    for (unsigned i = 0; i < PATH_LIMIT && !id; ++i) if (paths[i].owner == owner && paths[i].id && !strcmp(paths[i].name, profile_names[profile])) id = paths[i].id;
+    if (!id) return XR_NULL_PATH;
+    for (unsigned i = 0; i < BINDING_LIMIT; ++i) if (bindings[i].owner == owner && bindings[i].profile == id) return id;
+    return XR_NULL_PATH;
+}
+/* "input/trigger/value" for a binding path naming this hand, else NULL. */
+static const char *hand_component(XrInstance owner, XrPath binding, unsigned hand) {
+    const char *path = owned_path(owner, binding);
+    size_t n = strlen(hand_names[hand]);
+    if (!path || strncmp(path, hand_names[hand], n) || path[n] != '/') return NULL;
+    return path + n + 1;
+}
+/* Value of one component of a connected hand: 1 scalar in *x, 2 vector in
+ * *x,*y, 0 not observed (touch, force and absent controls). */
+static int component_value(const char *c, const KlNativeInputHand2 *h, float *x, float *y) {
+    XrBool32 b;
+    *x = *y = 0;
+    if (!strcmp(c, "input/trigger/value")) { if (isnan(h->trigger)) return 0; *x = h->trigger; return 1; }
+    if (!strcmp(c, "input/trigger/click") || !strcmp(c, "input/select/click")) { if (isnan(h->trigger)) return 0; *x = h->trigger >= 0.5f ? 1.f : 0.f; return 1; }
+    if (!strcmp(c, "input/thumbstick") || !strcmp(c, "input/trackpad")) { if (isnan(h->stick_x)) return 0; *x = h->stick_x; *y = h->stick_y; return 2; }
+    if (!strcmp(c, "input/trackpad/x")) { if (isnan(h->stick_x)) return 0; *x = h->stick_x; return 1; }
+    if (!strcmp(c, "input/trackpad/y")) { if (isnan(h->stick_y)) return 0; *x = h->stick_y; return 1; }
+    if (!strcmp(c, "input/a/click") || !strcmp(c, "input/x/click")) b = h->primary_pressed;
+    else if (!strcmp(c, "input/b/click") || !strcmp(c, "input/y/click")) b = h->secondary_pressed;
+    else if (!strcmp(c, "input/squeeze/click") || !strcmp(c, "input/squeeze/value")) b = h->grip_pressed;
+    else if (!strcmp(c, "input/menu/click")) b = h->menu_pressed;
+    else if (!strcmp(c, "input/thumbstick/click") || !strcmp(c, "input/trackpad/click")) b = h->stick_pressed;
+    else return 0;
+    *x = b ? 1.f : 0.f; return 1;
+}
+struct bound_value { int active; float x, y; };
+/* Every binding of the action for the current profile of the selected hand(s);
+ * the largest magnitude wins, as the OpenXR combination rules allow. */
+static struct bound_value bound_value(XrSession session, XrAction action, XrPath subaction, const KlNativeInputSample3 *sample) {
+    struct bound_value v = {0};
+    const char *sub = subaction ? owned_path(session->owner, subaction) : NULL;
+    for (unsigned h = 0; h < 2; ++h) {
+        if (sub && strcmp(sub, hand_names[h])) continue;
+        const KlNativeInputHand3 *hand = &sample->hand[h];
+        if (!hand->controls.connected || !session->current_profile[h]) continue;
+        for (unsigned i = 0; i < BINDING_LIMIT; ++i) {
+            const struct native_binding *b = &bindings[i];
+            if (b->owner != session->owner || b->action != action || b->profile != session->current_profile[h]) continue;
+            const char *c = hand_component(session->owner, b->path, h);
+            if (!c) continue;
+            if (action->type == XR_ACTION_TYPE_POSE_INPUT) { if (!strcmp(c, "input/grip/pose") || !strcmp(c, "input/aim/pose")) v.active = 1; continue; }
+            float x, y; int kind = component_value(c, &hand->controls, &x, &y);
+            if (!kind) continue;
+            if (!v.active || (kind == 2 ? x * x + y * y > v.x * v.x + v.y * v.y : fabsf(x) > fabsf(v.x))) { v.x = x; v.y = y; }
+            v.active = 1;
+        }
+    }
+    return v;
+}
+/* Current and previous-sync values; lastChangeTime is the sample time of a
+ * change seen at this sync and 0 otherwise (earlier changes are not kept). */
+static int bound_pair(XrSession session, const XrActionStateGetInfo *info, struct bound_value *now, struct bound_value *was) {
+    if (input_configured != 3 || !session->has_input3) return 0;
+    *now = bound_value(session, info->action, info->subactionPath, &session->last_input3);
+    *was = session->has_prev_input3 ? bound_value(session, info->action, info->subactionPath, &session->prev_input3) : (struct bound_value){0};
+    return now->active;
+}
 static XrResult XRAPI_CALL klxr_SyncActions(XrSession session, const XrActionsSyncInfo *info) {
     if (!valid_session(session)) return XR_ERROR_HANDLE_INVALID;
     session->input_valid = 0; /* a failed sync cannot leave stale input observable */
@@ -700,6 +798,21 @@ static XrResult XRAPI_CALL klxr_SyncActions(XrSession session, const XrActionsSy
     if (!session->running) return XR_ERROR_SESSION_NOT_RUNNING;
     if (session->state != XR_SESSION_STATE_FOCUSED) return XR_SESSION_NOT_FOCUSED;
     if (!input_configured) return XR_ERROR_FUNCTION_UNSUPPORTED;
+    if (input_configured == 3) {
+        KlNativeInputSample3 sample = {0};
+        XrResult result = input_host3.sample(input_host3.context, &sample);
+        if (result != XR_SUCCESS) return XR_FAILED(result) ? result : XR_ERROR_RUNTIME_FAILURE;
+        if (!sample.sample_id || sample.sample_id < session->last_input_id || sample.sample_time <= 0 || sample.sample_time < session->last_input_time || (sample.sample_id == session->last_input_id && sample.sample_time != session->last_input_time)) return XR_ERROR_VALIDATION_FAILURE;
+        if (!hand3_ok(&sample.hand[0]) || !hand3_ok(&sample.hand[1])) return XR_ERROR_VALIDATION_FAILURE;
+        if (session->has_input3 && sample.sample_id == session->last_input3.sample_id && memcmp(sample.hand, session->last_input3.hand, sizeof sample.hand)) return XR_ERROR_VALIDATION_FAILURE;
+        session->prev_input3 = session->last_input3; session->has_prev_input3 = session->has_input3;
+        session->last_input_id = sample.sample_id; session->last_input_time = sample.sample_time; session->last_input3 = sample; session->has_input3 = 1; session->input_valid = 1;
+        for (unsigned h = 0; h < 2; ++h) {
+            XrPath now = sample.hand[h].controls.connected ? suggested_profile(session->owner, sample.hand[h].profile) : XR_NULL_PATH;
+            if (now != session->current_profile[h]) { session->current_profile[h] = now; session->profile_time[h] = sample.sample_time; session->profile_event_pending = 1; }
+        }
+        return XR_SUCCESS;
+    }
     if (input_configured == 2) {
         KlNativeInputSample2 sample = {0};
         XrResult result = input_host2.sample(input_host2.context, &sample);
@@ -739,6 +852,13 @@ static XrResult XRAPI_CALL klxr_GetActionStateBoolean(XrSession session, const X
     XrResult result = inactive_state_action(session, info, XR_ACTION_TYPE_BOOLEAN_INPUT);
     if (result != XR_SUCCESS) return result;
     state->currentState = state->changedSinceLastSync = state->isActive = XR_FALSE; state->lastChangeTime = 0;
+    struct bound_value now, was;
+    if (bound_pair(session, info, &now, &was)) {
+        XrBool32 current = now.x >= 0.5f, previous = was.x >= 0.5f;
+        state->isActive = XR_TRUE; state->currentState = current;
+        state->changedSinceLastSync = was.active && current != previous;
+        state->lastChangeTime = state->changedSinceLastSync ? session->last_input3.sample_time : 0;
+    }
     return XR_SUCCESS;
 }
 static XrResult XRAPI_CALL klxr_GetActionStateFloat(XrSession session, const XrActionStateGetInfo *info, XrActionStateFloat *state) {
@@ -746,6 +866,12 @@ static XrResult XRAPI_CALL klxr_GetActionStateFloat(XrSession session, const XrA
     XrResult result = inactive_state_action(session, info, XR_ACTION_TYPE_FLOAT_INPUT);
     if (result != XR_SUCCESS) return result;
     state->currentState = 0; state->changedSinceLastSync = state->isActive = XR_FALSE; state->lastChangeTime = 0;
+    struct bound_value now, was;
+    if (bound_pair(session, info, &now, &was)) {
+        state->isActive = XR_TRUE; state->currentState = now.x;
+        state->changedSinceLastSync = was.active && was.x != now.x;
+        state->lastChangeTime = state->changedSinceLastSync ? session->last_input3.sample_time : 0;
+    }
     return XR_SUCCESS;
 }
 static XrResult XRAPI_CALL klxr_GetActionStateVector2f(XrSession session, const XrActionStateGetInfo *info, XrActionStateVector2f *state) {
@@ -753,13 +879,22 @@ static XrResult XRAPI_CALL klxr_GetActionStateVector2f(XrSession session, const 
     XrResult result = inactive_state_action(session, info, XR_ACTION_TYPE_VECTOR2F_INPUT);
     if (result != XR_SUCCESS) return result;
     state->currentState = (XrVector2f){0}; state->changedSinceLastSync = state->isActive = XR_FALSE; state->lastChangeTime = 0;
+    struct bound_value now, was;
+    if (bound_pair(session, info, &now, &was)) {
+        state->isActive = XR_TRUE; state->currentState = (XrVector2f){ now.x, now.y };
+        state->changedSinceLastSync = was.active && (was.x != now.x || was.y != now.y);
+        state->lastChangeTime = state->changedSinceLastSync ? session->last_input3.sample_time : 0;
+    }
     return XR_SUCCESS;
 }
 static XrResult XRAPI_CALL klxr_GetActionStatePose(XrSession session, const XrActionStateGetInfo *info, XrActionStatePose *state) {
     if (!state || state->type != XR_TYPE_ACTION_STATE_POSE || state->next) return XR_ERROR_VALIDATION_FAILURE;
     XrResult result = inactive_state_action(session, info, XR_ACTION_TYPE_POSE_INPUT);
     if (result != XR_SUCCESS) return result;
-    state->isActive = XR_FALSE; return XR_SUCCESS;
+    state->isActive = XR_FALSE;
+    struct bound_value now, was;
+    if (bound_pair(session, info, &now, &was)) state->isActive = XR_TRUE;
+    return XR_SUCCESS;
 }
 static XrResult XRAPI_CALL klxr_GetCurrentInteractionProfile(XrSession session, XrPath hand, XrInteractionProfileState *state) {
     if (!valid_session(session)) return XR_ERROR_HANDLE_INVALID;
@@ -767,6 +902,9 @@ static XrResult XRAPI_CALL klxr_GetCurrentInteractionProfile(XrSession session, 
     const char *path = owned_path(session->owner, hand);
     if (!path) return XR_ERROR_PATH_INVALID;
     if (strcmp(path, "/user/hand/left") && strcmp(path, "/user/hand/right")) return XR_ERROR_PATH_UNSUPPORTED;
+    /* Version 3: the profile made current by the last successful sync stays
+     * readable after a failed one, so a queued change event can be served. */
+    if (input_configured == 3) { state->interactionProfile = session->current_profile[strcmp(path, "/user/hand/left") ? 1 : 0]; return XR_SUCCESS; }
     if (!session->input_valid) return XR_ERROR_CALL_ORDER_INVALID;
     state->interactionProfile = XR_NULL_PATH; return XR_SUCCESS;
 }
@@ -972,6 +1110,13 @@ static XrResult XRAPI_CALL klxr_PollEvent(XrInstance instance, XrEventDataBuffer
     for (unsigned i = 0; i < SESSION_LIMIT; ++i)
         if (sessions[i].live && sessions[i].owner == instance) { session = &sessions[i]; break; }
     if (!session || !session_configured) return XR_EVENT_UNAVAILABLE;
+    if (!session->event_pending && session->profile_event_pending) {
+        XrEventDataInteractionProfileChanged changed = { .type = XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED, .session = session };
+        memset(buffer, 0, sizeof *buffer);
+        memcpy(buffer, &changed, sizeof changed);
+        session->profile_event_pending = 0;
+        return XR_SUCCESS;
+    }
     if (!session->event_pending) {
         KlNativeSessionEvent event = {0};
         XrResult result = session_host.poll_event(session_host.context, &event);
@@ -1082,6 +1227,54 @@ static XrResult XRAPI_CALL klxr_CreateReferenceSpace(XrSession session, const Xr
     }
     return XR_ERROR_LIMIT_REACHED;
 }
+/* Version 3 input only: a pose action's space follows the grip or aim pose of
+ * the binding that is current for its hand. */
+static XrResult XRAPI_CALL klxr_CreateActionSpace(XrSession session, const XrActionSpaceCreateInfo *info, XrSpace *space) {
+    if (!valid_session(session)) return XR_ERROR_HANDLE_INVALID;
+    if (!info || !space || info->type != XR_TYPE_ACTION_SPACE_CREATE_INFO || info->next) return XR_ERROR_VALIDATION_FAILURE;
+    *space = XR_NULL_HANDLE;
+    if (input_configured != 3) return XR_ERROR_FUNCTION_UNSUPPORTED;
+    XrAction action = valid_action_for(session->owner, info->action);
+    if (!action) return XR_ERROR_HANDLE_INVALID;
+    if (action->type != XR_ACTION_TYPE_POSE_INPUT) return XR_ERROR_ACTION_TYPE_MISMATCH;
+    if (info->subactionPath) {
+        if (!owned_path(session->owner, info->subactionPath)) return XR_ERROR_PATH_INVALID;
+        int found = 0;
+        for (uint32_t i = 0; i < action->subpath_count; ++i) if (action->subpaths[i] == info->subactionPath) found = 1;
+        if (!found) return XR_ERROR_PATH_UNSUPPORTED;
+    }
+    if (!kl_native_pose_valid(info->poseInActionSpace)) return XR_ERROR_POSE_INVALID;
+    for (unsigned i = 0; i < SPACE_LIMIT; ++i) if (!spaces[i].used) {
+        spaces[i] = (struct XrSpace_T){ .used = 1, .live = 1, .owner = session, .type = KL_ACTION_SPACE, .offset = info->poseInActionSpace,
+            .action = action, .subaction = info->subactionPath };
+        *space = &spaces[i]; return XR_SUCCESS;
+    }
+    return XR_ERROR_LIMIT_REACHED;
+}
+static int local_from_action_space(XrSpace space, XrPosef *out, XrSpaceLocationFlags *flags) {
+    XrSession s = space->owner;
+    *flags = 0;
+    if (input_configured != 3 || !s->input_valid || !s->has_input3 || !valid_action_for(s->owner, space->action)) return 0;
+    const char *sub = space->subaction ? owned_path(s->owner, space->subaction) : NULL;
+    for (unsigned h = 0; h < 2; ++h) {
+        if (sub && strcmp(sub, hand_names[h])) continue;
+        const KlNativeInputHand3 *hand = &s->last_input3.hand[h];
+        if (!hand->controls.connected || !s->current_profile[h]) continue;
+        for (unsigned i = 0; i < BINDING_LIMIT; ++i) {
+            const struct native_binding *b = &bindings[i];
+            if (b->owner != s->owner || b->action != space->action || b->profile != s->current_profile[h]) continue;
+            const char *c = hand_component(s->owner, b->path, h);
+            int grip = c && !strcmp(c, "input/grip/pose"), aim = c && !strcmp(c, "input/aim/pose");
+            if (!grip && !aim) continue;
+            XrBool32 tracked = grip ? hand->controls.grip_position_tracked : hand->controls.aim_position_tracked;
+            *flags = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT |
+                (tracked ? XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT : 0);
+            *out = kl_native_pose_compose(grip ? hand->local_from_grip : hand->local_from_aim, space->offset);
+            return 1;
+        }
+    }
+    return 0;
+}
 static XrResult XRAPI_CALL klxr_DestroySpace(XrSpace space) {
     if (!valid_space(space)) return XR_ERROR_HANDLE_INVALID;
     space->live = 0; return XR_SUCCESS;
@@ -1090,6 +1283,7 @@ static XrResult XRAPI_CALL klxr_DestroySpace(XrSpace space) {
  * substitutes an identity pose or guesses a floor. */
 static int local_from_space(XrSpace space, const KlNativeFrameSample *sample, XrPosef *out, XrSpaceLocationFlags *flags) {
     XrPosef base = { .orientation = {0,0,0,1}, .position = {0,0,0} };
+    if (space->type == KL_ACTION_SPACE) return local_from_action_space(space, out, flags);
     *flags = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
     if (space->type == XR_REFERENCE_SPACE_TYPE_STAGE) {
         if (!sample->stage_valid) { *flags = 0; return 0; }
@@ -1288,6 +1482,7 @@ XRAPI_ATTR XrResult XRAPI_CALL kl_native_get_instance_proc_addr(XrInstance insta
     INSTANCE("xrEnumerateEnvironmentBlendModes", klxr_EnumerateEnvironmentBlendModes)
     INSTANCE("xrEnumerateReferenceSpaces", klxr_EnumerateReferenceSpaces)
     INSTANCE("xrCreateReferenceSpace", klxr_CreateReferenceSpace)
+    INSTANCE("xrCreateActionSpace", klxr_CreateActionSpace)
     INSTANCE("xrDestroySpace", klxr_DestroySpace)
     INSTANCE("xrLocateSpace", klxr_LocateSpace)
     INSTANCE("xrWaitFrame", klxr_WaitFrame)

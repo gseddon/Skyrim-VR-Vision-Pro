@@ -253,6 +253,13 @@ def capture(args):
                 raise ValueError('--dev-synthetic-stage requires --experimental-xrizer')
             env['VXRT_XRIZER_DEV_STAGE'] = '1'
             result.setdefault('diagnostic', {})['dev_synthetic_stage'] = 'synthetic origin declared the floor; not a physical floor or tracking claim'
+        if getattr(args, 'dev_synthetic_controllers', None):
+            if not getattr(args, 'experimental_xrizer', False):
+                raise ValueError('--dev-synthetic-controllers requires --experimental-xrizer')
+            env['VXRT_XRIZER_DEV_CONTROLLERS'] = args.dev_synthetic_controllers
+            result['diagnostic']['experimental_xrizer'] = 'development host; injected head and synthetic stationary controllers'
+            result['diagnostic']['dev_synthetic_controllers'] = dict(profile=args.dev_synthetic_controllers,
+                scope='two connected, stationary, untracked synthetic controllers (no buttons pressed) from the dev host through the provider and xrizer; diagnostic, not physical input or tracking')
         if getattr(args, 'dump_eyes', False):
             if not getattr(args, 'experimental_xrizer', False):
                 raise ValueError('--dump-eyes requires --experimental-xrizer')
@@ -362,6 +369,7 @@ def main():
     ap.add_argument('--trace-openvr-init', action='store_true', help='diagnostic only: transparently log real OpenVR initialization results')
     ap.add_argument('--trace-null-target', action='store_true', help='diagnostic only: capture a null AOT target snapshot')
     ap.add_argument('--dev-synthetic-stage', action='store_true', help='diagnostic only: the experimental dev host declares its synthetic local origin to be the floor, so Standing tracking space is valid; no physical floor is claimed')
+    ap.add_argument('--dev-synthetic-controllers', nargs='?', const='touch', choices=('touch', 'index', 'vive'), help='diagnostic only: the experimental dev host reports two connected, stationary synthetic controllers of this kind (default touch) through the provider and xrizer; not physical input')
     ap.add_argument('--dump-eyes', action='store_true', help='diagnostic only: the experimental dev host writes raw RGBA of the published eyes for frames 1, 2, 60, 300 and 600 under <out>/eyes')
     ap.add_argument('--diag-env', action='append', metavar='NAME[=VALUE]', help='diagnostic only, repeatable: one of the renderer tracing knobs (%s)' % ', '.join(sorted(DIAG_ENV)))
     ap.add_argument('--xinput-script', default=None, metavar='SPEC', help='diagnostic only: VXRT_XINPUT_SCRIPT, a scripted virtual gamepad START_S:BUTTONS:HOLD_S[,...] (e.g. 40:A:0.3) with times from process start')
