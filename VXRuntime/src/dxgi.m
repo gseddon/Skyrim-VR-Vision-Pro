@@ -474,16 +474,46 @@ void d3d_texture_png(d3d_device *dev, void *texture, const char *path) {
     id<MTLTexture> tex = (__bridge id<MTLTexture>)texture;
     MTLPixelFormat f = tex.pixelFormat;
     int bgra = f == MTLPixelFormatBGRA8Unorm || f == MTLPixelFormatBGRA8Unorm_sRGB;
-    if (!bgra && f != MTLPixelFormatRGBA8Unorm && f != MTLPixelFormatRGBA8Unorm_sRGB) { vx_log("snapshot: format %d is not 8-bit", (int)f); return; }
-    NSUInteger w = tex.width, h = tex.height, row = w * 4;
+    // float formats (VXRT_DRAW_SNAPSHOT of HDR targets): each channel's mean and maximum are logged and the picture is x / (1 + x)
+    int bpp = f == MTLPixelFormatRG11B10Float || f == MTLPixelFormatRG16Float ? 4 : f == MTLPixelFormatRGBA16Float ? 8 : f == MTLPixelFormatR16Float ? 2 : 0;
+    if (!bpp && !bgra && f != MTLPixelFormatRGBA8Unorm && f != MTLPixelFormatRGBA8Unorm_sRGB) { vx_log("snapshot: format %d is not 8-bit or float", (int)f); return; }
+    NSUInteger w = tex.width, h = tex.height, row = w * 4, srow = bpp ? w * (NSUInteger)bpp : row;
     id<MTLBuffer> buf = [tex.device newBufferWithLength:row * h options:MTLResourceStorageModeShared];
+    id<MTLBuffer> src = bpp ? [tex.device newBufferWithLength:srow * h options:MTLResourceStorageModeShared] : buf;
     id<MTLCommandBuffer> cmd = [(__bridge id<MTLCommandQueue>)dev->queue commandBuffer];
     id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
     [blit copyFromTexture:tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(w, h, 1)
-                 toBuffer:buf destinationOffset:0 destinationBytesPerRow:row destinationBytesPerImage:row * h];
+                 toBuffer:src destinationOffset:0 destinationBytesPerRow:srow destinationBytesPerImage:srow * h];
     [blit endEncoding];
     [cmd commit];
     [cmd waitUntilCompleted];
+    if (bpp) {
+        double sum[3] = { 0, 0, 0 }, mx[3] = { 0, 0, 0 };
+        uint8_t *out = buf.contents;
+        for (NSUInteger y = 0; y < h; y++) for (NSUInteger x = 0; x < w; x++) {
+            const uint8_t *p = (const uint8_t *)src.contents + y * srow + x * (NSUInteger)bpp;
+            float c[3] = { 0, 0, 0 };
+            if (f == MTLPixelFormatRG11B10Float) {
+                uint32_t v; memcpy(&v, p, 4);
+                for (int k = 0; k < 3; k++) {
+                    uint32_t bits = k == 2 ? v >> 22 : (v >> (11 * k)) & 0x7ff, mb = k == 2 ? 5 : 6, e = bits >> mb, m = bits & ((1u << mb) - 1);
+                    c[k] = e == 0 ? (float)m / (float)(1u << mb) / 16384.0f : e == 31 ? 65504.0f : (1.0f + (float)m / (float)(1u << mb)) * exp2f((float)e - 15.0f);
+                }
+            } else {
+                _Float16 hv[4] = { 0, 0, 0, 0 }; memcpy(hv, p, (size_t)bpp);
+                for (int k = 0; k < 3; k++) c[k] = f == MTLPixelFormatR16Float ? (float)hv[0] : f == MTLPixelFormatRG16Float && k == 2 ? 0 : (float)hv[k];
+            }
+            uint8_t *o = out + y * row + x * 4;
+            for (int k = 0; k < 3; k++) {
+                sum[k] += c[k]; if (c[k] > mx[k]) mx[k] = c[k];
+                float v = c[k] < 0 ? 0 : c[k] / (1.0f + c[k]);
+                o[k] = (uint8_t)(v * 255.0f + 0.5f);
+            }
+            o[3] = 255;
+        }
+        vx_log("snapshot (float format %d): mean %.4g %.4g %.4g, max %.4g %.4g %.4g, shown as x/(1+x)", (int)f,
+               sum[0] / (double)(w * h), sum[1] / (double)(w * h), sum[2] / (double)(w * h), mx[0], mx[1], mx[2]);
+    }
     const uint8_t *mid = (const uint8_t *)buf.contents + (h / 2) * row + (w / 2) * 4;
     vx_log("snapshot: centre texel bytes %02x %02x %02x %02x", mid[0], mid[1], mid[2], mid[3]);
     CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();

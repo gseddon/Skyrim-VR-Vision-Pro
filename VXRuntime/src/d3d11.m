@@ -1021,8 +1021,24 @@ static void hold(d3d_view **slot, d3d_view *v) {
     if (*slot) d3d_release(&(*slot)->base);
     *slot = v;
 }
+extern int vx_draw_trace_active;
+// (VXRT_TRACE_DRAWS: the copies between the draws, by texture identity, so a texture's path through a frame can be followed)
+static void trace_copy_op(const char *what, d3d_object *dst, uint32_t dsub, uint32_t x, uint32_t y, d3d_object *src, uint32_t ssub, const uint32_t *box) {
+    if (!vx_draw_trace_active || !dst || !src) return;
+    d3d_texture *d = dst->kind == K_TEXTURE ? (d3d_texture *)dst : NULL, *s = src->kind == K_TEXTURE ? (d3d_texture *)src : NULL;
+    vx_log("%s dst @%05lx sub %u (%ux%u f%u) at %u,%u <- src @%05lx sub %u (%ux%u f%u) box %s", what, (unsigned long)((uintptr_t)dst >> 4 & 0xfffff), dsub,
+           d ? d->desc[TD_WIDTH] : 0, d ? d->desc[TD_HEIGHT] : 0, d ? d->desc[TD_FORMAT] : 0, x, y,
+           (unsigned long)((uintptr_t)src >> 4 & 0xfffff), ssub, s ? s->desc[TD_WIDTH] : 0, s ? s->desc[TD_HEIGHT] : 0, s ? s->desc[TD_FORMAT] : 0,
+           box ? "set" : "none");
+}
 static WINAPI void ctx_om_set_render_targets(void *this, uint32_t n, d3d_view *const *rtvs, d3d_view *dsv) {
     d3d_context *c = this;
+    if (vx_draw_trace_active) {
+        char line[200]; size_t k = 0;
+        for (uint32_t i = 0; i < n && i < 8 && k < sizeof line - 24; i++)
+            k += (size_t)snprintf(line + k, sizeof line - k, " rt%u=@%05lx", i, rtvs && rtvs[i] && rtvs[i]->resource ? (unsigned long)((uintptr_t)rtvs[i]->resource >> 4 & 0xfffff) : 0ul);
+        vx_log("set rtvs%s", line);
+    }
     for (uint32_t i = 0; i < 8; i++) hold(&c->rtv[i], i < n && rtvs ? rtvs[i] : NULL);
     hold(&c->dsv, dsv);
 }
@@ -1331,6 +1347,7 @@ static void trace_shared_use(const char *what, d3d_object *res) {
 static WINAPI void ctx_copy_resource(void *this, d3d_object *dst, d3d_object *src) {
     d3d_context *c = this;
     HELD_OP(2);
+    trace_copy_op("copy resource", dst, 0, 0, 0, src, 0, NULL);
     trace_shared_use("copy source", src); trace_shared_use("copy destination", dst);
     if (!dst || !src || dst == src || dst->kind != src->kind) return;
     if (dst->kind == K_BUFFER && ((d3d_buffer *)dst)->desc[0] != ((d3d_buffer *)src)->desc[0]) return;
@@ -1365,6 +1382,7 @@ static WINAPI void ctx_copy_subresource_region(void *this, d3d_object *dst, uint
                                                d3d_object *src, uint32_t src_sub, const uint32_t *box) {
     d3d_context *c = this;
     HELD_OP(3);
+    trace_copy_op("copy region", dst, dst_sub, x, y, src, src_sub, box);
     trace_shared_use("region copy source", src); trace_shared_use("region copy destination", dst);
     if (!dst || !src || dst->kind != src->kind ||
         (dst == src && (dst->kind == K_BUFFER || dst_sub == src_sub))) return;
