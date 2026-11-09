@@ -2,14 +2,27 @@
 """Plan or build private Skyrim AOT modules; optional bounded native startup.
 
 JSON: original and prepared are {path,sha256}; dlls is a list of
-{path,sha256,base}; runtime is {path,sha256}; asset_root, dll_roots,
-exe_base, jobs and optional owned_gate (argument vector) complete the config.
-Paths must be absolute. Inputs are pinned; prepared and DLLs must be private
-repository-local copies. --probe requires --build and an explicit passing gate.
+{path,sha256,base}; runtime is {path,sha256}; asset_root, dll_roots, jobs and
+optional owned_gate (argument vector) complete the config. The exe is given by
+either exe_base (a hex base) or an exe block {base, part_mb, splits, roots}:
+splits and roots are null or a pinned {path,sha256} file of hex addresses at
+the image's preferred base, which the pipeline shifts by (base - preferred
+ImageBase) and passes to vxrt-aot as VXRT_AOT_SPLITS and VXRT_AOT_ROOTS
+(addresses outside the image are left out and counted); part_mb is
+VXRT_AOT_PART_MB. compiler is an optional pinned
+{path,sha256,source_commit} vxrt-aot; without it this checkout's
+VXRuntime/build/vxrt-aot is used and only its hash is recorded.
+Paths must be absolute. Inputs are pinned; the prepared exe, DLLs and address
+files must be private copies inside the repository's main checkout (which
+contains its worktrees). Each module is built by vxrt-aot gen, then every part
+is assembled and linked in parallel; a dylib's install name is
+dylibs/<name> wherever it is built. --probe requires --build and an explicit
+passing gate.
 This validates basic PE layout and mapping ranges. It does not prepare inputs
 or establish the provenance or semantic completeness of a prepared image.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import fcntl
 import hashlib
 import json
@@ -23,9 +36,11 @@ import sys
 import tempfile
 
 REPO = Path(__file__).resolve().parents[1]
-SCRIPT = REPO / 'VXRuntime/tools/aot_build.sh'
 COMPILER = REPO / 'VXRuntime/build/vxrt-aot'
 CACHE = REPO / 'build/private/skyrim-aot-cache'
+PRIVATE = None    # the main checkout (parent of the git common directory); found on first use
+# Changes when the build steps below would produce different files from the same inputs.
+BUILDER = 'vxrt-aot gen; clang -arch arm64 -c; clang -arch arm64 -dynamiclib -o dylibs/<name> (cwd: build dir); v1'
 
 
 def digest(path):
@@ -50,12 +65,33 @@ def source_identity():
     return {'commit': head, 'patch_sha256': h.hexdigest()}
 
 
+def toolchain():
+    """The assembler/linker identity: the same .s can link differently with another clang/ld."""
+    clang = subprocess.run(['clang', '--version'], capture_output=True, check=True).stdout.decode().splitlines()
+    ld = subprocess.run(['ld', '-v'], capture_output=True).stderr.decode().splitlines()
+    return {'clang': clang[0] if clang else '', 'ld': ld[0] if ld else ''}
+
+
+def private_root():
+    """Private inputs and outputs live in the main checkout; a worktree is inside it."""
+    global PRIVATE
+    if PRIVATE is None:
+        try:
+            common = subprocess.check_output(['git', '-C', str(REPO), 'rev-parse', '--path-format=absolute',
+                                              '--git-common-dir'], stderr=subprocess.DEVNULL).decode().strip()
+            common = Path(common).resolve()
+            PRIVATE = common.parent if common.name == '.git' and REPO.is_relative_to(common.parent) else REPO
+        except (OSError, subprocess.SubprocessError):
+            PRIVATE = REPO
+    return Path(PRIVATE)
+
+
 def pin(item, private=False):
     path = Path(item['path'])
     if not path.is_absolute():
         raise ValueError('input paths must be absolute')
     path = path.resolve(strict=True)
-    if not path.is_file() or (private and not path.is_relative_to(REPO)):
+    if not path.is_file() or (private and not path.is_relative_to(private_root())):
         raise ValueError('input must be a regular file' + (' inside checkout' if private else ''))
     expected = item['sha256'].lower()
     if not re.fullmatch(r'[0-9a-f]{64}', expected) or digest(path) != expected:
@@ -124,20 +160,76 @@ def pe_layout(path):
             'preferred_base': hex(preferred), 'entry_rva': hex(entry), 'sections': count}
 
 
+def shifted(item, module):
+    """An address file (hex, one per line) moved from the image's preferred base to the module's base.
+
+    A runtime profile lists addresses of every module the run used; those outside this image at
+    its preferred base belong to other modules (or other bases) and are left out and counted.
+    Returns (text, used, outside)."""
+    preferred, size = int(module['pe']['preferred_base'], 16), module['pe']['image_size']
+    delta = int(module['base'], 16) - preferred
+    lines, outside = [], 0
+    for n, line in enumerate(Path(item['path']).read_text().splitlines(), 1):
+        if not line.strip():
+            continue
+        if not re.fullmatch(r'\s*(0x)?[0-9a-fA-F]+\s*', line):
+            raise ValueError('address file line %d is not a hex address: %s' % (n, item['path']))
+        a = int(line, 16)
+        if preferred <= a < preferred + size:
+            lines.append('0x%x\n' % (a + delta))
+        else:
+            outside += 1
+    if not lines:
+        raise ValueError('address file has no address inside the image (use null for none): ' + item['path'])
+    return ''.join(lines), len(lines), outside
+
+
+def part_mb(value):
+    if value is None:
+        return None
+    if type(value) not in (int, float) or not 0 < value <= 4096:
+        raise ValueError('part_mb must be a number from 1 to 4096')
+    return value
+
+
+def compiler_config(config):
+    item = config.get('compiler')
+    if item is None:
+        return {'path': str(COMPILER), 'sha256': None, 'source_commit': None}
+    commit = item.get('source_commit')
+    if not isinstance(commit, str) or not re.fullmatch(r'[0-9a-f]{40}', commit):
+        raise ValueError('compiler.source_commit must be a 40-digit commit id')
+    return dict(pin(item), source_commit=commit)
+
+
 def prepare(config):
     original = pin(config['original'])
     exe = pin(config['prepared'], True)
     if original['path'] == exe['path']:
         raise ValueError('original and prepared must be separate files')
     runtime = pin(config['runtime'])
-    modules = [dict(exe, base=base(config['exe_base']))]
-    modules += [dict(pin(item, True), base=base(item['base'])) for item in config['dlls']]
+    if ('exe' in config) == ('exe_base' in config):
+        raise ValueError('give exactly one of exe_base and exe')
+    block = config.get('exe') or {'base': config['exe_base']}
+    unknown = set(block) - {'base', 'part_mb', 'splits', 'roots'}
+    if unknown:
+        raise ValueError('unknown exe keys: ' + ', '.join(sorted(unknown)))
+    modules = [dict(exe, base=base(block['base']), part_mb=part_mb(block.get('part_mb')),
+                    splits=pin(block['splits'], True) if block.get('splits') else None,
+                    roots=pin(block['roots'], True) if block.get('roots') else None)]
+    modules += [dict(pin(item, True), base=base(item['base']), part_mb=None, splits=None, roots=None)
+                for item in config['dlls']]
     if len({Path(m['path']).name.lower() for m in modules}) != len(modules):
         raise ValueError('module basenames must be unique')
     if len({m['base'] for m in modules}) != len(modules):
         raise ValueError('module bases must be distinct; overlap requires separate review')
     for module in modules:
         module['pe'] = pe_layout(module['path'])
+        for kind in ('splits', 'roots'):
+            if module[kind]:
+                text, used, outside = shifted(module[kind], module)
+                module[kind].update(shifted_sha256=hashlib.sha256(text.encode()).hexdigest(), used=used,
+                                    outside_image=outside)
     # The loader reserves at 64K granularity; distinct bases can still overlap.
     ranges = sorted((int(m['base'], 16), int(m['base'], 16) +
                      ((m['pe']['image_size']+65535)//65536)*65536) for m in modules)
@@ -150,14 +242,20 @@ def prepare(config):
     if gate is not None and (not isinstance(gate, list) or not gate or not all(isinstance(x, str) and x for x in gate)):
         raise ValueError('owned_gate must be a nonempty argument vector')
     return {'original': original, 'prepared': exe, 'runtime': runtime, 'modules': modules,
+            'compiler': compiler_config(config),
             'asset_root': directory(config['asset_root']), 'dll_roots': [directory(p) for p in config['dll_roots']],
             'jobs': jobs, 'owned_gate': gate}
 
 
-def key_for(module, identity, compiler_hash, script_hash, jobs):
+def key_for(module, ctx):
+    """ctx: source, compiler {sha256, source_commit}, toolchain, jobs."""
     data = {'sha256': module['sha256'], 'name': Path(module['path']).name,
-            'base': module['base'], 'source': identity, 'compiler_sha256': compiler_hash,
-            'script_sha256': script_hash, 'jobs': jobs, 'target': 'macos-arm64'}
+            'base': module['base'], 'part_mb': module.get('part_mb'),
+            'splits': module['splits'] and {k: module['splits'][k] for k in ('sha256', 'shifted_sha256')},
+            'roots': module['roots'] and {k: module['roots'][k] for k in ('sha256', 'shifted_sha256')},
+            'source': ctx['source'], 'compiler_sha256': ctx['compiler']['sha256'],
+            'compiler_source_commit': ctx['compiler']['source_commit'], 'toolchain': ctx['toolchain'],
+            'builder': BUILDER, 'jobs': ctx['jobs'], 'target': 'macos-arm64'}
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest(), data
 
 
@@ -174,29 +272,104 @@ def valid_cache(path, key):
         return False
 
 
-def build_module(module, identity, compiler_hash, script_hash, jobs, out):
-    key, inputs = key_for(module, identity, compiler_hash, script_hash, jobs)
-    dest = CACHE / key
+def module_env(module, work):
+    """The compiler's environment: nothing inherited from VXRT_AOT_*, then this module's settings."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith('VXRT_AOT_') and k != 'AOT_JOBS'}
+    env['VXRT_AOT_BASE'] = module['base']
+    if module['part_mb'] is not None:
+        env['VXRT_AOT_PART_MB'] = ('%d' % module['part_mb']) if module['part_mb'] == int(module['part_mb']) else repr(module['part_mb'])
+    for kind, var in (('splits', 'VXRT_AOT_SPLITS'), ('roots', 'VXRT_AOT_ROOTS')):
+        if module[kind]:
+            (work/(kind + '.txt')).write_text(shifted(module[kind], module)[0])
+            env[var] = str(work/(kind + '.txt'))
+    return env
+
+
+def compile_module(module, compiler, jobs, work, log):
+    """vxrt-aot gen into work/s, then each part assembled and linked (cwd work) to work/dylibs/<stem>[.p<k>].dylib."""
+    (work/'s').mkdir(); (work/'dylibs').mkdir()
+    env = module_env(module, work)
+    commands = []
+    name = subprocess.run([compiler, 'name', module['path']], capture_output=True, env=env)
+    stem = name.stdout.decode().strip()
+    log.write(name.stderr)
+    if name.returncode or not re.fullmatch(r'[A-Za-z0-9_.+-]+\.dylib', stem):
+        raise ValueError('vxrt-aot name failed for ' + module['path'])
+    stem = stem[:-len('.dylib')]
+    gen = [compiler, 'gen', module['path'], str(work/'s/S.s')]
+    commands.append(gen)
+    with (work/'S.list').open('wb') as listing:
+        log.flush()
+        p = subprocess.run(gen, cwd=work, env=env, stdout=listing, stderr=log)
+    if p.returncode:
+        raise ValueError('vxrt-aot gen failed (%d)' % p.returncode)
+    parts = []
+    for line in (work/'S.list').read_text().split():
+        s = Path(line)
+        if s.parent != work/'s' or not re.fullmatch(r'S(\.p\d+)?\.s', s.name):
+            raise ValueError('unexpected vxrt-aot output: ' + line)
+        k = re.fullmatch(r'S\.p(\d+)\.s', s.name)
+        parts.append((s, 'dylibs/%s%s.dylib' % (stem, '.p' + k.group(1) if k else '')))
+    if not parts:
+        raise ValueError('vxrt-aot listed no output')
+    def link(part):
+        s, dylib = part
+        obj = s.with_suffix('.o')
+        steps = [['clang', '-arch', 'arm64', '-c', '-o', str(obj), str(s)],
+                 ['clang', '-arch', 'arm64', '-dynamiclib', '-o', dylib, str(obj)]]
+        for cmd in steps:
+            r = subprocess.run(cmd, cwd=work, capture_output=True)
+            if r.returncode:
+                return cmd, r.returncode, r.stdout + r.stderr
+        return steps, 0, b''
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        results = list(pool.map(link, parts))
+    for cmd, code, output in results:
+        log.write(output)
+        if code:
+            raise ValueError('assemble/link failed (%d): %s' % (code, ' '.join(cmd)))
+        commands.extend(cmd)
+    shutil.rmtree(work/'s')
+    return commands, env
+
+
+def build_module(module, ctx, cache, out):
+    key, inputs = key_for(module, ctx)
+    dest = cache / key
     if dest.exists():
         if not valid_cache(dest, key):
             raise ValueError('invalid cached module: ' + str(dest))
         return dest, {'key': key, 'cached': True}
-    tmp = Path(tempfile.mkdtemp(prefix='.building-', dir=CACHE))
+    tmp = Path(tempfile.mkdtemp(prefix='.building-', dir=cache))
     try:
-        env = {k: v for k, v in os.environ.items() if not k.startswith('VXRT_AOT_') and k != 'AOT_JOBS'}
-        env.update(VXRT_AOT_BASE=module['base'], AOT_JOBS=str(jobs))
-        cmd = [str(SCRIPT), module['path'], str(tmp)]
+        work = tmp/'work'; work.mkdir()
         log = out / (key + '.build.log')
+        commands, env, error = [], {}, None
         with log.open('wb') as f:
-            proc = subprocess.run(cmd, cwd=REPO, env=env, stdout=f, stderr=subprocess.STDOUT)
-        artifacts = {p.name: digest(p) for p in sorted(tmp.glob('*.dylib')) if p.is_file() and not p.is_symlink()}
-        result = {'key': key, 'cached': False, 'command': cmd, 'environment': {'VXRT_AOT_BASE': module['base'], 'AOT_JOBS': str(jobs)},
-                  'returncode': proc.returncode, 'log': str(log), 'log_sha256': digest(log), 'artifacts': artifacts, 'inputs': inputs}
+            try:
+                commands, env = compile_module(module, ctx['compiler']['path'], ctx['jobs'], work, f)
+            except (OSError, ValueError, subprocess.SubprocessError) as e:
+                error = str(e)
+        artifacts = {}
+        if not error:
+            for p in sorted((work/'dylibs').glob('*.dylib')):
+                if p.is_file() and not p.is_symlink():
+                    p.rename(tmp/p.name); artifacts[p.name] = digest(tmp/p.name)
+            for name in ('splits.txt', 'roots.txt', 'S.list'):
+                if (work/name).exists():
+                    (work/name).rename(tmp/name)
+        recorded = {k: v for k, v in env.items() if k.startswith('VXRT_AOT_')}
+        result = {'key': key, 'cached': False, 'commands': commands, 'environment': recorded,
+                  'returncode': 1 if error else 0, 'error': error, 'log': str(log), 'log_sha256': digest(log),
+                  'artifacts': artifacts, 'inputs': inputs}
         (out / (key + '.build.json')).write_text(json.dumps(result, indent=2) + '\n')
-        if proc.returncode or not artifacts:
-            raise ValueError('module build failed or produced no dylibs; see ' + str(log))
-        if digest(module['path']) != module['sha256'] or digest(COMPILER) != compiler_hash or digest(SCRIPT) != script_hash or source_identity() != identity:
+        if error or not artifacts:
+            raise ValueError('module build failed or produced no dylibs (%s); see %s' % (error, log))
+        pinned = [(module['path'], module['sha256']), (ctx['compiler']['path'], ctx['compiler']['sha256'])]
+        pinned += [(module[k]['path'], module[k]['sha256']) for k in ('splits', 'roots') if module[k]]
+        if any(digest(p) != h for p, h in pinned) or toolchain() != ctx['toolchain'] or source_identity() != ctx['source']:
             raise ValueError('input or build source changed during build')
+        shutil.rmtree(work)
         (tmp / 'manifest.json').write_text(json.dumps(result, indent=2) + '\n')
         for p in tmp.iterdir():
             p.chmod(0o444)
@@ -205,6 +378,7 @@ def build_module(module, identity, compiler_hash, script_hash, jobs, out):
         return dest, result
     finally:
         if tmp.exists():
+            tmp.chmod(0o755)
             shutil.rmtree(tmp)
 
 
@@ -238,34 +412,41 @@ def classify(result):
                                                 'aot_summaries': facts.get('aot_summaries', [])}}
 
 
-def run(config, out, build=False, probe=False):
+def run(config, out, build=False, probe=False, cache=None):
     if probe and not build:
         raise ValueError('--probe requires --build')
     out = Path(out).resolve()
-    if out == REPO or not out.is_relative_to(REPO) or out.exists():
+    root = private_root()
+    if out == REPO or out == root or not out.is_relative_to(root) or out.exists():
         raise ValueError('output must be a new checkout-local directory')
+    cache = Path(cache).resolve() if cache else CACHE
+    if not cache.is_relative_to(root):
+        raise ValueError('cache must be inside the checkout')
     cfg = prepare(config)
     if probe and not cfg['owned_gate']:
         raise ValueError('--probe requires an explicit owned_gate command')
-    identity = source_identity()
-    compiler_hash, script_hash = digest(COMPILER), digest(SCRIPT)
+    compiler = dict(cfg['compiler'])
+    if compiler['sha256'] is None:
+        compiler['sha256'] = digest(compiler['path'])
+    ctx = {'source': source_identity(), 'compiler': compiler, 'toolchain': toolchain(), 'jobs': cfg['jobs']}
     out.mkdir(parents=True, mode=0o700)
     result = {'subject': 'private prepared-input AOT; no game or VR compatibility claim', 'status': 'planned',
-              'config': cfg, 'source': identity, 'compiler_sha256': compiler_hash, 'script_sha256': script_hash,
-              'target': 'macos-arm64', 'modules': [], 'unknown': ['prepared image provenance and semantic completeness', 'runtime code coverage', 'physical headset and playability']}
+              'config': cfg, 'source': ctx['source'], 'compiler': compiler, 'toolchain': ctx['toolchain'],
+              'builder': BUILDER, 'cache': str(cache), 'target': 'macos-arm64', 'modules': [],
+              'unknown': ['prepared image provenance and semantic completeness', 'runtime code coverage', 'physical headset and playability']}
     def save():
         (out/'result.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
     save()
     if not build:
-        result['modules'] = [dict(key=key_for(m, identity, compiler_hash, script_hash, cfg['jobs'])[0], input=m) for m in cfg['modules']]
+        result['modules'] = [dict(key=key_for(m, ctx)[0], input=m) for m in cfg['modules']]
         save(); return result
-    CACHE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    cache.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
-        with (CACHE/'build.lock').open('a') as lock:
+        with (cache/'build.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             dirs = []
             for m in cfg['modules']:
-                dest, evidence = build_module(m, identity, compiler_hash, script_hash, cfg['jobs'], out)
+                dest, evidence = build_module(m, ctx, cache, out)
                 dirs.append(dest); result['modules'].append(evidence); save()
             module_set = out/'modules'; module_set.mkdir()
             for dest in dirs:
@@ -286,7 +467,7 @@ def run(config, out, build=False, probe=False):
         if probe:
             # A gate is arbitrary caller-supplied code: recheck every pinned input.
             prepare(config)
-            if source_identity() != identity or digest(COMPILER) != compiler_hash or digest(SCRIPT) != script_hash:
+            if source_identity() != ctx['source'] or digest(compiler['path']) != compiler['sha256']:
                 raise ValueError('source or compiler changed before probe')
             cmd = [sys.executable, str(REPO/'tools/vxrt_native_startup.py'), '--exe', cfg['prepared']['path'], '--runtime', cfg['runtime']['path'], '--aot-dir', str(module_set), '--asset-root', cfg['asset_root'], '--out', str(out/'startup'), '--seconds', str(config.get('seconds', 20))]
             for root in cfg['dll_roots']:
@@ -310,12 +491,13 @@ def run(config, out, build=False, probe=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--config', required=True); parser.add_argument('--out', required=True)
+    parser.add_argument('--cache', help='module cache directory inside the checkout (default build/private/skyrim-aot-cache)')
     parser.add_argument('--build', action='store_true'); parser.add_argument('--probe', action='store_true')
     args = parser.parse_args()
     try:
-        result = run(json.loads(Path(args.config).read_text()), args.out, args.build, args.probe)
+        result = run(json.loads(Path(args.config).read_text()), args.out, args.build, args.probe, args.cache)
         print(json.dumps(result, indent=2)); return 0
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as e:
         print('pipeline: ' + str(e), file=sys.stderr); return 1
