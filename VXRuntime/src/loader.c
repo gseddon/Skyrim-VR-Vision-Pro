@@ -728,6 +728,22 @@ static int reserve_main_image(const char *path) {
     if (magic != 0x20b) return 1;                               // (PE32+ only: a 32-bit image's base is below 4 GB, other rules)
     uint64_t base; uint32_t size; memcpy(&base, h + pe + 24 + 24, 8); memcpy(&size, h + pe + 24 + 56, 4);
     if (!base || !size || base < 0x100000000ull) return 1;
+    // A module made for this program at another base (VXRT_AOT_BASE: in the arena, where nothing else is put) means
+    // the program is loaded there (load_pe) and its preferred range is not needed. Reading the file again costs a few
+    // milliseconds; it is only done when there are modules.
+    if (getenv("VXRT_AOT_DIR")) {
+        struct stat st; int fd = open(path, O_RDONLY);
+        if (fd >= 0 && !fstat(fd, &st) && st.st_size > 0) {
+            uint8_t *m = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+            if (m != MAP_FAILED) {
+                uint64_t b = xa_module_base(getenv("VXRT_AOT_DIR"), path, xa_hash(m, (uint64_t)st.st_size));
+                munmap(m, (size_t)st.st_size);
+                if (getenv("VXRT_AOT_MAPDUMP")) vx_log("loader: module base for the program: %#llx (arena %d)", (unsigned long long)b, xa_in_arena(b, size));
+                if (b && b != base && xa_in_arena(b, size)) { close(fd); return 1; }
+            }
+        }
+        if (fd >= 0) close(fd);
+    }
     mach_vm_address_t a = base;
     if (mach_vm_allocate(mach_task_self(), &a, size, VM_FLAGS_FIXED) != KERN_SUCCESS) {
         vx_log("loader: the program's preferred range %#llx-%#llx is already taken", (unsigned long long)base, (unsigned long long)(base + size));
