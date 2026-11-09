@@ -47,7 +47,8 @@ enum { V_SOURCE, V_SUBMIX, V_MASTER };
 typedef struct engine engine;
 typedef struct voice voice;
 typedef struct { voice *to; float matrix[MAX_CHANNELS * MAX_CHANNELS]; } send;
-typedef struct queued { XA_BUFFER b; uint32_t loops_left; struct queued *next; } queued;
+typedef struct queued { XA_BUFFER b; uint32_t loops_left; void *own; struct queued *next; } queued;   // own: silence we made for an xWMA buffer
+static void free_queued(queued *q) { free(q->own); free(q); }
 struct voice {
     void **vtbl;
     int type;
@@ -58,7 +59,8 @@ struct voice {
     void *callback;
     queued *queue; uint32_t queued_count;
     double pos;                                   // in frames of the current buffer
-    int started, buffer_started;
+    int started, buffer_started, xwma;            // xwma: an xWMA voice (WMA v2/Pro): played as silence of the decoded length
+
     float ratio, max_ratio;
     double samples_played;                        // in the voice's own frames
     // all voices
@@ -129,6 +131,7 @@ static int sample_kind(const WAVEFORMATEX *w) {
         const GUID *sub = (const GUID *)((const uint8_t *)w + 24);
         tag = d3d_same_guid(sub, &SUBTYPE_FLOAT) ? 3 : d3d_same_guid(sub, &SUBTYPE_PCM) ? 1 : 0;
     }
+    if (tag == 0x161 || tag == 0x162 || tag == 0x163) return 4;      // xWMA (WMA v2, Pro, Lossless): see below
     if (tag == 3 && w->bits == 32) return 3;
     if (tag == 1 && (w->bits == 8 || w->bits == 16 || w->bits == 24 || w->bits == 32)) return 1;
     return 0;
@@ -179,7 +182,7 @@ static void render_source(voice *v, float *out, uint32_t n, uint32_t out_rate) {
                 v->buffer_started = 0;
                 void *ctx = q->b.context;
                 int eos = q->b.flags & XAUDIO2_END_OF_STREAM;
-                free(q);
+                free_queued(q);
                 if (v->callback) { CALL(v->callback, buffer_end, ctx); if (eos) CALL(v->callback, stream_end); }
                 continue;
             }
@@ -339,7 +342,7 @@ static WINAPI void voice_destroy(void *this) {
     for (voice *o = e->voices; o; o = o->next)                 // nothing sends to it any more
         for (int s = 0; s < o->nsends; s++) if (o->sends[s].to == v) o->sends[s].to = NULL;
     if (e->master == v) e->master = NULL;
-    while (v->queue) { queued *q = v->queue; v->queue = q->next; free(q); }
+    while (v->queue) { queued *q = v->queue; v->queue = q->next; free_queued(q); }
     unlock(e);
     free(v->mix);
     free(v);
@@ -349,8 +352,24 @@ static WINAPI HRESULT source_stop(void *this, uint32_t flags, uint32_t op) { (vo
 static WINAPI HRESULT source_submit(void *this, const XA_BUFFER *b, const void *wma) {
     __atomic_add_fetch(&g_xa_submitted, 1, __ATOMIC_RELAXED);
     voice *v = vself(this);
-    if (wma || !b || !b->data || !b->bytes) return XAUDIO2_E_INVALID_CALL;
+    // xWMA (what Skyrim's voice lines and music are): there is no WMA decoder here, so the voice plays SILENCE of the
+    // length the packet table gives (its last cumulative value is the decoded size in bytes). The game's own timing and
+    // callbacks follow the real durations; nothing is heard.
+    typedef struct __attribute__((packed)) { const uint32_t *cumulative; uint32_t packets; } XA_BUFFER_WMA;
+    const XA_BUFFER_WMA *xw = wma;
+    if (!b || !b->data || !b->bytes || (v->xwma != (xw != NULL))) return XAUDIO2_E_INVALID_CALL;
+    void *silence = NULL; XA_BUFFER sb;
+    if (xw) {
+        if (!xw->cumulative || !xw->packets) return XAUDIO2_E_INVALID_CALL;
+        uint32_t bytes = xw->cumulative[xw->packets - 1];
+        if (!bytes || bytes > (256u << 20)) return XAUDIO2_E_INVALID_CALL;
+        bytes -= bytes % v->fmt.block;
+        silence = calloc(1, bytes);
+        sb = *b; sb.data = silence; sb.bytes = bytes; sb.play_begin = sb.play_length = 0; b = &sb;
+        static int noted; if (!noted++ && xa_trace()) vx_log("XAudio2: xWMA voice (%u packets, %u decoded bytes): played as silence", xw->packets, bytes);
+    }
     queued *q = calloc(1, sizeof *q);
+    q->own = silence;
     q->b = *b;
     q->loops_left = b->loop_count;
     lock(v->eng);
@@ -370,7 +389,7 @@ static WINAPI HRESULT source_flush(void *this) {
     while (q) {
         queued *n = q->next;
         if (v->callback) CALL(v->callback, buffer_end, q->b.context);
-        free(q);
+        free_queued(q);
         v->queued_count--;
         q = n;
     }
@@ -438,6 +457,7 @@ static WINAPI HRESULT engine_create_source(void *this, voice **out, const WAVEFO
     if (!e->master) return XAUDIO2_E_INVALID_CALL;
     voice *v = make_voice(e, V_SOURCE, fmt->channels, fmt->rate, e->v27 ? g_source27_vtbl : g_source_vtbl);
     v->fmt = *fmt; v->sample_kind = kind; v->callback = callback; v->flags = flags;
+    if (kind == 4) { v->xwma = 1; v->sample_kind = 1; v->fmt.tag = 1; v->fmt.bits = 16; v->fmt.block = (uint16_t)(fmt->channels * 2); v->fmt.extra = 0; }   // decoded: 16-bit PCM
     if (!v->fmt.block) v->fmt.block = (uint16_t)(fmt->channels * fmt->bits / 8);
     v->max_ratio = max_ratio > 0 ? max_ratio : 2.0f;
     set_sends(v, sends);

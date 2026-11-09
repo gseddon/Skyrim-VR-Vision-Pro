@@ -92,6 +92,30 @@ int main(void) {
     UINT64 played; memcpy(&queued, st + 8, 4); memcpy(&played, st + 12, 8);
     CHECK(queued == 0 && played == 9600);
     ((void (WINAPI *)(void *))SLOT(src, V_DESTROY))(src);
+
+    // xWMA (Skyrim's voices and music): no decoder, so the voice plays silence of the decoded length from the packet table.
+    callback xcb = { { &cbvt }, 0, 0 };
+    WAVEFORMATEX xw = { 0x161, 1, 22050, 4000, 372, 16, 0 };
+    void *xsrc = NULL;
+    CHECK(((HRESULT (WINAPI *)(void *, void **, const WAVEFORMATEX *, UINT32, float, void *, const void *, const void *))SLOT(xa, X_CREATE_SOURCE))(xa, &xsrc, &xw, 0, 2.0f, &xcb.iface, NULL, NULL) == S_OK && xsrc);
+    if (xsrc) {
+        static const BYTE packet[64] = { 1 };
+        static const UINT32 cumulative[2] = { 2000, 4400 };              // decoded bytes: 4400 = 2200 mono 16-bit frames
+        XAUDIO2_BUFFER xb; memset(&xb, 0, sizeof xb);
+        xb.AudioBytes = sizeof packet; xb.pAudioData = packet; xb.Flags = 0x40;
+        XAUDIO2_BUFFER_WMA wma = { cumulative, 2 };
+        HRESULT (WINAPI *xsubmit)(void *, const XAUDIO2_BUFFER *, const void *) = SLOT(xsrc, S_SUBMIT);
+        CHECK(xsubmit(xsrc, &xb, NULL) != S_OK);                         // an xWMA voice needs its packet table
+        CHECK(xsubmit(xsrc, &xb, &wma) == S_OK);
+        void (WINAPI *xget)(void *, void *) = SLOT(xsrc, S_GET_STATE);
+        CHECK(((HRESULT (WINAPI *)(void *, UINT32, UINT32))SLOT(xsrc, S_START))(xsrc, 0, 0) == S_OK);
+        for (int i = 0; i < 300 && !xcb.stream_end; i++) Sleep(10);
+        CHECK(xcb.stream_end == 1 && xcb.buffer_end == 1);
+        xget(xsrc, st);
+        memcpy(&queued, st + 8, 4); memcpy(&played, st + 12, 8);
+        CHECK(queued == 0 && played == 2200);
+        ((void (WINAPI *)(void *))SLOT(xsrc, V_DESTROY))(xsrc);
+    }
     ((void (WINAPI *)(void *))SLOT(master, V_DESTROY))(master);
     ((ULONG (WINAPI *)(void *))SLOT(xa, X_RELEASE))(xa);
     printf(failures ? "xaudio2 2.7: %d check(s) FAILED\n" : "xaudio2 2.7: ok\n", failures);

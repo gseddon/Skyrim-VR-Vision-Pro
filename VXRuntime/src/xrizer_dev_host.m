@@ -161,7 +161,8 @@ static XrResult publish(void *p,const KlNativeFramePair *pair) {
     id<MTLTexture> copies[2]={nil,nil};
     id<MTLBuffer> dumps[2]={nil,nil};
     uint64_t fid=pair->sample.frame_id;
-    BOOL keep_files=fid==1 || fid==2 || fid==60 || fid%600==0;
+    static unsigned long every; if (!every) { const char *e=getenv("VXRT_XRIZER_DEV_DUMP_EVERY"); every=e ? strtoul(e,NULL,10) : 600; if (every<30) every=600; }
+    BOOL keep_files=fid==1 || fid==2 || fid==60 || fid%every==0;   /* VXRT_XRIZER_DEV_DUMP_EVERY=N: a file every N frames (default 600, at least 30) */
     BOOL dump=h.dumpDir && (keep_files || fid%30==0); /* statistics every 30th frame; files for the selected few */
     id<MTLCommandBuffer> cb=[h.queue commandBuffer]; if (!cb) return XR_ERROR_RUNTIME_FAILURE;
     id<MTLBlitCommandEncoder> blit=[cb blitCommandEncoder]; if (!blit) return XR_ERROR_RUNTIME_FAILURE;
