@@ -17,4 +17,11 @@ XrResult kl_apple_metal_record_texture_writes(KlNativeMetalHost *host, void *tex
 /* Only for a publisher that copies into independent display resources before
  * returning, so compositor readers never access these provider images. */
 XrResult kl_apple_metal_image_sync(KlNativeMetalHost *host, KlNativeImageSyncHost *out);
+/* Variant for a publisher whose copy is a command buffer on this host's queue (GPU-ordered after the writes) and that
+ * does not block the caller: complete_writes does not wait for the write buffer. The publisher must check the buffer
+ * from kl_apple_metal_image_pending_writes (borrowed id<MTLCommandBuffer>, NULL if none) before publishing. */
+XrResult kl_apple_metal_image_sync_ordered(KlNativeMetalHost *host, KlNativeImageSyncHost *out);
+void *kl_apple_metal_image_pending_writes(KlNativeMetalHost *host, void *lease);
+/* In ordered mode a write buffer recorded while an earlier one is still pending carries that earlier buffer as the
+ * associated object for selector klPriorWrites (id<MTLCommandBuffer>); check the whole chain. */
 #endif
