@@ -1,4 +1,5 @@
 import argparse
+import os
 import importlib.util
 import json
 from pathlib import Path
@@ -216,6 +217,22 @@ class ProbeTest(unittest.TestCase):
         result = probe.capture(self.args)
         self.assertEqual(result['environment']['VXRT_STAY_ACTIVE'], '1')
         self.assertIn('not an input or tracking claim', result['diagnostic']['stay_active'])
+
+    def test_d3d11_capture_is_opt_in_private_and_labelled(self):
+        result = probe.capture(self.args)
+        self.assertNotIn('VXRT_D3D11_CAPTURE', result['environment'])
+        with tempfile.TemporaryDirectory() as outside:
+            self.args.d3d11_capture = str(Path(outside)/'game.cap')
+            self.args.d3d11_capture_eye_frames = 90
+            self.args.out = str(Path(self.args.out).parent/'capture-out')
+            result = probe.capture(self.args)
+            self.assertEqual(result['environment']['VXRT_D3D11_CAPTURE'], os.path.abspath(self.args.d3d11_capture))
+            self.assertEqual(result['environment']['VXRT_D3D11_CAPTURE_EYE_FRAMES'], '90')
+            self.assertIn('private game-derived data', result['diagnostic']['d3d11_capture']['scope'])
+        self.args.d3d11_capture = str(self.root/'inside.cap')      # never inside the repository
+        self.args.out = str(Path(self.args.out).parent/'capture-in')
+        with self.assertRaises(ValueError):
+            probe.capture(self.args)
 
     def test_null_target_cli_flag_reaches_capture(self):
         args = ['probe', '--exe', 'x', '--runtime', 'r', '--aot-dir', 'a',

@@ -5,6 +5,7 @@
 // Draws and compute dispatches use the DXBC-to-MSL path in d3d11_draw.m; ordinary operations lower through the common GPU IR.
 #include "d3d_common.h"
 #include "gpu_ir.h"
+#include "d3d11_capture.h"
 #include <dlfcn.h>
 #include <sys/mman.h>
 #include <os/os_sync_wait_on_address.h>
@@ -105,6 +106,7 @@ uint32_t d3d_release(d3d_object *o) {
         pthread_mutex_unlock(&g_native_textures_lock);
     }
     if (r == 0) {
+        if (d3d11_capture_on) d3d11_capture_destroyed(o);       // VXRT_D3D11_CAPTURE (d3d11_capture.m)
         __atomic_sub_fetch(&g_live[o->kind & 15], 1, __ATOMIC_RELAXED);
         if (o->destroy) o->destroy(o);
         while (o->pdata) { pdata *p = o->pdata; o->pdata = p->next; free(p->data); free(p); }
@@ -2060,6 +2062,7 @@ static void make_tables(void) {
     d3d_draw_init();
     D3D_VTABLE_OVERRIDE(g_device_vtbl, ID3D11Device, d3d_draw_device_methods);
     D3D_VTABLE_OVERRIDE(g_context_vtbl, ID3D11DeviceContext, d3d_draw_context_methods);
+    d3d11_capture_install(g_device_vtbl, g_context_vtbl);       // VXRT_D3D11_CAPTURE: wrappers that record the calls
 }
 
 // ---- entry points ------------------------------------------------------------------------------------------------------------------
@@ -2094,6 +2097,7 @@ static WINAPI HRESULT D3D11CreateDevice(void *adapter, uint32_t driver, HANDLE s
     c->base.destroy = context_destroy;
     d->context = &c->base;
     if (vx_trace) vx_log("Direct3D 11 device on %s, feature level %#x", mtl.name.UTF8String, level);
+    if (d3d11_capture_on) d3d11_capture_device(&d->base, d->context, flags, level);
     if (out_context) { d3d_addref(d->context); *out_context = d->context; }
     if (out_device) *out_device = d; else d3d_release(&d->base);
     return S_OK;
