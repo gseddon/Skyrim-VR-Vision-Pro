@@ -20,6 +20,23 @@ static void **g_gs_vtbl, **g_vs_vtbl, **g_ps_vtbl, **g_cs_vtbl, **g_uav_vtbl, **
 static int reads_target(const d3d_view *srv, const d3d_view *out, int depth);
 static void gpu11_release_mtl_object(void *object);
 
+// Compile options for every Direct3D 11 shader library: Metal's safe math, as d3d12.m and gpu_ir_metal.m use, so NaN,
+// infinity and signed zero behave as D3D's IEEE rules say (isnan, min/max with NaN, x/0). Default fast math may
+// assume they never occur. One retained object shared by all compiles. VXRT_D3D11_FAST_MATH=1 restores Metal's default.
+// (There is no on-disk shader library cache in this file, so no cache key carries the options.)
+static MTLCompileOptions *d3d11_compile_options(void) {
+    static MTLCompileOptions *options;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        options = [MTLCompileOptions new];
+        const char *e = getenv("VXRT_D3D11_FAST_MATH");
+        if (e && *e == '1') return;
+        if (@available(macOS 15.0, *)) options.mathMode = MTLMathModeSafe;
+        else options.fastMathEnabled = NO;
+    });
+    return options;
+}
+
 static d3d_object *self_of(void *this) { return (d3d_object *)this; }
 static WINAPI uint32_t child_addref(void *this) { return d3d_addref(self_of(this)); }
 static WINAPI uint32_t child_release(void *this) { return d3d_release(self_of(this)); }
@@ -63,7 +80,7 @@ static id<MTLFunction> dual_source_function(d3d_device *dev, d3d_shader *s) {
         if (at) {
             NSString *source = [NSString stringWithFormat:@"%.*s o1 [[color(0), index(1)]];%s", (int)(at - msl), msl, at + strlen(" o1 [[color(1)]];")];
             NSError *err = nil;
-            id<MTLLibrary> lib = [(__bridge id<MTLDevice>)dev->mtl newLibraryWithSource:source options:nil error:&err];
+            id<MTLLibrary> lib = [(__bridge id<MTLDevice>)dev->mtl newLibraryWithSource:source options:d3d11_compile_options() error:&err];
             id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"vx_main"] : nil;
             if (fn) s->dual = (void *)CFBridgingRetain(fn);
             else vx_log("Direct3D: dual-source variant of shader %08x did not compile: %s", s->hash, err.localizedDescription.UTF8String);
@@ -175,8 +192,8 @@ static HRESULT create_shader(d3d_device *dev, const void *code, size_t size, int
     };
     if (sync) {
         NSError *err = nil;
-        done([(__bridge id<MTLDevice>)dev->mtl newLibraryWithSource:source options:nil error:&err], err);
-    } else [(__bridge id<MTLDevice>)dev->mtl newLibraryWithSource:source options:nil completionHandler:done];
+        done([(__bridge id<MTLDevice>)dev->mtl newLibraryWithSource:source options:d3d11_compile_options() error:&err], err);
+    } else [(__bridge id<MTLDevice>)dev->mtl newLibraryWithSource:source options:d3d11_compile_options() completionHandler:done];
     *out = s;
     return S_OK;
 }
@@ -1056,7 +1073,7 @@ static id<MTLFunction> shader_variant(d3d_device *dev, d3d_shader *s, const char
     if (!s->variant_tried && msl) {
         s->variant_tried = 1;
         NSError *err = nil;
-        id<MTLLibrary> lib = [(__bridge id<MTLDevice>)dev->mtl newLibraryWithSource:@(msl) options:nil error:&err];
+        id<MTLLibrary> lib = [(__bridge id<MTLDevice>)dev->mtl newLibraryWithSource:@(msl) options:d3d11_compile_options() error:&err];
         id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"vx_main"] : nil;
         if (fn) s->variant = (void *)CFBridgingRetain(fn);
         else vx_log("Direct3D: %s of shader %08x did not compile: %s", what, s->hash, err.localizedDescription.UTF8String);
@@ -1875,7 +1892,7 @@ void d3d_flash_frame(d3d_device *dev, d3d_texture *t, d3d_texture *dst, const ui
             "    if (c.b - max(c.r, c.g) > 70 && c.b > 120) atomic_fetch_add_explicit(&n[2], 1, memory_order_relaxed);\n"
             "}\n";
         NSError *err = nil;
-        id<MTLLibrary> lib = [mdev newLibraryWithSource:@(msl) options:nil error:&err];
+        id<MTLLibrary> lib = [mdev newLibraryWithSource:@(msl) options:d3d11_compile_options() error:&err];
         id<MTLComputePipelineState> pso = lib ? [mdev newComputePipelineStateWithFunction:[lib newFunctionWithName:@"flash_thumb"] error:&err] : nil;
         if (!pso) { vx_log("flash capture: %s", err.localizedDescription.UTF8String); g_flash.on = 0; return; }
         g_flash.pso = (void *)CFBridgingRetain(pso);
@@ -2345,7 +2362,7 @@ static id<MTLComputePipelineState> vs_kernel_pipeline(d3d_context *c, d3d_draw_s
         }
     }
     NSError *err = nil;
-    id<MTLLibrary> lib = source.length ? [(__bridge id<MTLDevice>)c->base.dev->mtl newLibraryWithSource:source options:nil error:&err] : nil;
+    id<MTLLibrary> lib = source.length ? [(__bridge id<MTLDevice>)c->base.dev->mtl newLibraryWithSource:source options:d3d11_compile_options() error:&err] : nil;
     id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"vx_main"] : nil;
     id<MTLComputePipelineState> pso = nil;
     if (!fn) {
@@ -2461,7 +2478,7 @@ static void so_draw(d3d_context *c, uint32_t count, uint32_t instances, uint32_t
         pthread_mutex_lock(&lock);
         if (!pack) {
             NSError *err = nil;
-            id<MTLLibrary> lib = [dev newLibraryWithSource:@(g_so_source) options:nil error:&err];
+            id<MTLLibrary> lib = [dev newLibraryWithSource:@(g_so_source) options:d3d11_compile_options() error:&err];
             id<MTLFunction> fn = [lib newFunctionWithName:@"vx_so"];
             pack = fn ? [dev newComputePipelineStateWithFunction:fn error:&err] : nil;
             if (!pack) vx_log("Direct3D: stream output kernel failed: %s", err.localizedDescription.UTF8String);
