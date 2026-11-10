@@ -12,6 +12,7 @@ void vx_xros_timing_submit(uint64_t id);   /* native_vr_present.m */
 #include "apple_metal_host.h"
 #include "image_sync_host.h"
 #include "pose_math.h"
+#include "xrizer_vismask_host.h"
 #include "xrizer_eye_ring.h"
 #include <TargetConditionals.h>
 #if !TARGET_OS_SIMULATOR && __has_include(<MetalFX/MetalFX.h>)
@@ -520,8 +521,9 @@ int vx_xros_xrizer_register(vx_xros_xrizer_host *h, const vx_xros_xrizer_static_
     int controllers=h->platform.size>=sizeof(h->platform) && h->platform.sample_input3;
     int haptics=controllers && h->platform.haptic_apply && h->platform.haptic_stop;
     KlNativeHapticHost haptic={KL_NATIVE_HAPTIC_HOST_VERSION,sizeof(haptic),h,haptic_apply,haptic_stop};
+    KlNativeVisibilityHost visibility={KL_NATIVE_VISIBILITY_HOST_VERSION,sizeof(visibility),h,vx_vismask_get_params};
     if (kl_native_configure(&host)!=XR_SUCCESS || kl_native_configure_views(&views)!=XR_SUCCESS ||
-        kl_native_configure_view_geometry(&geometry)!=XR_SUCCESS ||
+        kl_native_configure_view_geometry(&geometry)!=XR_SUCCESS || kl_native_configure_visibility(&visibility)!=XR_SUCCESS ||
         kl_native_configure_metal(&h->metal)!=XR_SUCCESS || kl_native_configure_image_sync(&h->sync)!=XR_SUCCESS ||
         kl_native_configure_session(&session)!=XR_SUCCESS || kl_native_configure_frame(&frame)!=XR_SUCCESS ||
         (controllers ? kl_native_configure_input3(&input3) : kl_native_configure_input(&input))!=XR_SUCCESS || (haptics && kl_native_configure_haptics(&haptic)!=XR_SUCCESS) || api->configure_provider(kl_native_get_instance_proc_addr) ||

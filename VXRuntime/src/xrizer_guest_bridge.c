@@ -343,9 +343,20 @@ static WINAPI hidden_mesh *hidden_area_mesh(guest_object *self, hidden_mesh *out
     hidden_mesh result=fn(self->native,eye,kind);
     vx_log("xrizer_guest_bridge: System019 slot33 eye %d type %d native vertices %p triangles %u",
            eye,kind,result.vertices,result.triangles);
-    // A native pointer has no established guest-addressability or lifetime.
-    if (result.vertices || result.triangles) unsupported_slot("IVRSystem_019 nonempty hidden mesh",33);
-    *out=result; return out;
+    // The native pointer is xrizer's leaked Rust allocation: no established guest-addressability or lifetime. Copy the mesh
+    // (HmdVector2_t[3 * triangles], two floats a vertex) into a bridge-owned buffer per (eye, kind) that the guest reads as plain
+    // memory (the AOT code shares the process address space) and that stays valid until the next call for the same eye and kind;
+    // a replaced buffer is leaked, not freed, in case the game still holds the old pointer. A zero mesh is passed on as an empty one.
+    if (!result.triangles) { out->vertices=NULL; out->triangles=0; return out; }   // (a leaked empty Vec is a dangling non-null pointer)
+    if (!result.vertices || result.triangles > 4096 || eye < 0 || eye > 1 || kind < 0 || kind > 2)
+        unsupported_slot("IVRSystem_019 invalid hidden mesh",33);
+    static float *mesh_copy[2][3];
+    size_t bytes=(size_t)result.triangles*3*2*sizeof(float);
+    float *copy=malloc(bytes);
+    if (!copy) unsupported_slot("IVRSystem_019 hidden mesh out of memory",33);
+    memcpy(copy,result.vertices,bytes);
+    mesh_copy[eye][kind]=copy;
+    out->vertices=copy; out->triangles=result.triangles; return out;
 }
 static WINAPI void dxgi_output(guest_object *self, int32_t *adapter) {
     require(self == &system_object);

@@ -18,6 +18,7 @@ static void mul4(const float *a, const float *b, float *o) {
 // Native OpenVR eyes are already stereo. Rotate rays between the pose that produced each
 // pair and the display pose; without scene depth translation cannot be reconstructed.
 #include "native_vr.h"
+#include "vismask_shape.h"
 #include "native_openvr.h"
 #ifdef VXRT_XRIZER_XROS_FIXTURE
 #include "xrizer_xros_fixture.h"
@@ -186,20 +187,51 @@ int vx_xros_immersive_stats(char *buf, uint32_t len) {
 #endif
 
 // float4-aligned layout matches the Metal shader's parameter structure.
-typedef struct { float rot[12], src[4], dst[4], bounds[4]; } native_params;
+typedef struct { float rot[12], src[4], dst[4], bounds[4], probe[4], maskins[4], maskrad[4]; } native_params;
 static NSString *const g_native_shader = @
 "#include <metal_stdlib>\nusing namespace metal;\n"
-"struct P { float4 r[3]; float4 src; float4 dst; float4 bounds; };\n"
+"struct P { float4 r[3]; float4 src; float4 dst; float4 bounds; float4 probe; float4 maskins; float4 maskrad; };\n"
 "struct V { float4 position [[position]]; float2 uv; };\n"
 "vertex V nv(uint i [[vertex_id]]) { float2 p=float2((i==1)?3:-1,(i==2)?3:-1); return {float4(p,0.05,1),float2((p.x+1)*.5,(1-p.y)*.5)}; }\n"
+/* calibration probe (VXRT_VISMASK_PROBE): rulers in the drawable's own edge fractions, the mask outline in the game image's */
+"float seg7(int d, float2 q) { int m=(d==0)?0x3F:(d==1)?0x06:(d==2)?0x5B:(d==3)?0x4F:(d==4)?0x66:(d==5)?0x6D:(d==6)?0x7D:(d==7)?0x07:(d==8)?0x7F:0x6F;\n"
+" bool on=false;\n"
+" if ((m&1)&&q.x>.1&&q.x<.9&&q.y>.88&&q.y<1.) on=true; if ((m&2)&&q.x>.78&&q.x<.9&&q.y>.5&&q.y<.94) on=true;\n"
+" if ((m&4)&&q.x>.78&&q.x<.9&&q.y>.06&&q.y<.5) on=true; if ((m&8)&&q.x>.1&&q.x<.9&&q.y>0.&&q.y<.12) on=true;\n"
+" if ((m&16)&&q.x>.1&&q.x<.22&&q.y>.06&&q.y<.5) on=true; if ((m&32)&&q.x>.1&&q.x<.22&&q.y>.5&&q.y<.94) on=true;\n"
+" if ((m&64)&&q.x>.1&&q.x<.9&&q.y>.44&&q.y<.56) on=true; return on?1.:0.; }\n"
+/* label n (1 or 2 digits) with its lower-left at o, char size cs: 0 outside, 1 background, 2 digit */
+"int label(int n, float2 p, float2 o, float2 cs) { int nd=n>=10?2:1; float2 q=(p-o)/cs; if (q.y<-.15||q.y>1.15||q.x<-.15||q.x>float(nd)+.15) return 0;\n"
+" if (q.y<0||q.y>1||q.x<0||q.x>float(nd)) return 1; int ci=int(floor(q.x)); int dg=nd==2?(ci==0?n/10:n%10):n; return seg7(dg,float2(fract(q.x),q.y))>.5?2:1; }\n"
+"float3 probe(float2 t, float4 dst, float2 guv, float4 mi, float4 mr) {\n"
+" float a=(t.x+dst.x)/(dst.x+dst.y), b=(t.y+dst.w)/(dst.z+dst.w); float3 c=float3(.05,.05,.07);\n"
+" if (a<0||a>1||b<0||b>1) return float3(0);\n"
+" float m=min(min(a,1-a),min(b,1-b)); int k=int(floor(m/.02+.5)); float dk=abs(m-float(k)*.02);\n"
+" if (k>=0&&k<=15&&dk<.0016) c=(k%5==0)?float3(1):((k%2)==1?float3(0,.9,.9):float3(.95,.85,0));\n"
+" float2 cs=float2(.012,.028); int L=0; int kk;\n"
+" kk=int(floor((b-.30)/.055))+1; if (kk>=1&&kk<=7) { int k2=2*kk; int v=2*k2; int nd=v>=10?2:1; float fx=.02*float(k2)+.004; float rb=.30+.055*float(kk-1);\n"
+"  L=max(L,label(v,float2(a,b),float2(fx,rb),cs)); L=max(L,label(v,float2(a,b),float2(1-fx-float(nd)*cs.x,rb),cs)); }\n"
+" kk=int(floor((a-.30)/.055))+1; if (kk>=1&&kk<=7) { int k2=2*kk; int v=2*k2; int nd=v>=10?2:1; float fy=.02*float(k2)+.004; float ra=.30+.055*float(kk-1);\n"
+"  L=max(L,label(v,float2(a,b),float2(ra,fy),cs)); L=max(L,label(v,float2(a,b),float2(ra,1-fy-cs.y),cs)); }\n"
+/* corner labels (even k only), along the diagonals, so the corner reading is separate from the edge reading */
+" for (int j=2;j<=10;j+=2) { float d=.02*float(j)+.006; int nd=(2*j)>=10?2:1; float w=float(nd)*cs.x;\n"
+"  L=max(L,label(2*j,float2(a,b),float2(d,d),cs)); L=max(L,label(2*j,float2(a,b),float2(1-d-w,d),cs));\n"
+"  L=max(L,label(2*j,float2(a,b),float2(d,1-d-cs.y),cs)); L=max(L,label(2*j,float2(a,b),float2(1-d-w,1-d-cs.y),cs)); }\n"
+" if (L==1) c=float3(0); if (L==2) c=float3(1,1,.2);\n"
+/* the mask outline in the game image: inset l/r/u/d (fractions of its width/height, top = row 0), corner radius */
+" if (mr.y>.5) { float2 g=guv; float lx=mi.x, rx=1-mi.y, ty=mi.z, by=1-mi.w; float2 hc=float2((lx+rx)*.5,(ty+by)*.5), he=float2((rx-lx)*.5,(by-ty)*.5);\n"
+"  float r=mr.x*min(he.x,he.y); float2 qq=abs(g-hc)-he+r; float sd=length(max(qq,0.))+min(max(qq.x,qq.y),0.)-r; if (abs(sd)<.0016) c=float3(1,0,1); }\n"
+" return c; }\n"
 "fragment float4 nf(V v [[stage_in]], texture2d<float> img [[texture(0)]], constant P &p [[buffer(0)]]) {\n"
 " float2 t=float2(mix(-p.dst.x,p.dst.y,v.uv.x),mix(p.dst.z,-p.dst.w,v.uv.y));\n"
 " float3 d=float3(t,-1); float3 s=float3(dot(p.r[0].xyz,d),dot(p.r[1].xyz,d),dot(p.r[2].xyz,d));\n"
-" if (s.z>=-0.00001) return float4(0,0,0,1); float2 q=float2(s.x/-s.z,-s.y/-s.z);\n"
+" bool okd = s.z<-0.00001; float2 q=okd?float2(s.x/-s.z,-s.y/-s.z):float2(0);\n"
 " float2 uv=float2((q.x-p.src.x)/(p.src.y-p.src.x),(q.y-p.src.z)/(p.src.w-p.src.z));\n"
-" if (any(uv<0) || any(uv>1)) return float4(0,0,0,1);\n"
+" bool inside = okd && !(any(uv<0) || any(uv>1));\n"
 " constexpr sampler smp(coord::normalized,filter::linear,address::clamp_to_edge);\n"
-" return img.sample(smp,mix(p.bounds.xy,p.bounds.zw,uv)); }\n";
+" float4 game = inside ? img.sample(smp,mix(p.bounds.xy,p.bounds.zw,uv)) : float4(0,0,0,1);\n"
+" if (p.probe.x>.5) { float3 pc=probe(t,p.dst,uv,p.maskins,p.maskrad); if (p.probe.x>1.5) { bool ink=any(abs(pc-float3(.05,.05,.07))>.02); return ink?float4(pc,1):game; } return float4(pc,1); }\n"
+" return game; }\n";
 
 int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const float tan[4], void *outp, void *depthp) {
     if (!g_native_held) { GAP(GAP_NOT_HELD); return 0; }
@@ -257,6 +289,14 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
     memcpy(p.src, g_native_frame.pose.frustum[eye], sizeof p.src);
     memcpy(p.dst, tan, sizeof p.dst);
     p.bounds[0]=e->u_min; p.bounds[1]=e->v_min; p.bounds[2]=e->u_max; p.bounds[3]=e->v_max;
+    {   /* VXRT_VISMASK_PROBE: the calibration pattern (see vismask_shape.h) */
+        static int mode = -1;
+        if (mode < 0) { mode = vx_vismask_probe_mode(); if (mode) vx_log("vismask probe: mode %d (1 pattern only, 2 over the game image)", mode); }
+        if (mode) {
+            int on; float sh[5]; (void)vx_vismask_shape((unsigned)eye, &on, sh);
+            p.probe[0] = (float)mode; memcpy(p.maskins, sh, 4 * sizeof(float)); p.maskrad[0] = sh[4]; p.maskrad[1] = 1.f;
+        }
+    }
     if (!(p.src[0] < p.src[1] && p.src[2] < p.src[3])) { GAP(GAP_FRUSTUM); return 0; }
     static id<MTLLibrary> lib;
     static id<MTLRenderPipelineState> pipeline;
