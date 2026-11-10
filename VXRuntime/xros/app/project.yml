@@ -1,14 +1,14 @@
-# VX Runtime (exampleprefix.VXRuntimeHost): VXRuntime as it is, on the headset (../../VISIONOS_PORT.md). Not VX Proto
+# VX Runtime (gseddon.dev.vxrt.VXRuntimeHost): VXRuntime as it is, on the headset (../../VISIONOS_PORT.md). Not VX Proto
 # (exampleprefix.VisionOSProto) or the VeRantyx client (exampleprefix.VisionSpatialTools). Build the libraries first:
 #   make xros-lib xros-aot-tests      (from VXRuntime/)
 name: VXRuntimeHost
 options:
-  bundleIdPrefix: exampleprefix
+  bundleIdPrefix: gseddon.dev.vxrt
   deploymentTarget:
     visionOS: "26.0"
 settings:
   base:
-    DEVELOPMENT_TEAM: EXAMPLETEAM
+    DEVELOPMENT_TEAM: YOURTEAMID
     CODE_SIGN_STYLE: Automatic
     XROS_DEPLOYMENT_TARGET: "26.0"
     TARGETED_DEVICE_FAMILY: "7"
@@ -27,7 +27,7 @@ targets:
         buildPhase: resources
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: exampleprefix.VXRuntimeHost
+        PRODUCT_BUNDLE_IDENTIFIER: gseddon.dev.vxrt.VXRuntimeHost
         PRODUCT_NAME: VXRuntimeHost
         INFOPLIST_FILE: Sources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/VXRuntimeHost.entitlements
