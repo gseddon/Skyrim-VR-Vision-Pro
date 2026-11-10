@@ -1,9 +1,22 @@
 // DirectInput 8 joystick support backed by macOS HID. The first slice exposes attached HID joysticks,
 // gamepads and multi-axis controllers, then maps their axes, buttons and POV hats into the caller's data format.
+#import <Foundation/Foundation.h>
+#include "vx.h"
+#if !VX_XROS
 #import <IOKit/hid/IOHIDManager.h>
 #import <IOKit/hid/IOHIDKeys.h>
+#define DI_HID_RETAIN(x) CFRetain(x)
+#define DI_HID_RELEASE(x) CFRelease(x)
+#else
+// visionOS has no IOKit HID (VISIONOS_PORT.md): the game controllers the Game Controller framework reports stand in
+// for the HID joysticks and gamepads. hid_device.hid is then only a marker (non-NULL: attached), hid_object.element NULL,
+// and the values come from framework_value() below. The system keyboard and mouse are user32's, as on the Mac.
+typedef void *IOHIDDeviceRef;
+typedef void *IOHIDElementRef;
+#define DI_HID_RETAIN(x) (x)
+#define DI_HID_RELEASE(x) ((void)(x))
+#endif
 #import <GameController/GameController.h>
-#include "vx.h"
 #include "directinput_buffer.h"
 #include "directinput_format.h"
 #include <stdlib.h>
@@ -178,6 +191,7 @@ static GUID device_guid(uint32_t vid, uint32_t pid, uint32_t location, uint32_t 
     return g;
 }
 
+#if !VX_XROS
 static BOOL32 make_hid_info(IOHIDDeviceRef hid, hid_device *out) {
     if (!hid || !out) return 0;
     memset(out, 0, sizeof *out);
@@ -193,7 +207,7 @@ static BOOL32 make_hid_info(IOHIDDeviceRef hid, hid_device *out) {
     static int as_ds4 = -1;
     if (as_ds4 < 0) { const char *e = getenv("VXRT_DUALSENSE_AS_DS4"); as_ds4 = !(e && *e == '0'); }
     if (as_ds4 && vid == 0x054c && (pid == 0x0ce6 || pid == 0x0df2)) pid = 0x09cc;
-    out->hid = (IOHIDDeviceRef)CFRetain(hid);
+    out->hid = (IOHIDDeviceRef)DI_HID_RETAIN(hid);
     out->instance = device_guid(vid, pid, location, page, usage);
     // the product GUID as Windows makes it, {PIDVID-0000-0000-0000-504944564944}: games read the vendor and
     // product from it (and match it against the XInput pads among setupapi's HID interfaces)
@@ -239,9 +253,42 @@ static hid_device *snapshot_devices(size_t *count) {
     if (count) *count = used;
     return result;
 }
+#else
+// visionOS: one device per extended gamepad the Game Controller framework reports. The vendor and product are those of
+// the pad the framework_pad() matching (read_by_xinput) looks for: a PlayStation pad shows as a DualShock 4, a Nintendo
+// one as a Switch Pro Controller, any other as an Xbox One pad. The location is the framework's index.
+static BOOL32 make_gc_info(GCController *c, unsigned index, hid_device *out) {
+    memset(out, 0, sizeof *out);
+    if (!c.extendedGamepad) return 0;
+    NSString *kind = [c.productCategory stringByAppendingFormat:@" %@", c.vendorName ?: @""];
+    BOOL sony = [kind rangeOfString:@"Dual" options:NSCaseInsensitiveSearch].location != NSNotFound;
+    BOOL nintendo = [kind rangeOfString:@"Switch" options:NSCaseInsensitiveSearch].location != NSNotFound ||
+                    [kind rangeOfString:@"Joy-Con" options:NSCaseInsensitiveSearch].location != NSNotFound;
+    uint32_t vid = sony ? 0x054c : nintendo ? 0x057e : 0x045e, pid = sony ? 0x09cc : nintendo ? 0x2009 : 0x02ea;
+    out->hid = (IOHIDDeviceRef)(uintptr_t)(index + 1);
+    out->instance = device_guid(vid, pid, index, 1, 5);
+    out->product = (GUID){ (pid << 16) | (vid & 0xffff), 0, 0, { 0, 0, 'P', 'I', 'D', 'V', 'I', 'D' } };
+    out->type = DIDEVTYPE_HID | DI8DEVTYPE_GAMEPAD | DI8DEVTYPEGAMEPAD_STANDARD << 8;
+    out->primary_page = 1; out->primary_usage = 5;
+    cf_string_to_wide((__bridge CFStringRef)(c.vendorName ?: @"Game Controller"), out->name, 260);
+    return 1;
+}
+static hid_device *snapshot_devices(size_t *count) {
+    if (count) *count = 0;
+    @autoreleasepool {
+        NSArray<GCController *> *all = GCController.controllers;
+        hid_device *result = all.count ? calloc(all.count, sizeof *result) : NULL;
+        size_t used = 0;
+        for (NSUInteger i = 0; result && i < all.count; i++) if (make_gc_info(all[i], (unsigned)i, &result[used])) used++;
+        if (!used) { free(result); return NULL; }
+        if (count) *count = used;
+        return result;
+    }
+}
+#endif
 static void release_snapshot(hid_device *devices, size_t count) {
     if (!devices) return;
-    for (size_t i = 0; i < count; i++) if (devices[i].hid) CFRelease(devices[i].hid);
+    for (size_t i = 0; i < count; i++) if (devices[i].hid) DI_HID_RELEASE(devices[i].hid);
     free(devices);
 }
 // ---- the system keyboard and mouse ------------------------------------------------------------------------------------
@@ -547,14 +594,17 @@ static ULONG WINAPI di_dev_addref(di_device *self) { return __atomic_add_fetch(&
 static ULONG WINAPI di_dev_release(di_device *self) {
     ULONG refs = __atomic_sub_fetch(&self->refs, 1, __ATOMIC_ACQ_REL);
     if (!refs) {
+#if !VX_XROS
         if (self->opened) IOHIDDeviceClose(self->source.hid, kIOHIDOptionsTypeNone);
-        if (self->source.hid) CFRelease(self->source.hid);
-        for (size_t i = 0; i < self->object_count; i++) if (self->objects[i].element) CFRelease(self->objects[i].element);
+#endif
+        if (self->source.hid) DI_HID_RELEASE(self->source.hid);
+        for (size_t i = 0; i < self->object_count; i++) if (self->objects[i].element) DI_HID_RELEASE(self->objects[i].element);
         vx_di_buffer_destroy(&self->event_buffer);
         free(self->objects); free(self->format); free(self->last_values); free(self->last_valid); free(self);
     }
     return refs;
 }
+#if !VX_XROS
 static BOOL32 load_objects(di_device *self) {
     if (self->objects) return 1;
     CFArrayRef elements = IOHIDDeviceCopyMatchingElements(self->source.hid, NULL, kIOHIDOptionsTypeNone);
@@ -574,7 +624,7 @@ static BOOL32 load_objects(di_device *self) {
         if (type != kIOHIDElementTypeInput_Misc && type != kIOHIDElementTypeInput_Button &&
             type != kIOHIDElementTypeInput_Axis) continue;
         hid_object *obj = &objects[used++];
-        obj->element = (IOHIDElementRef)CFRetain(e);
+        obj->element = (IOHIDElementRef)DI_HID_RETAIN(e);
         obj->page = page; obj->usage = usage;
         obj->logical_min = (LONG)IOHIDElementGetLogicalMin(e);
         obj->logical_max = (LONG)IOHIDElementGetLogicalMax(e);
@@ -585,6 +635,27 @@ static BOOL32 load_objects(di_device *self) {
     self->object_count = used;
     return 1;
 }
+#else
+static BOOL32 load_objects(di_device *self) {
+    if (self->objects) return 1;
+    // visionOS: the extended gamepad as a HID gamepad's elements, in the ranges framework_value() fills: sticks and
+    // triggers 0..255, the hat 0..7 (centred: below the range), buttons 0..1 (ten as an Xbox pad's, fourteen as a PlayStation pad's).
+    static const struct { uint32_t page, usage; LONG max; } layout[] = {
+        { 1, 0x30, 255 }, { 1, 0x31, 255 }, { 1, 0x32, 255 }, { 1, 0x35, 255 }, { 1, 0x33, 255 }, { 1, 0x34, 255 }, { 1, 0x39, 7 } };
+    uint32_t buttons = (self->source.product.Data1 & 0xffff) == 0x054c ? 14 : 10;
+    size_t total = sizeof layout / sizeof layout[0] + buttons;
+    hid_object *objects = calloc(total, sizeof *objects);
+    if (!objects) return 0;
+    size_t used = 0;
+    for (size_t i = 0; i < sizeof layout / sizeof layout[0]; i++, used++) {
+        objects[used].page = layout[i].page; objects[used].usage = layout[i].usage; objects[used].logical_max = layout[i].max;
+    }
+    for (uint32_t b = 1; b <= buttons; b++, used++) { objects[used].page = 9; objects[used].usage = b; objects[used].logical_max = 1; }
+    self->objects = objects;
+    self->object_count = used;
+    return 1;
+}
+#endif
 static uint32_t count_objects(di_device *self, int category) {
     if (!load_objects(self)) return 0;
     uint32_t count = 0;
@@ -818,9 +889,12 @@ static HRESULT WINAPI di_dev_acquire(di_device *self) {
     if (!self->source.hid) return DIERR_INPUTLOST;
     if (self->acquired) return DIERR_ACQUIRED;
     if (!self->format_set) return VX_DI_E_INVALIDARG;
+#if !VX_XROS
     IOReturn status = IOHIDDeviceOpen(self->source.hid, kIOHIDOptionsTypeNone);
     if (status != kIOReturnSuccess) return DIERR_OTHERAPPHASPRIO;
-    self->opened = self->acquired = 1;
+    self->opened = 1;
+#endif
+    self->acquired = 1;
     vx_di_buffer_clear(&self->event_buffer);
     if (self->last_valid) memset(self->last_valid, 0, self->format_count * sizeof *self->last_valid);
     return VX_DI_S_OK;
@@ -830,7 +904,9 @@ static HRESULT WINAPI di_dev_unacquire(di_device *self) {
         BOOL32 (WINAPI *set_event)(HANDLE) = (BOOL32 (WINAPI *)(HANDLE))vx_find_export("kernel32.dll", "SetEvent");
         if (set_event) (void)set_event(self->event);
     }
+#if !VX_XROS
     if (self->opened) IOHIDDeviceClose(self->source.hid, kIOHIDOptionsTypeNone);
+#endif
     self->opened = self->acquired = 0;
     vx_di_buffer_clear(&self->event_buffer);
     if (self->last_valid) memset(self->last_valid, 0, self->format_count * sizeof *self->last_valid);
@@ -852,7 +928,9 @@ static LONG axis_usage_for(const GUID *guid, uint32_t instance) {
 // Options, L3, R3, PS, touchpad; others as an Xbox pad's A, B, X, Y, LB, RB, View, Menu, LS, RS).
 static GCExtendedGamepad *framework_pad(uint32_t vid) {
     static dispatch_once_t once;                                       // (as XInput: input from a background app too)
+#if !VX_XROS
     dispatch_once(&once, ^{ if (@available(macOS 11.3, *)) GCController.shouldMonitorBackgroundEvents = YES; });
+#endif
     for (GCController *c in GCController.controllers) {
         GCExtendedGamepad *pad = c.extendedGamepad;
         if (!pad) continue;
@@ -915,11 +993,15 @@ static BOOL32 framework_value(di_device *self, hid_object *object, int64_t *valu
 }
 static BOOL32 read_hid_value(di_device *self, hid_object *object, int64_t *value) {
     if (framework_value(self, object, value)) return 1;
+#if VX_XROS
+    return 0;                                                         // (no HID to fall back on: no pad, no value)
+#else
     IOHIDValueRef result = NULL;
     IOReturn status = IOHIDDeviceGetValue(self->source.hid, object->element, &result);
     if (status != kIOReturnSuccess || !result) return 0;
     *value = IOHIDValueGetIntegerValue(result);
     return 1;
+#endif
 }
 static LONG normalized_axis(di_device *self, hid_object *object, uint32_t instance) {
     int64_t value = 0;

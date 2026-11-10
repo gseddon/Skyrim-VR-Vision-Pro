@@ -18,6 +18,20 @@ contains its worktrees). Each module is built by vxrt-aot gen, then every part
 is assembled and linked in parallel; a dylib's install name is
 dylibs/<name> wherever it is built. --probe requires --build and an explicit
 passing gate.
+--target macos-arm64 (the default) builds the Mac .dylib set exactly as before. --target
+xrsimulator or xros builds the visionOS set instead: every image is moved to the next free
+64 KB-aligned slot of the visionOS arena (--arena, default 0x7000000000, --arena-mb 1024: the
+Makefile's XROS_ARENA), in config order, exe first (the config's bases are ignored; image sizes
+come from SizeOfImage, as `vxrt-aot size` and tools/xros_aot.sh "@auto" do), and each part of
+each module is made a framework VXA_<module file name>.framework exactly as tools/xros_aot.sh
+"fw:" does (same clang -target, install name, Info.plist, framework name, bases.txt). The result
+is <out>/game_fw/, the directory VXRuntime/xros/app/embed_aot_frameworks.sh embeds and signs
+(hard links into the cache, so it costs no second copy); the default cache for these targets is
+build/private/skyrim-aot-cache-<target>, never the Mac cache. The split profile and roots are
+shifted by (slot - preferred ImageBase) as for the Mac, so a profile keyed at the exe's preferred
+base (0x140000000) applies unchanged. --probe and owned_gate are Mac dev-host checks and are
+refused for these targets. --dry-run validates the config and prints the planned bases, arena
+fit and output directories; it compiles and writes nothing.
 This validates basic PE layout and mapping ranges. It does not prepare inputs
 or establish the provenance or semantic completeness of a prepared image.
 """
@@ -41,6 +55,13 @@ CACHE = REPO / 'build/private/skyrim-aot-cache'
 PRIVATE = None    # the main checkout (parent of the git common directory); found on first use
 # Changes when the build steps below would produce different files from the same inputs.
 BUILDER = 'vxrt-aot gen; clang -arch arm64 -c; clang -arch arm64 -dynamiclib -o dylibs/<name> (cwd: build dir); v1'
+# The visionOS build mirrors VXRuntime/tools/xros_aot.sh "fw:" (compile/framework conventions) and the Makefile's arena.
+XROS_BUILDER = ('vxrt-aot gen; xcrun -sdk <sdk> clang -target <triple> -c; xcrun -sdk <sdk> clang -target <triple> '
+                '-dynamiclib -install_name @rpath/<fw>.framework/<fw> -o fw/<fw>.framework/<fw>; Info.plist as xros_aot.sh; v1')
+XROS_TARGETS = {'xros': 'arm64-apple-xros26.0', 'xrsimulator': 'arm64-apple-xros26.0-simulator'}
+XROS_PLATFORM = {'xros': 'XROS', 'xrsimulator': 'XRSimulator'}
+XROS_ARENA = '0x7000000000'     # Makefile XROS_ARENA / XROS_ARENA_MB
+XROS_ARENA_MB = 1024
 
 
 def digest(path):
@@ -70,6 +91,43 @@ def toolchain():
     clang = subprocess.run(['clang', '--version'], capture_output=True, check=True).stdout.decode().splitlines()
     ld = subprocess.run(['ld', '-v'], capture_output=True).stderr.decode().splitlines()
     return {'clang': clang[0] if clang else '', 'ld': ld[0] if ld else ''}
+
+
+def xros_toolchain(sdk):
+    """The SDK's clang and SDK version: part of the cache key, so another Xcode builds again."""
+    def run1(*args):
+        r = subprocess.run(['xcrun', '-sdk', sdk, *args], capture_output=True)
+        if r.returncode:
+            raise ValueError('xcrun -sdk %s %s failed (is the SDK installed?): %s' % (sdk, ' '.join(args), r.stderr.decode().strip()))
+        return r.stdout.decode().strip()
+    return {'clang': run1('clang', '--version').splitlines()[0], 'sdk': sdk, 'sdk_version': run1('--show-sdk-version')}
+
+
+def xros_settings(target, arena, arena_mb):
+    base_value = base(arena)
+    if type(arena_mb) is not int or not 1 <= arena_mb <= 16384:
+        raise ValueError('arena-mb must be an integer from 1 to 16384')
+    return {'sdk': target, 'triple': XROS_TARGETS[target], 'platform': XROS_PLATFORM[target],
+            'arena': base_value, 'arena_mb': arena_mb}
+
+
+def framework_name(stem, part):
+    """tools/xros_aot.sh / translator/aot.c fw_path: VXA_ + the module file name, lowercased, other characters '_'."""
+    mod = stem + ('.p%s' % part if part is not None else '')
+    return 'VXA_' + re.sub(r'[^a-z0-9]', '_', mod.lower())
+
+
+def pack_arena(modules, xros):
+    """Slots in config order from the arena base in 64 KB steps (xros_aot.sh "@auto"); returns the arena bytes used."""
+    nxt = int(xros['arena'], 16)
+    for m in modules:
+        m['base'] = hex(nxt)
+        m['slot_end'] = hex(nxt + (m['pe']['image_size'] + 65535) // 65536 * 65536)
+        nxt = int(m['slot_end'], 16)
+    used = nxt - int(xros['arena'], 16)
+    if used > xros['arena_mb'] << 20:
+        raise ValueError('the arena (%d MB) is too small: the images need %.1f MB' % (xros['arena_mb'], used / 2**20))
+    return used
 
 
 def private_root():
@@ -219,7 +277,7 @@ def pin_runtime(item, strict):
     return {'path': str(path), 'sha256': actual, 'pinned_sha256': expected, 'pin_matches': actual == expected}
 
 
-def prepare(config, strict_runtime=True):
+def prepare(config, xros=None, strict_runtime=True):
     original = pin(config['original'])
     exe = pin(config['prepared'], True)
     if original['path'] == exe['path']:
@@ -242,6 +300,8 @@ def prepare(config, strict_runtime=True):
         raise ValueError('module bases must be distinct; overlap requires separate review')
     for module in modules:
         module['pe'] = pe_layout(module['path'])
+    arena_used = pack_arena(modules, xros) if xros else None
+    for module in modules:
         for kind in ('splits', 'roots'):
             if module[kind]:
                 text, used, outside = shifted(module[kind], module)
@@ -261,11 +321,11 @@ def prepare(config, strict_runtime=True):
     return {'original': original, 'prepared': exe, 'runtime': runtime, 'modules': modules,
             'compiler': compiler_config(config),
             'asset_root': directory(config['asset_root']), 'dll_roots': [directory(p) for p in config['dll_roots']],
-            'jobs': jobs, 'owned_gate': gate}
+            'jobs': jobs, 'owned_gate': gate, **({'arena_used': arena_used} if xros else {})}
 
 
 def key_for(module, ctx):
-    """ctx: source, compiler {sha256, source_commit}, toolchain, jobs."""
+    """ctx: source, compiler {sha256, source_commit}, toolchain, jobs, xros (None for the Mac set)."""
     data = {'sha256': module['sha256'], 'name': Path(module['path']).name,
             'base': module['base'], 'part_mb': module.get('part_mb'),
             'splits': module['splits'] and {k: module['splits'][k] for k in ('sha256', 'shifted_sha256')},
@@ -273,13 +333,22 @@ def key_for(module, ctx):
             'source': ctx['source'], 'compiler_sha256': ctx['compiler']['sha256'],
             'compiler_source_commit': ctx['compiler']['source_commit'], 'toolchain': ctx['toolchain'],
             'builder': BUILDER, 'jobs': ctx['jobs'], 'target': 'macos-arm64'}
+    if ctx.get('xros'):    # (keys of the Mac set are unchanged: these entries exist only for the visionOS targets)
+        x = ctx['xros']
+        data.update(builder=XROS_BUILDER, target=x['sdk'], triple=x['triple'], arena=x['arena'], arena_mb=x['arena_mb'])
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest(), data
 
 
-def valid_cache(path, key):
+def valid_cache(path, key, frameworks=False):
     try:
         meta = json.loads((path / 'manifest.json').read_text())
         files = meta['artifacts']
+        if frameworks:    # {'VXA_x.framework/VXA_x': sha, 'VXA_x.framework/Info.plist': sha, ...}
+            on_disk = {str(p.relative_to(path)) for p in path.glob('VXA_*.framework/*')}
+            return (meta['key'] == key and meta['returncode'] == 0 and bool(files) and set(files) == on_disk
+                    and all(re.fullmatch(r'VXA_[a-z0-9_]+\.framework/(VXA_[a-z0-9_]+|Info\.plist)', n)
+                            and (path/n).is_file() and not (path/n).is_symlink() and digest(path/n) == h
+                            for n, h in files.items()))
         if set(files) != {p.name for p in path.glob('*.dylib')}:
             return False
         return (meta['key'] == key and meta['returncode'] == 0 and bool(files)
@@ -302,9 +371,25 @@ def module_env(module, work):
     return env
 
 
-def compile_module(module, compiler, jobs, work, log):
-    """vxrt-aot gen into work/s, then each part assembled and linked (cwd work) to work/dylibs/<stem>[.p<k>].dylib."""
-    (work/'s').mkdir(); (work/'dylibs').mkdir()
+INFO_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>%(fw)s</string>
+<key>CFBundleIdentifier</key><string>%(id)s</string>
+<key>CFBundleName</key><string>%(fw)s</string>
+<key>CFBundlePackageType</key><string>FMWK</string>
+<key>CFBundleShortVersionString</key><string>1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleSupportedPlatforms</key><array><string>%(platform)s</string></array>
+<key>MinimumOSVersion</key><string>26.0</string>
+</dict></plist>
+"""    # (byte for byte what tools/xros_aot.sh writes)
+
+
+def compile_module(module, compiler, jobs, work, log, xros=None):
+    """vxrt-aot gen into work/s, then each part assembled and linked (cwd work) to work/dylibs/<stem>[.p<k>].dylib
+    (xros: to work/fw/VXA_<stem>[_p<k>].framework/ with its Info.plist, as tools/xros_aot.sh "fw:" does)."""
+    (work/'s').mkdir(); (work/('fw' if xros else 'dylibs')).mkdir()
     env = module_env(module, work)
     commands = []
     name = subprocess.run([compiler, 'name', module['path']], capture_output=True, env=env)
@@ -326,7 +411,10 @@ def compile_module(module, compiler, jobs, work, log):
         if s.parent != work/'s' or not re.fullmatch(r'S(\.p\d+)?\.s', s.name):
             raise ValueError('unexpected vxrt-aot output: ' + line)
         k = re.fullmatch(r'S\.p(\d+)\.s', s.name)
-        parts.append((s, 'dylibs/%s%s.dylib' % (stem, '.p' + k.group(1) if k else '')))
+        if xros:
+            parts.append((s, framework_name(stem, k.group(1) if k else None)))
+        else:
+            parts.append((s, 'dylibs/%s%s.dylib' % (stem, '.p' + k.group(1) if k else '')))
     if not parts:
         raise ValueError('vxrt-aot listed no output')
     def link(part):
@@ -334,6 +422,15 @@ def compile_module(module, compiler, jobs, work, log):
         obj = s.with_suffix('.o')
         steps = [['clang', '-arch', 'arm64', '-c', '-o', str(obj), str(s)],
                  ['clang', '-arch', 'arm64', '-dynamiclib', '-o', dylib, str(obj)]]
+        if xros:    # dylib is the framework's name here
+            cc = ['xcrun', '-sdk', xros['sdk'], 'clang', '-target', xros['triple']]
+            d = work/'fw'/(dylib + '.framework')
+            d.mkdir()
+            (d/'Info.plist').write_text(INFO_PLIST % {
+                'fw': dylib, 'id': 'exampleprefix.VXRuntimeHost.aot.' + dylib.replace('_', '-'), 'platform': xros['platform']})
+            steps = [cc + ['-c', '-o', str(obj), str(s)],
+                     cc + ['-dynamiclib', '-install_name', '@rpath/%s.framework/%s' % (dylib, dylib),
+                           '-o', str(d/dylib), str(obj)]]
         for cmd in steps:
             r = subprocess.run(cmd, cwd=work, capture_output=True)
             if r.returncode:
@@ -352,9 +449,10 @@ def compile_module(module, compiler, jobs, work, log):
 
 def build_module(module, ctx, cache, out):
     key, inputs = key_for(module, ctx)
+    xros = ctx.get('xros')
     dest = cache / key
     if dest.exists():
-        if not valid_cache(dest, key):
+        if not valid_cache(dest, key, bool(xros)):
             raise ValueError('invalid cached module: ' + str(dest))
         return dest, {'key': key, 'cached': True}
     tmp = Path(tempfile.mkdtemp(prefix='.building-', dir=cache))
@@ -364,11 +462,20 @@ def build_module(module, ctx, cache, out):
         commands, env, error = [], {}, None
         with log.open('wb') as f:
             try:
-                commands, env = compile_module(module, ctx['compiler']['path'], ctx['jobs'], work, f)
+                commands, env = compile_module(module, ctx['compiler']['path'], ctx['jobs'], work, f, xros)
             except (OSError, ValueError, subprocess.SubprocessError) as e:
                 error = str(e)
         artifacts = {}
-        if not error:
+        if not error and xros:
+            for d in sorted((work/'fw').glob('VXA_*.framework')):
+                d.rename(tmp/d.name)
+                for p in sorted((tmp/d.name).iterdir()):
+                    if p.is_file() and not p.is_symlink():
+                        artifacts['%s/%s' % (d.name, p.name)] = digest(p)
+            for name in ('splits.txt', 'roots.txt', 'S.list'):
+                if (work/name).exists():
+                    (work/name).rename(tmp/name)
+        elif not error:
             for p in sorted((work/'dylibs').glob('*.dylib')):
                 if p.is_file() and not p.is_symlink():
                     p.rename(tmp/p.name); artifacts[p.name] = digest(tmp/p.name)
@@ -384,12 +491,18 @@ def build_module(module, ctx, cache, out):
             raise ValueError('module build failed or produced no dylibs (%s); see %s' % (error, log))
         pinned = [(module['path'], module['sha256']), (ctx['compiler']['path'], ctx['compiler']['sha256'])]
         pinned += [(module[k]['path'], module[k]['sha256']) for k in ('splits', 'roots') if module[k]]
-        if any(digest(p) != h for p, h in pinned) or toolchain() != ctx['toolchain'] or source_identity() != ctx['source']:
+        now = xros_toolchain(xros['sdk']) if xros else toolchain()
+        if any(digest(p) != h for p, h in pinned) or now != ctx['toolchain'] or source_identity() != ctx['source']:
             raise ValueError('input or build source changed during build')
         shutil.rmtree(work)
         (tmp / 'manifest.json').write_text(json.dumps(result, indent=2) + '\n')
         for p in tmp.iterdir():
-            p.chmod(0o444)
+            if p.is_dir():
+                for q in p.iterdir():
+                    q.chmod(0o444)
+                p.chmod(0o555)
+            else:
+                p.chmod(0o444)
         tmp.chmod(0o555)
         tmp.rename(dest)
         return dest, result
@@ -429,28 +542,77 @@ def classify(result):
                                                 'aot_summaries': facts.get('aot_summaries', [])}}
 
 
-def run(config, out, build=False, probe=False, cache=None):
+def dry_run_report(result, out):
+    lines = ['target %s%s' % (result['target'], '' if not result.get('xros') else
+                              ' (%s; arena %s, %d MB)' % (result['xros']['triple'], result['xros']['arena'], result['xros']['arena_mb'])),
+             'output dir  %s' % (out or '(--out not given)'), 'cache dir   %s' % result['cache'],
+             'compiler    %s' % result['compiler']['path'],
+             'toolchain   %s' % json.dumps(result['toolchain']), '']
+    lines.append('%-22s %-14s %-13s %-10s %-14s %s' % ('image', 'preferred', 'base', 'size MB', 'slot end', 'profile addresses used/outside'))
+    for m in result['config']['modules']:
+        prof = ' '.join('%s %d/%d' % (k, m[k]['used'], m[k]['outside_image']) for k in ('splits', 'roots') if m[k]) or '-'
+        lines.append('%-22s %-14s %-13s %-10.1f %-14s %s' % (
+            Path(m['path']).name, m['pe']['preferred_base'], m['base'], m['pe']['image_size'] / 2**20, m.get('slot_end', '-'), prof))
+    if result.get('xros'):
+        used = result['config']['arena_used']
+        lines += ['', 'arena used %.1f MB of %d MB (%.1f MB free)' % (used / 2**20, result['xros']['arena_mb'],
+                                                                result['xros']['arena_mb'] - used / 2**20),
+                  'parts: known only after `vxrt-aot gen` (exe: part_mb %s); one framework per part, VXA_<module file name, lowercased>[_p<k>]'
+                  % next((m['part_mb'] for m in result['config']['modules'][:1]), None),
+                  'result: %s/game_fw/VXA_*.framework (+ bases.txt), hard-linked from the cache' % (out or '<out>')]
+    else:
+        lines += ['', 'parts: known only after `vxrt-aot gen`; one .dylib per part into %s/modules' % (out or '<out>')]
+    return '\n'.join(lines)
+
+
+def run(config, out, build=False, probe=False, cache=None, target='macos-arm64', arena=XROS_ARENA,
+        arena_mb=XROS_ARENA_MB, dry_run=False):
     if probe and not build:
         raise ValueError('--probe requires --build')
-    out = Path(out).resolve()
+    xros = xros_settings(target, arena, arena_mb) if target in XROS_TARGETS else None
+    if xros and probe:
+        raise ValueError('--probe is a Mac dev-host check; not available for ' + target)
+    if dry_run and (build or probe):
+        raise ValueError('--dry-run cannot be combined with --build or --probe')
     root = private_root()
-    if out == REPO or out == root or not out.is_relative_to(root) or out.exists():
+    out = Path(out).resolve() if out else None
+    if out is None and not dry_run:
+        raise ValueError('--out is required')
+    if out is not None and (out == REPO or out == root or not out.is_relative_to(root) or out.exists()):
         raise ValueError('output must be a new checkout-local directory')
-    cache = Path(cache).resolve() if cache else CACHE
+    cache = Path(cache).resolve() if cache else (CACHE.with_name(CACHE.name + '-' + target) if xros else CACHE)
     if not cache.is_relative_to(root):
         raise ValueError('cache must be inside the checkout')
-    cfg = prepare(config, strict_runtime=probe)
+    if xros and cache == CACHE:
+        raise ValueError('the visionOS modules need a cache of their own, not the Mac cache')
+    cfg = prepare(config, xros, strict_runtime=probe)
+    if xros and cfg['owned_gate']:
+        raise ValueError('owned_gate is a Mac dev-host check; remove it from the config for ' + target)
     if probe and not cfg['owned_gate']:
         raise ValueError('--probe requires an explicit owned_gate command')
     compiler = dict(cfg['compiler'])
     if compiler['sha256'] is None:
         compiler['sha256'] = digest(compiler['path'])
     ctx = {'source': source_identity(), 'compiler': compiler, 'toolchain': toolchain(), 'jobs': cfg['jobs']}
-    out.mkdir(parents=True, mode=0o700)
+    if xros:
+        try:
+            ctx['toolchain'] = xros_toolchain(xros['sdk'])
+        except ValueError as e:
+            if not dry_run:
+                raise
+            ctx['toolchain'] = {'unavailable': str(e)}
+        ctx['xros'] = xros
     result = {'subject': 'private prepared-input AOT; no game or VR compatibility claim', 'status': 'planned',
               'config': cfg, 'source': ctx['source'], 'compiler': compiler, 'toolchain': ctx['toolchain'],
-              'builder': BUILDER, 'cache': str(cache), 'target': 'macos-arm64', 'modules': [],
+              'builder': XROS_BUILDER if xros else BUILDER, 'cache': str(cache), 'target': target, 'modules': [],
               'unknown': ['prepared image provenance and semantic completeness', 'runtime code coverage', 'physical headset and playability']}
+    if xros:
+        result['xros'] = xros
+    if dry_run:
+        result['modules'] = [dict(key=key_for(m, ctx)[0], input=m) for m in cfg['modules']]
+        result['status'] = 'dry-run'
+        return result
+    out.mkdir(parents=True, mode=0o700)
     def save():
         (out/'result.json').write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
     save()
@@ -465,14 +627,24 @@ def run(config, out, build=False, probe=False, cache=None):
             for m in cfg['modules']:
                 dest, evidence = build_module(m, ctx, cache, out)
                 dirs.append(dest); result['modules'].append(evidence); save()
-            module_set = out/'modules'; module_set.mkdir()
-            for dest in dirs:
+            module_set = out/('game_fw' if xros else 'modules'); module_set.mkdir()
+            for m, dest in zip(cfg['modules'], dirs):
                 manifest = json.loads((dest/'manifest.json').read_text())
+                if xros:    # frameworks are directories: real directories of hard links, which embed_aot_frameworks.sh's ditto copies
+                    with (module_set/'bases.txt').open('a') as bases:
+                        bases.write('%s %s\n' % (Path(m['path']).name, m['base']))
                 for name in manifest['artifacts']:
                     link = module_set/name
                     if link.exists() or link.is_symlink():
                         raise ValueError('duplicate generated module name: ' + name)
-                    link.symlink_to(dest/name)
+                    if xros:
+                        link.parent.mkdir(exist_ok=True)
+                        try:
+                            os.link(dest/name, link)
+                        except OSError:
+                            shutil.copy2(dest/name, link)
+                    else:
+                        link.symlink_to(dest/name)
         result['status'] = 'built'; save()
         if cfg['owned_gate']:
             log = out/'owned-gate.log'
@@ -509,13 +681,20 @@ def run(config, out, build=False, probe=False, cache=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--config', required=True); parser.add_argument('--out', required=True)
-    parser.add_argument('--cache', help='module cache directory inside the checkout (default build/private/skyrim-aot-cache)')
+    parser.add_argument('--config', required=True); parser.add_argument('--out')
+    parser.add_argument('--cache', help='module cache directory inside the checkout (default build/private/skyrim-aot-cache, '
+                        'build/private/skyrim-aot-cache-<target> for visionOS)')
     parser.add_argument('--build', action='store_true'); parser.add_argument('--probe', action='store_true')
+    parser.add_argument('--target', choices=['macos-arm64', *XROS_TARGETS], default='macos-arm64',
+                        help='macos-arm64 (default): Mac .dylib parts; xrsimulator / xros: visionOS frameworks in the arena')
+    parser.add_argument('--arena', default=XROS_ARENA, help='visionOS arena base (default %s, the Makefile XROS_ARENA)' % XROS_ARENA)
+    parser.add_argument('--arena-mb', type=int, default=XROS_ARENA_MB, help='visionOS arena size in MB (default %d)' % XROS_ARENA_MB)
+    parser.add_argument('--dry-run', action='store_true', help='print the plan (bases, arena fit, output dirs); compile and write nothing')
     args = parser.parse_args()
     try:
-        result = run(json.loads(Path(args.config).read_text()), args.out, args.build, args.probe, args.cache)
-        print(json.dumps(result, indent=2)); return 0
+        result = run(json.loads(Path(args.config).read_text()), args.out, args.build, args.probe, args.cache,
+                     args.target, args.arena, args.arena_mb, args.dry_run)
+        print(dry_run_report(result, args.out) if args.dry_run else json.dumps(result, indent=2)); return 0
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as e:
         print('pipeline: ' + str(e), file=sys.stderr); return 1
 
