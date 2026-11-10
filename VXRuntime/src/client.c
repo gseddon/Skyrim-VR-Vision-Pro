@@ -208,6 +208,9 @@ static DWORD ini_string(const char *app, const char *key, const char *def, char 
     char value[2048];
     int found = text && ini_find(text, app, key, value, sizeof value);
     free(text);
+    static int trace = -1;                                          // VXRT_TRACE_INI: each key asked for, and where from
+    if (trace < 0) trace = getenv("VXRT_TRACE_INI") != NULL;
+    if (trace) vx_log("GetPrivateProfileString(%s) [%s] %s = %s%s", file ? file : "", app, key, found ? value : (def ? def : ""), found ? "" : " (default)");
     const char *s = found ? value : (def ? def : "");
     DWORD n = (DWORD)strlen(s);
     if (n >= cap) n = cap - 1;
@@ -251,6 +254,7 @@ static WINAPI unsigned GetPrivateProfileIntA(const char *app, const char *key, i
     char *text = ini_read(file), v[64];
     int found = text && ini_find(text, app, key, v, sizeof v);
     free(text);
+    if (getenv("VXRT_TRACE_INI")) vx_log("GetPrivateProfileInt(%s) [%s] %s = %s%s", file ? file : "", app, key, found ? v : "", found ? "" : " (default)");
     if (!found) return (unsigned)def;
     char *e; long x = strtol(v, &e, 10);
     return e == v ? 0u : (unsigned)x;                               // (text that is not a number reads as 0, a missing key as the default)

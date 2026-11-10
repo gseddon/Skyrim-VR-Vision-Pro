@@ -823,7 +823,14 @@ static WINAPI BOOL GetStringTypeExW(DWORD lcid, DWORD type, const WCHAR *src, in
     return get ? get(type, src, n, out) : 0;
 }
 static WINAPI BOOL WritePrivateProfileStringW(const WCHAR *app, const WCHAR *key, const WCHAR *value, const WCHAR *file) {
-    (void)app; (void)key; (void)value; (void)file;
+    // VXRT_TRACE_FILES: what the program would have written (which settings it keeps between runs)
+    static int trace = -1;
+    if (trace < 0) trace = getenv("VXRT_TRACE_FILES") != NULL;
+    if (trace) {
+        char *a = vx_utf8_dup(app), *k = vx_utf8_dup(key), *v = vx_utf8_dup(value), *f = vx_utf8_dup(file);
+        vx_log("WritePrivateProfileString(%s) [%s] %s=%s (not kept)", f ? f : "", a ? a : "", k ? k : "(section deleted)", v ? v : "(key deleted)");
+        free(a); free(k); free(v); free(f);
+    }
     return 1;                                                      // (not kept: no .ini files written for programs here)
 }
 static WINAPI BOOL WritePrivateProfileStringA(const char *app, const char *key, const char *value, const char *file) {

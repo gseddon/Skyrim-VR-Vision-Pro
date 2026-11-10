@@ -1,9 +1,52 @@
-/* Experimental offscreen Mac host, never a physical tracking/presentation claim. */
+/* Experimental Mac development host, never a physical tracking/presentation claim.
+ *
+ * Development keyboard controllers (VXRT_XRIZER_DEV_KEYBOARD), diagnostic input only:
+ *   VXRT_XRIZER_DEV_KEYBOARD=1       a "dev keyboard" window mirrors the two eyes side by side; while it is the key
+ *                                    window (click it) its keys drive the two synthetic controllers and a mouse drag
+ *                                    in it turns the synthetic head (the controllers follow the head). Keys reach
+ *                                    only this window: no global key hooks, no Accessibility permission.
+ *   VXRT_XRIZER_DEV_KEYBOARD=script  no window; only VXRT_XRIZER_DEV_KEY_SCRIPT drives the keys (fixtures, harness).
+ *   Either implies VXRT_XRIZER_DEV_CONTROLLERS=touch when that is unset. The Oculus Touch profile is the one whose
+ *   xrizer legacy mapping covers every button Skyrim VR's Oculus columns use (controlmapvr.txt): through xrizer
+ *   (src/input/profiles/oculus_touch.rs) trigger -> k_EButton_SteamVR_Trigger + rAxis[1].x, squeeze -> k_EButton_Grip
+ *   + k_EButton_Axis2 + rAxis[2].x, X (left) / A (right) -> k_EButton_A, Y (left) / B (right) ->
+ *   k_EButton_ApplicationMenu, thumbstick -> rAxis[0], thumbstick click -> k_EButton_Axis0.
+ *
+ * Default key map (Mac key positions, layout independent) and what Skyrim VR's Oculus columns bind them to:
+ *   W A S D      left stick       move; menus: navigate              Left Shift  left stick click   sprint
+ *   Q            left trigger     left hand attack/block/cast        R           left grip          ready/sheathe weapon; menus: cancel
+ *   Tab          left X           tween (system) menu; journal       J           left Y             journal/wait; menus: tab left
+ *   arrows       right stick      turn (look); menus: navigate       Right Shift right stick click  item zoom (inventory)
+ *   Space        right trigger    right hand attack; menus: accept   E, Return   right A            activate; menus: accept
+ *   F            right B          favorites; menus: tab right        Z, Backspace right grip        shout; menus: cancel
+ *   [ ]          head turn left/right (90 deg/s)   Page Up/Down  head pitch   Home  head and aim reset
+ *   , .  ; /     the hands' aim left/right/up/down relative to the head (90 deg/s)
+ *   mouse drag   head turn/pitch (the hands follow the head)   right-button drag  the hands' aim relative to the head
+ *   (menus are world-locked panels: aim the hands' pointer at an item, then trigger/A)
+ * (left.menu, the Oculus left menu button, is accepted but xrizer's legacy mapping does not bind it.)
+ * Skyrim VR's first-launch VR setup is skipped by the harness's seeded SkyrimPrefs.ini (tools/prefs_seed/611670);
+ * without it: any button, A, then right stick right + A picks Right Hand, A, then a teleport playroom.
+ *
+ * VXRT_XRIZER_DEV_KEYMAP overrides it: entries "key=hand.control" separated by spaces, commas or newlines, replacing
+ * the default for that key; "key=none" unbinds it; "clear" drops all defaults first; a value starting with '/' is a
+ * file of such entries ('#' comments). hand.control: left|right . trigger|grip|primary|a|x|secondary|b|y|menu|
+ * stick_click|stick_up|stick_down|stick_left|stick_right, or head . left|right|up|down|reset|aim_left|aim_right|aim_up|aim_down. Key names: a-z 0-9
+ * space return enter tab backspace escape lshift rshift lctrl rctrl lalt ralt up down left right home end pageup
+ * pagedown minus equal lbracket rbracket semicolon quote comma period slash backslash grave f1-f12.
+ *
+ * VXRT_XRIZER_DEV_KEY_SCRIPT="START:KEYS:HOLD[,...]" presses KEYS (names joined by '+') at START for HOLD; times are
+ * seconds since the dev host started, or fN for frame N / N frames. Applied at frame waits; works with or without
+ * the window. Every change of the synthetic controller sample is logged ("xrizer dev keyboard: sample ...").
+ */
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <AppKit/AppKit.h>
+#import <QuartzCore/CAMetalLayer.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <math.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <time.h>
 #include "vx.h"
@@ -53,6 +96,296 @@ extern int vx_xrizer_dev_audit_observe(uint32_t variant);
 @end
 static VXDevXRHost *dev_host;
 static XrTime now_ns(void) { struct timespec t; if (clock_gettime(CLOCK_MONOTONIC,&t)) return 0; return (XrTime)t.tv_sec * INT64_C(1000000000) + t.tv_nsec; }
+/* ---- development keyboard (see the header comment) ---------------------------------------------------------------- */
+void vx_cocoa_ensure(void);
+enum { DK_LEFT, DK_RIGHT, DK_HEAD };
+enum { DK_NONE, DK_TRIGGER, DK_GRIP, DK_PRIMARY, DK_SECONDARY, DK_MENU, DK_STICK_CLICK, DK_STICK_UP, DK_STICK_DOWN,
+       DK_STICK_LEFT, DK_STICK_RIGHT,
+       DK_HEAD_LEFT = 1, DK_HEAD_RIGHT, DK_HEAD_UP, DK_HEAD_DOWN, DK_HEAD_RESET, DK_AIM_LEFT, DK_AIM_RIGHT, DK_AIM_UP, DK_AIM_DOWN };
+typedef struct { uint8_t hand, control; } dk_binding;
+static const struct { const char *name; uint8_t code; } dk_key_names[] = {   /* macOS virtual key codes (kVK_*) */
+    {"a",0},{"s",1},{"d",2},{"f",3},{"h",4},{"g",5},{"z",6},{"x",7},{"c",8},{"v",9},{"b",11},{"q",12},{"w",13},{"e",14},
+    {"r",15},{"y",16},{"t",17},{"1",18},{"2",19},{"3",20},{"4",21},{"6",22},{"5",23},{"equal",24},{"9",25},{"7",26},
+    {"minus",27},{"8",28},{"0",29},{"rbracket",30},{"o",31},{"u",32},{"lbracket",33},{"i",34},{"p",35},{"return",36},
+    {"enter",36},{"l",37},{"j",38},{"quote",39},{"k",40},{"semicolon",41},{"backslash",42},{"comma",43},{"slash",44},
+    {"n",45},{"m",46},{"period",47},{"tab",48},{"space",49},{"grave",50},{"backspace",51},{"escape",53},{"lshift",56},
+    {"lalt",58},{"lctrl",59},{"rshift",60},{"ralt",61},{"rctrl",62},{"f5",96},{"f6",97},{"f7",98},{"f3",99},{"f8",100},
+    {"f9",101},{"f11",103},{"f10",109},{"f12",111},{"home",115},{"pageup",116},{"f4",118},{"end",119},{"f2",120},
+    {"pagedown",121},{"f1",122},{"left",123},{"right",124},{"down",125},{"up",126}};
+static const char *const dk_hand_names[] = {"left","right","head"};
+static const struct { const char *name; uint8_t control; } dk_controls_named[] = {
+    {"trigger",DK_TRIGGER},{"grip",DK_GRIP},{"primary",DK_PRIMARY},{"a",DK_PRIMARY},{"x",DK_PRIMARY},
+    {"secondary",DK_SECONDARY},{"b",DK_SECONDARY},{"y",DK_SECONDARY},{"menu",DK_MENU},{"stick_click",DK_STICK_CLICK},
+    {"stick_up",DK_STICK_UP},{"stick_down",DK_STICK_DOWN},{"stick_left",DK_STICK_LEFT},{"stick_right",DK_STICK_RIGHT}};
+static const char *const dk_head_controls[] = {NULL,"left","right","up","down","reset","aim_left","aim_right","aim_up","aim_down"};
+static const char dk_default_map[] =
+    "w=left.stick_up a=left.stick_left s=left.stick_down d=left.stick_right lshift=left.stick_click q=left.trigger "
+    "r=left.grip tab=left.x j=left.y up=right.stick_up down=right.stick_down left=right.stick_left "
+    "right=right.stick_right rshift=right.stick_click space=right.trigger e=right.a return=right.a f=right.b "
+    "z=right.grip backspace=right.grip lbracket=head.left rbracket=head.right pageup=head.up pagedown=head.down "
+    "home=head.reset comma=head.aim_left period=head.aim_right semicolon=head.aim_up slash=head.aim_down";
+typedef struct { int64_t at; uint8_t frames, code, down, done; } dk_event;   /* at: ns since start, or a frame */
+static struct {
+    int enabled, window;
+    dk_binding map[128];
+    _Atomic uint64_t keys[2], script_keys[2];         /* key codes 0..127 held in the window / by the script */
+    _Atomic uint32_t yaw_bits, pitch_bits;            /* head angles (float bits, radians) */
+    _Atomic int mirror;                               /* the window is on screen and its layer is ready */
+    _Atomic int drag_dx_milli, drag_dy_milli;         /* unapplied mouse drag, thousandths of a point */
+    _Atomic int aim_dx_milli, aim_dy_milli;           /* unapplied right-button drag (hands' aim) */
+    _Atomic uint32_t aim_yaw_bits, aim_pitch_bits;    /* the hands' aim relative to the head (float bits, radians) */
+    dk_event script[256]; unsigned script_count;
+    XrTime start, last_head;
+    pthread_mutex_t lock;                             /* the sample below */
+    uint64_t sample_id; XrTime sample_time; KlNativeInputHand3 hands[2]; unsigned changes;
+} dk = {.lock = PTHREAD_MUTEX_INITIALIZER};
+static CAMetalLayer *dk_layer;                        /* set on the main thread before dk.mirror */
+static id<MTLRenderPipelineState> dk_pipeline;
+static NSWindow *dk_window;                           /* kept open through process exit */
+static float dk_float(_Atomic uint32_t *v) { uint32_t b = atomic_load(v); float f; memcpy(&f, &b, 4); return f; }
+static void dk_set_float(_Atomic uint32_t *v, float f) { uint32_t b; memcpy(&b, &f, 4); atomic_store(v, b); }
+static int dk_key_code(const char *name, size_t n) {
+    for (size_t i = 0; i < sizeof dk_key_names / sizeof dk_key_names[0]; i++)
+        if (strlen(dk_key_names[i].name) == n && !strncasecmp(dk_key_names[i].name, name, n)) return dk_key_names[i].code;
+    return -1;
+}
+static const char *dk_code_name(unsigned code) {
+    for (size_t i = 0; i < sizeof dk_key_names / sizeof dk_key_names[0]; i++) if (dk_key_names[i].code == code) return dk_key_names[i].name;
+    return "?";
+}
+/* One "key=hand.control" entry; 0 or -1 (logged). */
+static int dk_entry(const char *e, size_t n) {
+    const char *eq = memchr(e, '=', n);
+    if (n == 5 && !strncasecmp(e, "clear", 5)) { memset(dk.map, 0, sizeof dk.map); return 0; }
+    if (!eq) goto bad;
+    int code = dk_key_code(e, (size_t)(eq - e)); if (code < 0) goto bad;
+    const char *v = eq + 1; size_t vn = n - (size_t)(v - e);
+    if (vn == 4 && !strncasecmp(v, "none", 4)) { dk.map[code] = (dk_binding){0}; return 0; }
+    const char *dot = memchr(v, '.', vn); if (!dot) goto bad;
+    size_t hn = (size_t)(dot - v), cn = vn - hn - 1; const char *c = dot + 1;
+    for (unsigned hand = 0; hand < 3; hand++) {
+        if (strlen(dk_hand_names[hand]) != hn || strncasecmp(dk_hand_names[hand], v, hn)) continue;
+        if (hand == DK_HEAD) {
+            for (unsigned k = 1; k < sizeof dk_head_controls / sizeof dk_head_controls[0]; k++)
+                if (strlen(dk_head_controls[k]) == cn && !strncasecmp(dk_head_controls[k], c, cn)) { dk.map[code] = (dk_binding){(uint8_t)hand, (uint8_t)k}; return 0; }
+        } else {
+            for (size_t k = 0; k < sizeof dk_controls_named / sizeof dk_controls_named[0]; k++)
+                if (strlen(dk_controls_named[k].name) == cn && !strncasecmp(dk_controls_named[k].name, c, cn)) {
+                    dk.map[code] = (dk_binding){(uint8_t)hand, dk_controls_named[k].control}; return 0;
+                }
+        }
+    }
+bad:
+    vx_log("xrizer dev keyboard: key map entry \"%.*s\" not understood (expected key=hand.control)", (int)n, e);
+    return -1;
+}
+static int dk_parse_map(const char *s) {
+    while (*s) {
+        if (*s == '#') { while (*s && *s != '\n') s++; continue; }
+        if (strchr(" \t\r\n,", *s)) { s++; continue; }
+        size_t n = strcspn(s, " \t\r\n,#");
+        if (dk_entry(s, n)) return -1;
+        s += n;
+    }
+    return 0;
+}
+/* "START:KEYS:HOLD[,...]": times in seconds since the host started, or fN frames. */
+static int dk_time(const char *s, size_t n, int64_t *at, uint8_t *frames) {
+    char buf[32]; if (!n || n >= sizeof buf) return -1;
+    memcpy(buf, s, n); buf[n] = 0; char *end;
+    if (buf[0] == 'f') { long long f = strtoll(buf + 1, &end, 10); if (*end || end == buf + 1 || f < 0) return -1; *at = f; *frames = 1; return 0; }
+    double t = strtod(buf, &end); if (*end || end == buf || !(t >= 0) || t > 1e6) return -1;
+    *at = (int64_t)(t * 1e9); *frames = 0; return 0;
+}
+static int dk_parse_script(const char *s) {
+    while (*s) {
+        if (*s == ',' || *s == ' ') { s++; continue; }
+        size_t n = strcspn(s, ", "); const char *c1 = memchr(s, ':', n), *c2 = c1 ? memchr(c1 + 1, ':', n - (size_t)(c1 + 1 - s)) : NULL;
+        int64_t start, hold; uint8_t fs, fh;
+        if (!c2 || dk_time(s, (size_t)(c1 - s), &start, &fs) || dk_time(c2 + 1, n - (size_t)(c2 + 1 - s), &hold, &fh) || fs != fh) goto bad;
+        for (const char *k = c1 + 1; k < c2;) {
+            size_t kn = strcspn(k, "+:"); if (k + kn > c2) kn = (size_t)(c2 - k);
+            int code = dk_key_code(k, kn);
+            if (code < 0 || dk.script_count + 2 > sizeof dk.script / sizeof dk.script[0]) goto bad;
+            dk.script[dk.script_count++] = (dk_event){start, fs, (uint8_t)code, 1, 0};
+            dk.script[dk.script_count++] = (dk_event){start + hold, fs, (uint8_t)code, 0, 0};
+            k += kn; if (*k == '+') k++;
+        }
+        s += n; continue;
+    bad:
+        vx_log("xrizer dev keyboard: VXRT_XRIZER_DEV_KEY_SCRIPT entry \"%.*s\" not understood (expected START:KEY[+KEY]:HOLD, seconds or fN)", (int)n, s);
+        return -1;
+    }
+    return 0;
+}
+static void dk_key(unsigned code, int down) {
+    if (code >= 128) return;
+    uint64_t bit = 1ull << (code & 63);
+    if (down) atomic_fetch_or(&dk.keys[code >> 6], bit); else atomic_fetch_and(&dk.keys[code >> 6], ~bit);
+}
+static int dk_held(const uint64_t bits[2], unsigned hand, unsigned control) {
+    for (unsigned code = 0; code < 128; code++)
+        if ((bits[code >> 6] >> (code & 63) & 1) && dk.map[code].hand == hand && dk.map[code].control == control) return 1;
+    return 0;
+}
+static void dk_bits(uint64_t bits[2]) {
+    for (unsigned i = 0; i < 2; i++) bits[i] = atomic_load(&dk.keys[i]) | atomic_load(&dk.script_keys[i]);
+}
+/* At a frame wait: the script's due events, then the head (keys at 90 deg/s, mouse drag at 0.25 deg/point). */
+static void dk_frame(uint64_t frame, XrTime now) {
+    if (!dk.enabled) return;
+    for (unsigned i = 0; i < dk.script_count; i++) {
+        dk_event *e = &dk.script[i];
+        if (e->done || (e->frames ? (uint64_t)e->at > frame : now - dk.start < e->at)) continue;
+        e->done = 1; uint64_t bit = 1ull << (e->code & 63);
+        if (e->down) atomic_fetch_or(&dk.script_keys[e->code >> 6], bit); else atomic_fetch_and(&dk.script_keys[e->code >> 6], ~bit);
+        vx_log("xrizer dev keyboard: script %s %s at frame %llu (%.3f s)", e->down ? "press" : "release", dk_code_name(e->code),
+               (unsigned long long)frame, (double)(now - dk.start) / 1e9);
+    }
+    uint64_t bits[2]; dk_bits(bits);
+    float dt = dk.last_head ? (float)((double)(now - dk.last_head) / 1e9) : 0; dk.last_head = now;
+    if (dt > .1f) dt = .1f;
+    float yaw = dk_float(&dk.yaw_bits), pitch = dk_float(&dk.pitch_bits), rate = (float)M_PI / 2;
+    yaw += rate * dt * (float)(dk_held(bits, DK_HEAD, DK_HEAD_LEFT) - dk_held(bits, DK_HEAD, DK_HEAD_RIGHT));
+    pitch += rate * dt * (float)(dk_held(bits, DK_HEAD, DK_HEAD_UP) - dk_held(bits, DK_HEAD, DK_HEAD_DOWN));
+    float per = .25f * (float)M_PI / 180 / 1000;
+    yaw -= per * (float)atomic_exchange(&dk.drag_dx_milli, 0); pitch -= per * (float)atomic_exchange(&dk.drag_dy_milli, 0);
+    float ayaw = dk_float(&dk.aim_yaw_bits) - per * (float)atomic_exchange(&dk.aim_dx_milli, 0) +
+                 rate * dt * (float)(dk_held(bits, DK_HEAD, DK_AIM_LEFT) - dk_held(bits, DK_HEAD, DK_AIM_RIGHT));
+    float apitch = dk_float(&dk.aim_pitch_bits) - per * (float)atomic_exchange(&dk.aim_dy_milli, 0) +
+                 rate * dt * (float)(dk_held(bits, DK_HEAD, DK_AIM_UP) - dk_held(bits, DK_HEAD, DK_AIM_DOWN));
+    if (dk_held(bits, DK_HEAD, DK_HEAD_RESET)) yaw = pitch = ayaw = apitch = 0;
+    if (ayaw > 1.4f) ayaw = 1.4f; if (ayaw < -1.4f) ayaw = -1.4f; if (apitch > 1.4f) apitch = 1.4f; if (apitch < -1.4f) apitch = -1.4f;
+    dk_set_float(&dk.aim_yaw_bits, ayaw); dk_set_float(&dk.aim_pitch_bits, apitch);
+    yaw = remainderf(yaw, 2 * (float)M_PI);
+    if (pitch > 1.4f) pitch = 1.4f; if (pitch < -1.4f) pitch = -1.4f;
+    dk_set_float(&dk.yaw_bits, yaw); dk_set_float(&dk.pitch_bits, pitch);
+}
+static XrQuaternionf dk_yaw_pitch(float yaw, float pitch) {   /* yaw about +Y, then pitch about +X */
+    float y = yaw / 2, p = pitch / 2;
+    return (XrQuaternionf){cosf(y) * sinf(p), sinf(y) * cosf(p), -sinf(y) * sinf(p), cosf(y) * cosf(p)};
+}
+static XrQuaternionf dk_head_orientation(void) { return dk_yaw_pitch(dk_float(&dk.yaw_bits), dk_float(&dk.pitch_bits)); }
+/* The two hands: held still 0.5 m below the 1.6 m head, 0.2 m to each side and 0.35 m (aim 0.4 m) ahead of it,
+ * turned with the head's yaw and pointing where it looks; controls from the held keys. */
+static void dk_hands(uint32_t profile, KlNativeInputHand3 out[2]) {
+    uint64_t bits[2] = {0, 0}; if (dk.enabled) dk_bits(bits);
+    float yaw = dk_float(&dk.yaw_bits), c = cosf(yaw), s = sinf(yaw);
+    /* where the head looks, turned further by the hands' aim (right-button drag) */
+    XrQuaternionf q = dk_yaw_pitch(yaw + dk_float(&dk.aim_yaw_bits), dk_float(&dk.pitch_bits) + dk_float(&dk.aim_pitch_bits));
+    for (unsigned i = 0; i < 2; i++) {
+        float x = i ? .2f : -.2f, sx = (float)(dk_held(bits, i, DK_STICK_RIGHT) - dk_held(bits, i, DK_STICK_LEFT)),
+              sy = (float)(dk_held(bits, i, DK_STICK_UP) - dk_held(bits, i, DK_STICK_DOWN));
+        if (sx && sy) { sx *= (float)M_SQRT1_2; sy *= (float)M_SQRT1_2; }
+        out[i] = (KlNativeInputHand3){.controls={.connected=XR_TRUE,.trigger=dk_held(bits, i, DK_TRIGGER) ? 1.f : 0.f,.stick_x=sx,.stick_y=sy,
+                .primary_pressed=(XrBool32)dk_held(bits, i, DK_PRIMARY),.secondary_pressed=(XrBool32)dk_held(bits, i, DK_SECONDARY),
+                .grip_pressed=(XrBool32)dk_held(bits, i, DK_GRIP),.menu_pressed=(XrBool32)dk_held(bits, i, DK_MENU),
+                .stick_pressed=(XrBool32)dk_held(bits, i, DK_STICK_CLICK)},.profile=profile,
+            .local_from_grip={.orientation=q,.position={x * c - .35f * s,1.1f,-x * s - .35f * c}},
+            .local_from_aim={.orientation=q,.position={x * c - .4f * s,1.1f,-x * s - .4f * c}}};
+    }
+}
+static void dk_log_sample(uint64_t id, const KlNativeInputHand3 h[2]) {
+    if (++dk.changes > 2000 && dk.changes % 100) return;
+    char text[2][160];
+    for (unsigned i = 0; i < 2; i++) {
+        const KlNativeInputHand2 *c = &h[i].controls;
+        snprintf(text[i], sizeof text[i], "trigger %.0f grip %u %s %u %s %u menu %u stick %.2f %.2f click %u", c->trigger, c->grip_pressed,
+                 i ? "a" : "x", c->primary_pressed, i ? "b" : "y", c->secondary_pressed, c->menu_pressed, c->stick_x, c->stick_y, c->stick_pressed);
+    }
+    vx_log("xrizer dev keyboard: sample %llu left %s | right %s | head yaw %.1f pitch %.1f aim %.1f %.1f deg (change %u)", (unsigned long long)id, text[0], text[1],
+           dk_float(&dk.yaw_bits) * 180 / M_PI, dk_float(&dk.pitch_bits) * 180 / M_PI, dk_float(&dk.aim_yaw_bits) * 180 / M_PI,
+           dk_float(&dk.aim_pitch_bits) * 180 / M_PI, dk.changes);
+}
+
+/* The mirror window: the two eyes side by side, the keyboard and the mouse. */
+@interface VXDevKeyView : NSView <NSWindowDelegate>
+@end
+@implementation VXDevKeyView
+- (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
+- (void)keyDown:(NSEvent *)e { if (!(e.modifierFlags & NSEventModifierFlagCommand)) dk_key(e.keyCode, 1); }
+- (void)keyUp:(NSEvent *)e { dk_key(e.keyCode, 0); }
+- (void)flagsChanged:(NSEvent *)e {
+    /* Which side's modifier: the device-dependent bits (NX_DEVICE*KEYMASK). */
+    static const struct { unsigned short code; NSUInteger mask; } m[] = {{56,0x2},{60,0x4},{59,0x1},{62,0x2000},{58,0x20},{61,0x40}};
+    for (unsigned i = 0; i < sizeof m / sizeof m[0]; i++) if (m[i].code == e.keyCode) dk_key(e.keyCode, (e.modifierFlags & m[i].mask) != 0);
+}
+- (void)mouseDown:(NSEvent *)e {
+    if (!NSApp.isActive) [NSApp activateIgnoringOtherApps:YES];
+    [self.window makeKeyAndOrderFront:nil]; [self.window makeFirstResponder:self];
+}
+- (void)mouseDragged:(NSEvent *)e {
+    atomic_fetch_add(&dk.drag_dx_milli, (int)(e.deltaX * 1000)); atomic_fetch_add(&dk.drag_dy_milli, (int)(e.deltaY * 1000));
+}
+- (void)rightMouseDown:(NSEvent *)e { [self mouseDown:e]; }
+- (void)rightMouseDragged:(NSEvent *)e {
+    atomic_fetch_add(&dk.aim_dx_milli, (int)(e.deltaX * 1000)); atomic_fetch_add(&dk.aim_dy_milli, (int)(e.deltaY * 1000));
+}
+- (void)windowDidResignKey:(NSNotification *)n { atomic_store(&dk.keys[0], 0); atomic_store(&dk.keys[1], 0); }
+- (void)windowDidChangeOcclusionState:(NSNotification *)n {
+    atomic_store(&dk.mirror, (((NSWindow *)n.object).occlusionState & NSWindowOcclusionStateVisible) != 0);
+}
+- (void)windowWillClose:(NSNotification *)n { atomic_store(&dk.mirror, 0); atomic_store(&dk.keys[0], 0); atomic_store(&dk.keys[1], 0); }
+@end
+static void dk_open_window(id<MTLDevice> device, unsigned width, unsigned height) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        vx_cocoa_ensure();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            dk_layer = [CAMetalLayer layer];
+            dk_layer.device = device; dk_layer.pixelFormat = MTLPixelFormatBGRA8Unorm; dk_layer.framebufferOnly = YES;
+            dk_layer.displaySyncEnabled = NO; dk_layer.drawableSize = CGSizeMake(width, height / 2);
+            dk_layer.contentsGravity = kCAGravityResizeAspect; dk_layer.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+            NSRect r = NSMakeRect(0, 0, 1024, 512);
+            NSWindow *w = [[NSWindow alloc] initWithContentRect:r styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
+                           NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
+            w.releasedWhenClosed = NO;
+            w.title = @"VXRuntime dev keyboard: click here, then keys drive the synthetic controllers (diagnostic, not physical input)";
+            VXDevKeyView *v = [[VXDevKeyView alloc] initWithFrame:r]; v.layer = dk_layer; v.wantsLayer = YES;   /* layer-hosting */
+            w.contentView = v; w.delegate = v; [w makeFirstResponder:v]; [w center];
+            [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+            const char *na = getenv("VXRT_NO_ACTIVATE");
+            if (na && *na == '1') [w orderFront:nil]; else { [w makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
+            dk_window = w;
+            atomic_store(&dk.mirror, 1);
+            vx_log("xrizer dev keyboard: mirror window open; click it to give it the keyboard");
+        });
+    });
+}
+/* Encode the two eyes into the window's next drawable on the frame's command buffer; any failure only disables it. */
+static void dk_mirror(id<MTLDevice> device, id<MTLCommandBuffer> cb, id<MTLTexture> const eyes[2]) {
+    if (!atomic_load(&dk.mirror)) return;
+    if (!dk_pipeline) {
+        static int failed; if (failed) return;
+        NSString *src = @"#include <metal_stdlib>\nusing namespace metal;\n"
+            "struct V { float4 p [[position]]; float2 uv; };\n"
+            "vertex V vs(uint i [[vertex_id]]) { float2 u = float2((i << 1) & 2, i & 2); V v; v.p = float4(u * float2(2, -2) + float2(-1, 1), 0, 1); v.uv = u; return v; }\n"
+            "fragment float4 fs(V v [[stage_in]], texture2d<float> t [[texture(0)]]) { constexpr sampler s(filter::linear); return float4(t.sample(s, v.uv).rgb, 1); }\n";
+        NSError *err = nil; id<MTLLibrary> lib = [device newLibraryWithSource:src options:nil error:&err];
+        MTLRenderPipelineDescriptor *d = [MTLRenderPipelineDescriptor new];
+        d.vertexFunction = [lib newFunctionWithName:@"vs"]; d.fragmentFunction = [lib newFunctionWithName:@"fs"];
+        d.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+        dk_pipeline = lib ? [device newRenderPipelineStateWithDescriptor:d error:&err] : nil;
+        if (!dk_pipeline) { failed = 1; vx_log("xrizer dev keyboard: mirror disabled: %s", err.localizedDescription.UTF8String); return; }
+    }
+    id<CAMetalDrawable> drawable = [dk_layer nextDrawable]; if (!drawable) return;
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = drawable.texture; pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore; pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+    id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass]; if (!enc) return;
+    [enc setRenderPipelineState:dk_pipeline];
+    double w = (double)drawable.texture.width / 2, hgt = (double)drawable.texture.height;
+    for (unsigned i = 0; i < 2; i++) {
+        [enc setViewport:(MTLViewport){w * i, 0, w, hgt, 0, 1}];
+        [enc setFragmentTexture:eyes[i] atIndex:0];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    }
+    [enc endEncoding]; [cb presentDrawable:drawable];
+    static unsigned presented; if (++presented <= 3 || !(presented % 600))
+        vx_log("xrizer dev keyboard: mirror drew eyes %lux%lu into %lux%lu (%u frames)", (unsigned long)eyes[0].width, (unsigned long)eyes[0].height,
+               (unsigned long)drawable.texture.width, (unsigned long)drawable.texture.height, presented);
+}
+
 static VXDevXRHost *host(void *p) { return (__bridge VXDevXRHost *)p; }
 static void keep(void *p) { if (p) CFRetain(p); }
 static void drop(void *p) { if (p) CFRelease(p); }
@@ -114,17 +447,21 @@ static XrResult input(void *p,KlNativeInputSample *out) {
     VXDevXRHost *h=host(p); if (!h || !out || !h.inputTime) return XR_ERROR_RUNTIME_FAILURE;
     *out=(KlNativeInputSample){.sample_id=1,.sample_time=h.inputTime,.hand_connected={XR_FALSE,XR_FALSE}}; return XR_SUCCESS;
 }
-/* Diagnostic: one unchanging observation (same id and time on every poll) of two connected controllers held still in
- * front of the synthetic head (head at 1.6 m, controllers 0.5 m below it, 0.2 m to each side, 0.35 m ahead, pointing
- * forward). Valid but untracked poses, no button pressed, trigger and stick at rest. Not physical input. */
+/* Diagnostic: two connected controllers in front of the synthetic head (dk_hands), valid but untracked poses. Without
+ * the development keyboard they never change: one observation (same id and time on every poll), no button pressed,
+ * trigger and stick at rest. With it each change of keys or head is a new observation (id and time). Not physical input. */
 static XrResult synthetic_controllers(void *p,KlNativeInputSample3 *out) {
     VXDevXRHost *h=host(p); if (!h || !out || !h.inputTime || !h.syntheticControllers) return XR_ERROR_RUNTIME_FAILURE;
-    *out=(KlNativeInputSample3){.sample_id=1,.sample_time=h.inputTime};
-    for (unsigned i=0;i<2;i++) {
-        float x=i ? .2f : -.2f;
-        out->hand[i]=(KlNativeInputHand3){.controls={.connected=XR_TRUE,.trigger=0,.stick_x=0,.stick_y=0},.profile=h.syntheticControllers,
-            .local_from_grip={.orientation={0,0,0,1},.position={x,1.1f,-.35f}},.local_from_aim={.orientation={0,0,0,1},.position={x,1.1f,-.4f}}};
+    KlNativeInputHand3 hands[2]; dk_hands(h.syntheticControllers,hands);
+    pthread_mutex_lock(&dk.lock);
+    if (!dk.sample_id) { dk.sample_id=1; dk.sample_time=h.inputTime; memcpy(dk.hands,hands,sizeof hands); }
+    else if (memcmp(dk.hands,hands,sizeof hands)) {
+        XrTime t=now_ns(); if (t<=dk.sample_time) t=dk.sample_time+1;
+        ++dk.sample_id; dk.sample_time=t; memcpy(dk.hands,hands,sizeof hands); dk_log_sample(dk.sample_id,hands);
     }
+    *out=(KlNativeInputSample3){.sample_id=dk.sample_id,.sample_time=dk.sample_time};
+    memcpy(out->hand,dk.hands,sizeof dk.hands);
+    pthread_mutex_unlock(&dk.lock);
     return XR_SUCCESS;
 }
 static XrResult wait_frame(void *p,KlNativeFrameSample *out) {
@@ -141,10 +478,11 @@ static XrResult wait_frame(void *p,KlNativeFrameSample *out) {
     h.deadline=(h.deadline>t ? h.deadline : t)+INT64_C(11111111);
     if (h.nextFrame==UINT64_MAX) return XR_ERROR_RUNTIME_FAILURE;
     uint64_t id=++h.nextFrame;
+    dk_frame(id,t);
     *out=(KlNativeFrameSample){.ticket=(__bridge void *)h,.frame_id=id,.pose_id=id,.predicted_display_time=t+INT64_C(11111111),
         .predicted_display_period=INT64_C(11111111),.should_render=XR_TRUE,
         .head_location_flags=XR_SPACE_LOCATION_ORIENTATION_VALID_BIT|XR_SPACE_LOCATION_POSITION_VALID_BIT,
-        .local_from_head={.orientation={0,0,0,1},.position={0,1.6f,0}},
+        .local_from_head={.orientation=dk_head_orientation(),.position={0,1.6f,0}},
         .stage_valid=h.syntheticStage ? XR_TRUE : XR_FALSE,
         .local_from_stage={.orientation={0,0,0,1},.position={0,0,0}},
         .head_from_eye={{{0,0,0,1},{-.032f,0,0}},{{0,0,0,1},{.032f,0,0}}},
@@ -216,7 +554,9 @@ static XrResult publish(void *p,const KlNativeFramePair *pair) {
                 destinationOffset:0 destinationBytesPerRow:bpr destinationBytesPerImage:bpr*(NSUInteger)e->rect.extent.height];
         }
     }
-    [blit endEncoding]; [cb commit]; [cb waitUntilCompleted];
+    [blit endEncoding];
+    if (dk.window) dk_mirror(h.device,cb,copies);
+    [cb commit]; [cb waitUntilCompleted];
     if (cb.status!=MTLCommandBufferStatusCompleted || cb.error) return XR_ERROR_RUNTIME_FAILURE;
     for (unsigned i=0;i<2;i++) if (dumps[i]) {
         const uint8_t *px=dumps[i].contents; NSUInteger n=dumps[i].length/4, w=(NSUInteger)pair->eye[i].rect.extent.width;
@@ -278,7 +618,22 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
         h.syntheticStage=getenv("VXRT_XRIZER_DEV_STAGE") && !strcmp(getenv("VXRT_XRIZER_DEV_STAGE"),"1");
         { const char *dd=getenv("VXRT_XRIZER_DEV_DUMP"); if (dd && dd[0]=='/') h.dumpDir=[NSString stringWithUTF8String:dd]; }
         if (h.syntheticStage) vx_log("xrizer dev host: synthetic stage declared valid (local origin is the floor); development only");
+        { const char *k=getenv("VXRT_XRIZER_DEV_KEYBOARD"), *map=getenv("VXRT_XRIZER_DEV_KEYMAP"), *script=getenv("VXRT_XRIZER_DEV_KEY_SCRIPT");
+          if (k && *k && strcmp(k,"0")) {
+              if (strcmp(k,"1") && strcmp(k,"script")) { vx_log("xrizer dev host: VXRT_XRIZER_DEV_KEYBOARD=%s: expected 1 or script",k); return -1; }
+              dk.enabled=1; dk.window=!strcmp(k,"1"); dk.start=now_ns();
+              if (dk_parse_map(dk_default_map)) return -1;
+              if (map && map[0]=='/') {
+                  NSString *text=[NSString stringWithContentsOfFile:[NSString stringWithUTF8String:map] encoding:NSUTF8StringEncoding error:NULL];
+                  if (!text || dk_parse_map(text.UTF8String)) { vx_log("xrizer dev keyboard: key map file %s unreadable or invalid",map); return -1; }
+              } else if (map && dk_parse_map(map)) return -1;
+              if (script && dk_parse_script(script)) return -1;
+              unsigned bound=0; for (unsigned i=0;i<128;i++) bound+=dk.map[i].control!=0;
+              vx_log("xrizer dev keyboard: %s, %u keys bound%s%s, %u scripted key events; diagnostic, not physical input",
+                     dk.window ? "mirror window" : "scripted only (no window)",bound,map ? ", key map override " : "",map ? map : "",dk.script_count);
+          } else if (script || map) { vx_log("xrizer dev host: VXRT_XRIZER_DEV_KEY_SCRIPT/KEYMAP need VXRT_XRIZER_DEV_KEYBOARD"); return -1; } }
         { const char *c=getenv("VXRT_XRIZER_DEV_CONTROLLERS");
+          if ((!c || !*c) && dk.enabled) c="touch";
           if (c && *c && strcmp(c,"0")) {
               if (!strcmp(c,"1") || !strcmp(c,"touch")) h.syntheticControllers=KL_NATIVE_INPUT_PROFILE_OCULUS_TOUCH;
               else if (!strcmp(c,"index")) h.syntheticControllers=KL_NATIVE_INPUT_PROFILE_VALVE_INDEX;
@@ -287,7 +642,7 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
               vx_log("xrizer dev host: synthetic stationary controllers (%s profile), diagnostic, not physical input",
                      h.syntheticControllers==KL_NATIVE_INPUT_PROFILE_OCULUS_TOUCH ? "oculus/touch_controller" :
                      h.syntheticControllers==KL_NATIVE_INPUT_PROFILE_VALVE_INDEX ? "valve/index_controller" : "htc/vive_controller");
-          } }
+          } else if (dk.enabled) { vx_log("xrizer dev host: VXRT_XRIZER_DEV_KEYBOARD needs controllers (VXRT_XRIZER_DEV_CONTROLLERS=0 given)"); return -1; } }
         h.width=width; h.height=height; h.device=MTLCreateSystemDefaultDevice(); h.queue=[h.device newCommandQueue];
         h.inputTime=now_ns(); h.frames=vx_native_vr_create(keep,drop);
         if (!h.device || !h.queue || !h.inputTime || !h.frames) return -1;
@@ -317,6 +672,7 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
             provider(kl_native_get_instance_proc_addr) || graphics(&source)) return -1;
         h.event=(KlNativeSessionEvent){KL_NATIVE_SESSION_READY,now_ns()};
         if (!h.event.time || vx_xrizer_openvr_configure(factory,ctx)) return -1;
+        if (dk.window) dk_open_window(h.device,width,height);
         vx_log("xrizer dev host: offscreen synthetic stationary head, %s controllers, %ux%u, CLOCK_MONOTONIC; no physical tracking or display",
                h.syntheticControllers ? "synthetic stationary (diagnostic)" : "disconnected",width,height);
         return 0;
