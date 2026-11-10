@@ -247,6 +247,35 @@ def capture(args):
                 copied[str(src.relative_to(seed_dir))] = digest(src)
             result.setdefault('diagnostic', {})['prefs_seed'] = dict(source=str(seed_dir), files=copied,
                 scope='authored settings copied into the private root before start; not game files')
+        # --overlay-ini FILE:SECTION:KEY=VALUE: a per-run copy of an ini of the asset tree (FILE is relative to --asset-root)
+        # inside this run's overlay with one key set; the original is only read. The game reads the copy through the overlay.
+        for spec in getattr(args, 'overlay_ini', None) or []:
+            name, sec, kv = spec.split(':', 2)
+            key, _, val = kv.partition('=')
+            if not (name and sec and key) or '/' in name or '..' in name:
+                raise ValueError('--overlay-ini: expected FILE:SECTION:KEY=VALUE, FILE a plain name in the asset root')
+            dst = overlay / assets.relative_to(source) / name
+            orig = assets / name
+            lines = orig.read_text(encoding='utf-8', errors='replace').splitlines() if orig.is_file() else []
+            out_l, in_sec, done = [], False, False
+            for ln in lines:
+                st = ln.strip()
+                if st.startswith('['):
+                    if in_sec and not done:
+                        out_l.append(f'{key}={val}'); done = True
+                    in_sec = st.lower() == f'[{sec.lower()}]'
+                elif in_sec and st.split('=', 1)[0].strip().lower() == key.lower():
+                    ln = f'{key}={val}'; done = True
+                out_l.append(ln)
+            if not done:
+                if not in_sec:
+                    out_l.append(f'[{sec}]')
+                out_l.append(f'{key}={val}')
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text('\r\n'.join(out_l) + '\r\n', encoding='utf-8')
+            result.setdefault('diagnostic', {}).setdefault('overlay_ini', []).append(dict(file=name, section=sec, key=key, value=val,
+                copy=str(dst), original_sha256=digest(orig) if orig.is_file() else None,
+                scope='per-run copy in the overlay; the asset root file is not modified'))
         env = {k: v for k, v in os.environ.items() if not k.startswith(('VXRT_', 'VERANTYX_'))}
         if getattr(args, 'experimental_xrizer', False):
             env = {k: v for k, v in env.items() if not k.startswith('XDG_')}
@@ -435,6 +464,7 @@ def main():
     ap.add_argument('--dev-keymap', metavar='SPEC|/FILE', help='diagnostic only: VXRT_XRIZER_DEV_KEYMAP override of the dev keyboard map')
     ap.add_argument('--audio-capture', metavar='FILE', help='diagnostic only: VXRT_XAUDIO2_CAPTURE, the XAudio2 mastering mix ("VXCA" header, float32) written to FILE; keep game audio private')
     ap.add_argument('--prefs-seed', metavar='DIR|none', help='a tree copied into the run\'s private root (drive_c/...) before start; default for --experimental-xrizer: tools/prefs_seed/<appid> when present; none: no seed')
+    ap.add_argument('--overlay-ini', action='append', metavar='FILE:SECTION:KEY=VALUE', help='diagnostic only, repeatable: set one ini key in a per-run copy of FILE (from the asset root) inside the run\'s overlay, e.g. Skyrim.ini:General:sIntroSequence= (empty value); the original is not touched')
     ap.add_argument('--dump-eyes', action='store_true', help='diagnostic only: the experimental dev host writes raw RGBA of the published eyes for frames 1, 2, 60, 300 and 600 under <out>/eyes')
     ap.add_argument('--diag-env', action='append', metavar='NAME[=VALUE]', help='diagnostic only, repeatable: one of the renderer tracing knobs (%s)' % ', '.join(sorted(DIAG_ENV)))
     ap.add_argument('--xinput-script', default=None, metavar='SPEC', help='diagnostic only: VXRT_XINPUT_SCRIPT, a scripted virtual gamepad START_S:BUTTONS:HOLD_S[,...] (e.g. 40:A:0.3) with times from process start')
