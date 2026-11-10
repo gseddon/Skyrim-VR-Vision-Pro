@@ -331,6 +331,12 @@ static int skyrimvr_start(const char *root, char **exe_out, char ***argv_out, in
     setenv("VXRT_OVERLAY", ov, 0);
     snprintf(dir, sizeof dir, "%s/bundle/redist", NSBundle.mainBundle.resourcePath.fileSystemRepresentation);
     if (!stat(dir, &st)) setenv("VXRT_DLL_PATH", dir, 0);
+    // The visionOS shader set embedded by the build (XROS_SHADER_SET; <key>.metallib files): read-only hits load from the
+    // bundle (shader_cache.m, VXRT_D3D12_SHADER_CACHE_RO also serves the D3D11 renderer); misses compile in-process and are
+    // queued in the writable Documents/shadercache/pending (the default folder on visionOS) for tools/shadercache_fill.sh.
+    snprintf(dir, sizeof dir, "%s/bundle/shadercache", NSBundle.mainBundle.resourcePath.fileSystemRepresentation);
+    if (!stat(dir, &st)) setenv("VXRT_D3D12_SHADER_CACHE_RO", dir, 0);
+    jlog("shader_set", "\"bundle_dir\":\"%s\",\"present\":%d", dir, !stat(dir, &st));
     snprintf(dir, sizeof dir, "%s/aot.misses", g_docs); setenv("VXRT_AOT_MISSES", dir, 0);
     setenv("VXRT_DEBUG_OUTPUT", "1", 0);
     if (chdir(dir_game)) { jlog("no_game", "\"why\":\"chdir %s\"", dir_game); return 0; }

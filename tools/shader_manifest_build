@@ -18,14 +18,14 @@ game boot (VXRuntime/VISIONOS_PORT.md, "Shaders from a manifest").
 Nothing is written to the install. Exit status: 0 when every entry was found and translated (and matches its recorded
 key), 1 otherwise; <out>/report.tsv lists each entry's outcome.
 """
-import argparse, glob, hashlib, mmap, os, re, struct, subprocess, sys, time
+import argparse, glob, gzip, hashlib, mmap, os, re, struct, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 def read_manifest(path):
     entries, header = [], {}
-    for line in open(path, encoding="utf-8"):
+    for line in (gzip.open(path, "rt", encoding="utf-8") if path.endswith(".gz") else open(path, encoding="utf-8")):
         line = line.rstrip("\n")
         if not line: continue
         if line.startswith("#"):
@@ -98,7 +98,7 @@ def locate(game, wanted):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--game", required=True); ap.add_argument("--manifest", required=True); ap.add_argument("--out", required=True)
+    ap.add_argument("--game", required=True); ap.add_argument("--manifest", required=True, help="a manifest, plain or .gz"); ap.add_argument("--out", required=True)
     ap.add_argument("--sdk", default="macosx"); ap.add_argument("--no-fill", action="store_true")
     ap.add_argument("--tool", default=os.path.join(ROOT, "VXRuntime", "build", "vxrt-shader-manifest"))
     a = ap.parse_args()
@@ -113,6 +113,10 @@ def main():
     for o, _, _ in where.values(): by[o] = by.get(o, 0) + 1
     for o, n in sorted(by.items()): print("  %5d from %s" % (n, o))
     dx = os.path.join(a.out, "dxbc"); os.makedirs(dx, exist_ok=True)
+    if a.manifest.endswith(".gz"):  # the translator tool reads a plain file
+        plain = os.path.join(a.out, "manifest.tsv")
+        with gzip.open(a.manifest, "rb") as fi, open(plain, "wb") as fo: fo.write(fi.read())
+        a.manifest = plain
     for sha, code in found.items():
         with open(os.path.join(dx, sha + ".dxbc"), "wb") as f: f.write(code)
     for sub in ("pending",): os.makedirs(os.path.join(a.out, sub), exist_ok=True)
