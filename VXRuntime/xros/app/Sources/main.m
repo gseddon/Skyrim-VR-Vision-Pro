@@ -174,6 +174,15 @@ static void va_range_make(void) {
     jlog("va_range_extended", "\"range\":\"%s\"", v);
 }
 
+// The log tee (-console): reads what the runtime writes to stdout/stderr, writes it to Documents/vxrt.log and to the
+// launch's own stderr.
+static int g_tee[3];   // pipe read end, the file, the launch's stderr
+static void *tee_thread(void *arg) {
+    char buf[4096]; ssize_t n;
+    while ((n = read(g_tee[0], buf, sizeof buf)) > 0) { write(g_tee[1], buf, (size_t)n); write(g_tee[2], buf, (size_t)n); }
+    return NULL;
+}
+
 // Before anything else maps memory (a constructor, before main): the modules' arena, then what the address space and
 // the memory limit look like. (On the Mac the runtime starts itself again until the arena is free; an app cannot.)
 __attribute__((constructor)) static void early(void) {
@@ -186,9 +195,21 @@ __attribute__((constructor)) static void early(void) {
     g_log = open(p, O_WRONLY | O_CREAT | O_APPEND, 0644);
     snprintf(p, sizeof p, "%s/vxrt.log", g_docs);
     int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd >= 0) { dup2(fd, 2); dup2(fd, 1); close(fd); }
-    setvbuf(stdout, NULL, _IOLBF, 0);
     int argc = *_NSGetArgc(); char **argv = *_NSGetArgv();
+    // -console (or VXRT_LOG_TEE=1): the runtime's log also goes to the launch's own stderr, so that
+    // `xcrun devicectl device process launch --console ... -console` (or simctl launch --console-pty) streams it.
+    // Documents/vxrt.log is written either way. A pipe and a thread copy the log; off by default (no change).
+    int tee = getenv("VXRT_LOG_TEE") && !strcmp(getenv("VXRT_LOG_TEE"), "1");
+    for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "-console")) tee = 1;
+    int console = tee ? dup(2) : -1, pfd[2] = { -1, -1 };
+    if (fd >= 0 && console >= 0 && !pipe(pfd)) {
+        g_tee[0] = pfd[0]; g_tee[1] = fd; g_tee[2] = console;
+        dup2(pfd[1], 2); dup2(pfd[1], 1); close(pfd[1]);
+        pthread_t th;
+        pthread_create(&th, NULL, tee_thread, NULL);
+        pthread_detach(th);
+    } else if (fd >= 0) { dup2(fd, 2); dup2(fd, 1); close(fd); }
+    setvbuf(stdout, NULL, _IOLBF, 0);
     for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "-test")) snprintf(g_test, sizeof g_test, "%s", argv[i + 1]);
     for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "-game")) { snprintf(g_test, sizeof g_test, "%s", argv[i + 1]); g_game = 1; }
     // -game skyrimvr -xrizer: use xrizer as the game's OpenVR (the XROS_XRIZER_GAME=1 build: the fixture's host, offscreen
