@@ -200,6 +200,62 @@ These come from the run logs, not from static analysis. Each line appears in a M
    - an owned CPU-cost benchmark (for reference, the WMA decoder costs about 0.12 s of CPU per 185 s track);
    - a live run, with output clips with and without effects saved privately so the user can listen.
 
+### 20. Renderer CPU improvements (estimated, not implemented)
+
+Estimates only: nothing here is built or timed. Subject: replay of `p1300.cap` on a Mac M4 Pro (not the game, not the headset). Raw counts and scripts are private (`/tmp/claude/perf/cpuest/`).
+
+**Method.**
+- **Time:** Time Profiler samples of frames 2000-3000 (`/tmp/claude/perf/idea1/tp_samples.xml`, with stacks), 1000 frames, attributed by caller.
+- **Counts:** an instrumented private copy of the replay counted Metal calls and Maps over 11 frames starting at 2401 (1534 draws/frame). Samples and counts come from different frames, so treat the per-call costs as +-20%.
+- **Per-call costs** are sample time divided by call counts (no micro-benchmark).
+
+**Live basis.** The profile's main thread has 6.27 s per 1000 frames. About 2.78 s of it is work the live game's D3D11 layer also does (`call_record` 2.39 s, `ctx_map` 0.31 s, flush and texture records 0.09 s), minus 0.23 s of `getenv` already fixed in `1b8aec5`. That leaves about **2.5 ms/frame of D3D11-layer CPU** on the M4 Pro. The rest is replay-only:
+- capture reads: `fread` 2.78 s;
+- `unmap_record` other than `ctx_map`, 0.53 s: two copies of capture data plus `free`, since the live game writes its constant buffers itself.
+
+On an M2 multiply every figure by about 1.3-1.6 (inferred from public single-core benchmarks, not measured).
+
+**What the layer already does.** `bind_buffer`/`bind_texture`/`bind_sampler` already skip a bind of the same object and offset, and the same holds for pipeline, depth-stencil, blend, raster and viewport state. Constant-buffer renames already come from 4 MB chunks in 256-byte slices (`take_slice`). So the Metal calls that remain are mostly real changes. Counts per frame:
+
+| Item | Count/frame | Skipped as same | Issued |
+|---|---|---|---|
+| Constant-buffer binds | 9884 | 64% | 34% offset-only, 1% new buffer |
+| Texture binds | 2534 | 69% | 31% |
+| Sampler binds | 2381 | 95% | 5% |
+| Vertex-buffer binds | 3069 | 51% | 49% |
+| Pipeline-state checks | 1534 | 90% | 10% |
+| Sizes `setBytes` (`uses_sizes`) | 2038 | none skipped | 96% byte-identical to the stage's previous one |
+| `bind_stage` calls | 2578 | | 17% issue no bind at all |
+| Constant-buffer Map(DISCARD) | 3707 | | all <= 4 KB, 52% <= 256 B, average 794 B, 2.94 MB/frame |
+
+There are no VB/IB/SRV discards, no read Maps and no texture Maps in this window. 3.6 buffer `UpdateSubresource` calls per frame, all constant buffers.
+
+**Where the time goes, ms/frame** (inclusive samples):
+- `draw_indexed` 2.23: `prepare` 1.08, `gpu11_draw` 0.55, `trace_draw` 0.23 (fixed), `render_pass` 0.19, `pipeline` 0.08. Inside `bind_stage` (0.69), 0.31 is its own loop work.
+- Metal's own set calls are cheap, about 10-15 ns each (all `set*` entry points together about 0.15). `drawIndexedPrimitives` is 0.47, mostly Metal's lazy state emit.
+- `objc_retain`/`objc_release`: 0.63 leaf in total. By caller: binding path 0.45, Map/rename 0.12, end-of-frame flush 0.04, the rest 0.02.
+- `_platform_memmove`: 0.59 leaf in total. Replay-only: `unmap_record` 0.23 and `fread` 0.22. Metal-internal state loads 0.05. The layer's own memmove is about 0.08 (`gpu11_draw` zero-initialising `gpu_ir_draw_info` 0.02, `pipeline` 0.015, `upload_texture` 0.014, `prepare` 0.013, `bind_stage` 0.011).
+
+| # | Candidate | Saving, ms/frame (low-high) | Method and evidence | Risks | Prerequisite and order |
+|---|---|---|---|---|---|
+| 1 | No ObjC retain/release on the hot path (`__unsafe_unretained` in binding tables, bind taking raw pointers) | **0.28-0.40** standalone. Map-side ARC (0.12) is counted in 3. | The binding path has 0.45 ms of retain/release samples: `bind_buffer` 0.18 (12 ns per call over 12.9 M calls/1000 frames), `bind_stage` 0.12, `prepare` 0.10, `view_texture` 0.02, others 0.03. Low = 62% removable, high = 90%. Calls that need an owner (Metal's own `set*` retains) stay. | Raw pointers need the object to outlive the encoder use, which the `CFBridgingRetain` on `d3d_*->mtl` already gives. Touches many call sites. | None. Do first (cheap, mechanical). |
+| 2 | Rebind only what changed (dirty bits per stage and slot) | **0.20-0.45** standalone; **0.10-0.25** after 1 | The Metal calls are already deduped, so the saving is the per-slot evaluation that finds "same": 11.9 k same-visits/frame (CB 6.3 k, texture 1.7 k, sampler 2.3 k, VB 1.6 k) at about 35 ns each before 1 and about 20 ns after it. Plus 2.0 k identical sizes `setBytes`/frame (0.03). A per-stage flag is not enough: only 17% of `bind_stage` calls are quiet, because a Map moves a constant buffer's offset on most draws. | `Set*` calls and `rename_buffer` must mark exactly the slots bound to the renamed buffer (a buffer-to-slot back-list). A missed mark is a stale bind, so build a debug mode that compares with the full path. Saves less in scenes with few repeated binds. | After 1 (they share `bind_stage`; take 2 at 1's reduced per-visit cost). |
+| 3 | Constant buffers: a ring without ObjC, mutex or autorelease; `setBytes` for small ones; fewer memmoves | **0.12-0.25** for the ring clean-up (includes the 0.02 draw-struct memset). The `setBytes` variant nets **-0.05 to +0.10**. | `ctx_map` is 0.31 ms (84 ns per Map) for 3.7 k Maps/frame. A ring already exists (`take_slice`), so "one ring with offsets" is mostly done. What remains is ObjC overhead around it: `[MTLBuffer contents]` autoreleases (0.07), `take_slice` mutex (0.04), `CFRelease`/`CFBridgingRetain` (0.03), `drop_slice` (0.01). Use the chunk's cached `base`, a lock-free bump pointer per device, and a refcount only on chunk change. `setBytes` would save the offset bind (3.4 k/frame at about 30 ns) but costs a 0.8 KB copy plus a `setBytes` at every change, per stage, and the Map still needs a shadow: all Maps are <= 4 KB, so it is eligible, but it nets about zero. **Layer memmove is small (0.08 ms live):** the rest of the profile's 0.59 ms is replay-only or Metal-internal, so "fewer memmoves" has nothing to find beyond the 0.02. | Slice reuse depends on the `dev->submitted`/`completed` sequence numbers; a lock-free scheme must keep the "draws recorded so far may read it" rule. `setBytes` conflicts with the worker design (5) unless the shadow is versioned. | Independent of 1-2. Do second or third. Skip the `setBytes` variant. |
+| 4 | Argument buffers / bindless | **-0.10 to +0.15** (not worth doing) | After 2 about 6 k Metal set calls remain per frame at 10-15 ns (0.07 ms), plus resource-list adds in `IOGPUResourceListAddResource`/`MTLResourceListAddResource` (0.13 ms), which `useResource` would replace, not remove. An argument buffer shifts work to us: writing GPU addresses and resource IDs per changed slot, and a `useResource` per resource per encoder. Some of `drawIndexedPrimitives`' state emit (0.34 ms) could shrink, but it is not separable from Metal's own cost. | The DXBC-to-MSL generator would have to emit argument structs (large change). Needs argument-buffer tier 2 for texture and sampler arrays: visionOS device vs simulator tier is unverified (query `argumentBuffersSupport`). Residency via `useResource`/heaps; lifetime of resources written into the buffer. | After 2; only if a headset measurement shows Metal-side bind cost far above this. |
+| 5 | Metal encoding on a worker thread | **0.9-1.4** standalone; **0.4-0.8** after 1-3 | Movable (draw path only): `bind_stage` 0.69 + `bind_texture`/`bind_sampler`/VB 0.14 + `gpu11_draw` 0.55 + `render_pass` 0.19 + set-state calls 0.04, about 1.6 ms. Stays on the game thread: `prepare` validation, view and `pipeline` lookup (about 0.25 ms) and every `Set*` and Map. Recording and hand-off per draw (a snapshot of changed slots, a retain of each changed object, an SPSC push) is estimated at 100-200 ns/draw = 0.15-0.30 ms/frame. Standalone = 70-90% of 1.6 moves, minus that. After 1-3 the movable part is about 1.0 ms. | Map(READ/RW) and `wait_gpu` must drain the worker (none here; a game with staging readbacks would stall). Queries and `GetData` likewise. Present and eye-frame submission must be ordered after the worker's last draw. Shared resources (cross-process, IOSurface) need a fence before handover. Slice and buffer recycling use `dev->submitted`, which would then count encoded, not recorded, draws. Clears, copies and dispatches must use the same queue or draw order breaks. Costs one more core (the headset also runs the game's threads; contention not measured). No total CPU saving, only critical-path. | Last, after 1-3: 2's dirty snapshot is what makes the hand-off cheap. Largest and riskiest. |
+
+**Overlap.**
+- 1 and 2 both cut `bind_stage`: 2 is counted at the per-visit cost left after 1, so add the "after 1" figure.
+- The rename-path ARC (0.12 ms) is counted only in 3.
+- 5's movable part shrinks as 1-3 land; its "after" figure accounts for that.
+- 4 is excluded from the totals.
+
+**Achievable total (non-overlapping), 1+2+3:** about **0.50-0.90 ms/frame**, 20-36% of the 2.5 ms live basis, i.e. about 0.65-1.4 ms on an M2. Adding 5: **0.9-1.7 ms/frame** (36-68%).
+
+**Recommended order:** 1, 3, 2, then decide on 5 from a headset measurement. The replay is not the limit at 1024^2 on the Mac, so these matter on the headset only if the M2's CPU turns out to be the bottleneck; that is not measured. The counts come from one 11-frame window, so a different scene would shift the binding numbers.
+
+**Not checked.** Per-call costs on the M2; the live game's Set*/Map call mix (the replay reproduces the call stream but not the game's own cost); the effect of fewer binds on Metal's draw-time state emit, which would add to 1 and 2.
+
 ---
 
 ## OK: verified in code
