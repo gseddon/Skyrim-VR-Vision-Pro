@@ -376,6 +376,41 @@ static void *memory_ticker(void *arg) {
 static UILabel *g_status;
 static void status(NSString *s) { dispatch_async(dispatch_get_main_queue(), ^{ g_status.text = s; }); }
 
+// <root>/mods.json (tools/mods.py on the Mac): what the Mac prepared. Logged once as a "mods" event in host_log.jsonl: which mods are
+// active (their files are in the overlay's Data/, the plugins in Plugins.txt) and which are not (SKSE ones, disabled ones). The runtime
+// applies nothing from this file: nothing toggles at run time. Only names made of [a-z0-9._-] are logged.
+static NSString *mods_safe(id v, NSUInteger max) {
+    if (![v isKindOfClass:NSString.class]) return @"";
+    NSMutableString *o = [NSMutableString string];
+    for (NSUInteger i = 0; i < [(NSString *)v length] && i < max; i++) {
+        unichar c = [(NSString *)v characterAtIndex:i];
+        [o appendFormat:@"%C", (unichar)(((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-') ? c : '?')];
+    }
+    return o;
+}
+static void log_mods(const char *root) {
+    char path[1500]; snprintf(path, sizeof path, "%s/mods.json", root);
+    NSData *d = [NSData dataWithContentsOfFile:@(path)];
+    if (!d) { jlog("mods", "\"present\":0"); return; }
+    id j = [NSJSONSerialization JSONObjectWithData:d options:0 error:NULL];
+    NSArray *mods = [j isKindOfClass:NSDictionary.class] ? j[@"mods"] : nil;
+    if (![mods isKindOfClass:NSArray.class] || ![j[@"version"] isEqual:@1]) { jlog("mods", "\"present\":1,\"valid\":0"); return; }
+    NSMutableArray *act = [NSMutableArray array], *inact = [NSMutableArray array];
+    for (id m in mods) {
+        if (![m isKindOfClass:NSDictionary.class]) continue;
+        NSString *i = mods_safe(m[@"id"], 40);
+        if (!i.length) continue;
+        [[m[@"active"] isEqual:@YES] ? act : inact addObject:i];
+    }
+    struct stat st; char pt[1500];
+    snprintf(pt, sizeof pt, "%s/drive_c/users/vxrt/AppData/Local/Skyrim VR/Plugins.txt", root);
+    int plugins_txt = !stat(pt, &st);
+    jlog("mods", "\"present\":1,\"valid\":1,\"profile\":\"%s\",\"active\":\"%s\",\"inactive\":\"%s\",\"plugins_txt\":%d,\"active_size_bytes\":%lld,\"scope\":\"read-only report of the Mac-prepared pack; nothing applied from this file\"",
+         mods_safe(j[@"profile"], 40).UTF8String, [[act componentsJoinedByString:@","] substringToIndex:MIN([[act componentsJoinedByString:@","] length], (NSUInteger)400)].UTF8String,
+         [[inact componentsJoinedByString:@","] substringToIndex:MIN([[inact componentsJoinedByString:@","] length], (NSUInteger)400)].UTF8String,
+         plugins_txt, [j[@"totals"] isKindOfClass:NSDictionary.class] ? [j[@"totals"][@"active_size_bytes"] longLongValue] : 0LL);
+}
+
 // -game cyberpunk: Cyberpunk 2077 from Documents/root (copied there once from the user's own install; NOSTEAM.md), as a
 // Windows PC without Steam: no Steam variables, no Steam registry keys (the runtime writes none without
 // VXRT_STEAM_BRIDGE), no steamclient anywhere; steam_api finds no Steam and the engine goes on. The game's writes go to
@@ -409,6 +444,7 @@ static int skyrimvr_start(const char *root, char **exe_out, char ***argv_out, in
     setenv("VXRT_NO_WINE", "1", 0);
     snprintf(ov, sizeof ov, "%s:%s/overlay_skyrimvr", dir_game, root);
     setenv("VXRT_OVERLAY", ov, 0);
+    log_mods(root);
     snprintf(dir, sizeof dir, "%s/bundle/redist", NSBundle.mainBundle.resourcePath.fileSystemRepresentation);
     if (!stat(dir, &st)) setenv("VXRT_DLL_PATH", dir, 0);
     // The visionOS shader set embedded by the build (XROS_SHADER_SET; <key>.metallib files): read-only hits load from the

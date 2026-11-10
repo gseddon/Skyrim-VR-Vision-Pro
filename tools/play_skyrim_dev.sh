@@ -15,6 +15,7 @@
 #                                            (--xinput-repeat A@6-140/2:0.3) and an empty sIntroSequence (--overlay-ini
 #                                            Skyrim.ini:General:sIntroSequence=: a per-run copy in the overlay skips the logo video)
 #   tools/play_skyrim_dev.sh --mods-dir DIR  link DIR/Data's top-level entries (loose mod files, e.g. from tools/skyland_flatten.py) into the run's overlay
+#   tools/play_skyrim_dev.sh --mods-config P/mods.json  the same from a pack built by tools/mods.py (priority-merged tree, Plugins.txt, the list recorded)
 #   tools/play_skyrim_dev.sh --xrizer-debug  build and use xrizer unoptimised (default: release; debug cost ~0.6 ms a frame)
 #   tools/play_skyrim_dev.sh --trace-calls N log the first N calls per runtime function (default 0: off; tracing
 #                                            costs ~20% process CPU, measured 2026-11-10)
@@ -33,14 +34,14 @@ B=${SKYRIM_AOT_BASE:-/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/ter
 ASSETS=${SKYRIM_ASSET_ROOT:-/Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SkyrimVR}
 VRWEB=${STEAMVR_WIN64_DLLS:-/Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SteamVR/bin/vrwebhelper/win64}
 XRIZER_ENV_DIR=$R/third_party/xrizer; . "$XRIZER_ENV_DIR/rust-env.sh"; T=$XRIZER_RUST_ROOT
-SECONDS_LIMIT=3600; BUILD=1; RUN=1; MUTE=0; HUD=0; KEYSCRIPT=; TRACE_CALLS=0; HELGEN=0; XRIZER_PROFILE=release; MODS=
+SECONDS_LIMIT=3600; BUILD=1; RUN=1; MUTE=0; HUD=0; KEYSCRIPT=; TRACE_CALLS=0; HELGEN=0; XRIZER_PROFILE=release; MODS=; MODSCFG=
 while [ $# -gt 0 ]; do
   case $1 in
     --no-build) BUILD=0;; --build-only) RUN=0;; --mute) MUTE=1;; --hud) HUD=1;;
     --seconds) SECONDS_LIMIT=$2; shift;; --key-script) KEYSCRIPT=$2; shift;;
-    --trace-calls) TRACE_CALLS=$2; shift;; --helgen) HELGEN=1;; --mods-dir) MODS=$2; shift;; --xrizer-debug) XRIZER_PROFILE=debug;;
+    --trace-calls) TRACE_CALLS=$2; shift;; --helgen) HELGEN=1;; --mods-dir) MODS=$2; shift;; --mods-config) MODSCFG=$2; shift;; --xrizer-debug) XRIZER_PROFILE=debug;;
     --) shift; break;;
-    -h|--help) sed -n 2,22p "$0"; exit 0;;
+    -h|--help) sed -n 2,23p "$0"; exit 0;;
     *) echo "unknown option $1" >&2; exit 2;;
   esac; shift
 done
@@ -120,6 +121,7 @@ EXTRA="--trace-calls $TRACE_CALLS"
 [ $MUTE = 1 ] || EXTRA="$EXTRA --audio"
 [ $HUD = 1 ] && EXTRA="$EXTRA --hud"
 [ -n "$MODS" ] && EXTRA="$EXTRA --mods-dir $MODS"
+[ -n "$MODSCFG" ] && EXTRA="$EXTRA --mods-config $MODSCFG"
 [ $HELGEN = 1 ] && EXTRA="$EXTRA --xinput-repeat A@6-140/2:0.3 --overlay-ini Skyrim.ini:General:sIntroSequence="
 echo "output and evidence: $OUT"
 # shellcheck disable=SC2086

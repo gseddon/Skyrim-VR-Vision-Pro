@@ -262,6 +262,22 @@ def capture(args):
         # DIR/Data becomes a symlink inside this run's overlay Data, so the game finds it through the overlay; the install
         # is only read. DIR is private user data (git-ignored), never committed. No ESP/BSA handling: those need plugins.txt.
         mods = getattr(args, 'mods_dir', None)
+        mods_cfg = getattr(args, 'mods_config', None)
+        if mods_cfg:
+            # --mods-config PACK/mods.json (tools/mods.py): the pack's merged tree (priority resolved on the Mac) and its
+            # Plugins.txt are applied exactly like --mods-dir; the list (active or not, with reasons) is recorded.
+            if mods:
+                raise ValueError('--mods-config and --mods-dir are alternatives')
+            cfgp = Path(mods_cfg).resolve(strict=True); cfg = json.loads(cfgp.read_text())
+            if cfg.get('version') != 1 or not isinstance(cfg.get('mods'), list):
+                raise ValueError('--mods-config: expected a version 1 mods.json from tools/mods.py')
+            mroot = (cfgp.parent / cfg['merged']).resolve(strict=True)
+            if not mroot.is_relative_to(cfgp.parent.resolve()):
+                raise ValueError('--mods-config: merged tree must be inside the pack')
+            mods = str(mroot)
+            result.setdefault('diagnostic', {})['mods_config'] = dict(file=str(cfgp), profile=cfg.get('profile'), plugins=cfg.get('plugins'),
+                mods=[dict(id=m['id'], kind=m['kind'], enabled=m['enabled'], active=m['active'], size_bytes=m.get('size_bytes'), note=m.get('note')) for m in cfg['mods']],
+                scope='priority resolved by tools/mods.py when the pack was built; the runtime keeps one overlay layer')
         if mods:
             mdata = Path(mods).resolve(strict=True) / 'Data'
             if not mdata.is_dir():
@@ -516,6 +532,7 @@ def main():
     ap.add_argument('--audio-capture', metavar='FILE', help='diagnostic only: VXRT_XAUDIO2_CAPTURE, the XAudio2 mastering mix ("VXCA" header, float32) written to FILE; keep game audio private')
     ap.add_argument('--prefs-seed', metavar='DIR|none', help='a tree copied into the run\'s private root (drive_c/...) before start; default for --experimental-xrizer: tools/prefs_seed/<appid> when present; none: no seed')
     ap.add_argument('--saves-dir', metavar='DIR', help='link C:\\users\\vxrt\\Documents\\My Games\\Skyrim VR\\Saves of the run\'s private root to DIR (created if missing) so saves persist across runs')
+    ap.add_argument('--mods-config', metavar='PACK/mods.json', help='diagnostic: a mod pack built by tools/mods.py; its merged tree and Plugins.txt are applied like --mods-dir and its list is recorded in the result')
     ap.add_argument('--mods-dir', metavar='DIR', help='diagnostic: link each top-level entry of DIR/Data (a flattened loose-file mod tree) into the run\'s overlay Data; the install is not touched')
     ap.add_argument('--overlay-ini', action='append', metavar='FILE:SECTION:KEY=VALUE', help='diagnostic only, repeatable: set one ini key in a per-run copy of FILE (from the asset root) inside the run\'s overlay, e.g. Skyrim.ini:General:sIntroSequence= (empty value); the original is not touched')
     ap.add_argument('--dump-eyes', action='store_true', help='diagnostic only: the experimental dev host writes raw RGBA of the published eyes for frames 1, 2, 60, 300 and 600 under <out>/eyes')
