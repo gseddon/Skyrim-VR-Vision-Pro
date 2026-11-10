@@ -274,6 +274,16 @@ def capture(args):
                     raise ValueError(f'--mods-dir: Data/{ent.name} already exists in the install; refusing to shadow it')
                 (odata / ent.name).symlink_to(ent, target_is_directory=ent.is_dir())
                 linked[ent.name] = sum(1 for p in ent.rglob('*') if p.is_file()) if ent.is_dir() else 1
+            # Plugins.txt: the game opens C:\users\vxrt\AppData\Local\Skyrim VR\Plugins.txt (seen in a file trace). DIR/Plugins.txt if
+            # present, else one "*Name" line per .esp/.esm/.esl at the top of DIR/Data (SE-style: the star enables; the official
+            # masters are implicit). Official-master-only plugins are the caller's responsibility (tools/fomod_auto.py checks).
+            plug = [e.name for e in sorted(mdata.iterdir()) if e.is_file() and e.suffix.lower() in ('.esp', '.esm', '.esl')]
+            ptxt = Path(mods).resolve() / 'Plugins.txt'
+            if ptxt.is_file() or plug:
+                pdst = root / 'drive_c/users/vxrt/AppData/Local/Skyrim VR/Plugins.txt'
+                pdst.parent.mkdir(parents=True, exist_ok=True)
+                pdst.write_text(ptxt.read_text() if ptxt.is_file() else ''.join(f'*{n}\r\n' for n in plug), newline='')
+                result.setdefault('diagnostic', {})['plugins_txt'] = dict(path=str(pdst), plugins=plug, from_file=ptxt.is_file())
             result.setdefault('diagnostic', {})['mods_dir'] = dict(source=str(mdata), linked_entries=linked,
                 scope='loose files linked into the run overlay; install untouched; effect on the game unverified until a file trace shows the opens')
         # --overlay-ini FILE:SECTION:KEY=VALUE: a per-run copy of an ini of the asset tree (FILE is relative to --asset-root)

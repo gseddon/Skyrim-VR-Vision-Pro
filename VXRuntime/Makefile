@@ -1796,7 +1796,7 @@ runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d1
 	$(VXRT) build/lowmem.exe
 	$(VXRT) build/files.exe
 	$(VXRT) build/ini.exe
-	rm -rf build/ovtree build/ovshadow && mkdir -p build/ovtree/save && echo old > build/ovtree/save/old.sav && echo orig > build/ovtree/save/same.hl1
+	rm -rf build/ovtree build/ovshadow && mkdir -p build/ovtree/save && echo old > build/ovtree/save/old.sav && echo orig > build/ovtree/save/same.hl1 && mkdir -p build/ovshadow/mod/Textures/Landscape && echo dds > build/ovshadow/mod/Textures/Landscape/Dirt01.dds
 	VXRT_OVERLAY=$(CURDIR)/build/ovtree:$(CURDIR)/build/ovshadow $(VXRT) build/files.exe overlay 'Z:$(subst /,\,$(CURDIR))\build\ovtree'
 	test "$$(cat build/ovtree/save/same.hl1)" = orig && test ! -e build/ovtree/save/a.hl1
 	$(VXRT) build/dbfiles.exe
