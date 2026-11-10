@@ -531,4 +531,5 @@ int vxrt_present_vr(void) {
     for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "-present")) return strcmp(argv[i + 1], "flat") != 0;
     return 1;
 }
+int vxrt_default_launch(void) { return default_launch; }
 void vxrt_jlog(const char *event, const char *fields) { jlog(event, "%s", fields ? fields : ""); }
