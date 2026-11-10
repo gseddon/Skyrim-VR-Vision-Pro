@@ -281,7 +281,8 @@ Logs: `/tmp/claude/perf/compositor/run{A,B,C,D}/` (host_log.jsonl, vxrt.log); an
 * **Unverified:** the loading screen as the wearer sees it; the window change; motion-to-photon beyond the GPU-end proxy; foveation (another branch); a full play session.
 
 **Next steps (user requests, 2026-11-10):**
-* Expose the render scale (`VXRT_RENDER_SCALE`, default 0.7) as a user setting in the Klepton frontend settings when the Klepton settings UI is ported.
+* **New defaults (2026-11-10, branch `integrate`; both verified on the headset by the user the same day):** `VXRT_GATE` default `smart` (cart ride, smart vs one: 35.2 vs 29.1 fresh pairs/s, pair age 75.7 vs 72.1 ms, late 0; evidence `/tmp/claude/perf/smartgate/STATUS.md`, arm 3 vs arm 1; `VXRT_GATE=one|off` or `VXRT_PAIRS_IN_FLIGHT` set still select the older gates); `VXRT_RENDER_SCALE` default 0.55 with `VXRT_UPSCALE` default `metalfx` (the user judged the sharpness OK; evidence `/tmp/claude/perf/metalfx/STATUS.md`; `VXRT_UPSCALE=bilinear` restores the sampler). Not re-measured together as one configuration; the combination's pair age and a full play session remain unverified.
+* Render scale, upscaling and latency are user settings in the Klepton-style frontend (`plans/2026-11-10-klepton-frontend.md`): slider default 55%, Upscaling MetalFX/Bilinear, Latency Smart/Lower latency/Max throughput.
 * Expose hand visibility (`VXRT_SHOW_HANDS`, default hidden) in the same settings.
 
 Checks on the merged branch (compositor 3f347e6 plus codex/standalone-import): `make -C VXRuntime -j8 check` exit 0; `third_party/klepton_openxr/build-test.sh` exit 0; simulator fixture (`-test xrizer_xros_guest`, offscreen present): drawable max_delta 0 on both pairs, fresh 2 repeats 1, 49 AOT entries, 0 fallbacks. Confirmation run E (defaults: no markers, hands hidden) was launched on the headset; the user's verdict is not recorded here.

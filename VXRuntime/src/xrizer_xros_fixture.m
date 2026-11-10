@@ -207,12 +207,12 @@ int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],co
             vx_log("xrizer xros fixture: overscan %.2f per side (VXRT_OVERSCAN)",overscan);}
         float o=(vx_xros_immersive_enabled() && !immersive_mono) ? overscan : 0.f;
         for(unsigned i=0;i<8;i++)over_tan[i]=tangents[i]*(1.f+o);
-        /* VXRT_RENDER_SCALE (default 0.7, the user's choice, 2026-11-10; it was 0.8): the render size the game is asked for, as a fraction of the overscanned drawable size. Device run
+        /* VXRT_RENDER_SCALE (default 0.55 with MetalFX upscale, 2026-11-10; it was 0.7, before that 0.8): the render size the game is asked for, as a fraction of the overscanned drawable size. Device run
          * 11: the game drew at 2502x2374 per eye and the compositor was given a new pair only 17 times a second (presentation interval about
          * 60 ms, the game's submit ring at its bound 89% of the time): the GPU is the limit, and pixels are the lever. */
         static float scale=-1;
-        if(scale<0){const char *e=getenv("VXRT_RENDER_SCALE");char *end=NULL;float v=e&&*e?strtof(e,&end):0.7f;
-            scale=(e&&*e&&(!end||*end||v<0.3f||v>1.5f))?0.7f:v;
+        if(scale<0){const char *e=getenv("VXRT_RENDER_SCALE");char *end=NULL;float v=e&&*e?strtof(e,&end):0.55f;
+            scale=(e&&*e&&(!end||*end||v<0.3f||v>1.5f))?0.55f:v;
             vx_log("xrizer xros fixture: render scale %.2f (VXRT_RENDER_SCALE)",scale);}
         float sc=(vx_xros_immersive_enabled() && !immersive_mono) ? scale : 1.f;
         over_w=(uint32_t)((float)width*(1.f+o)*sc+.5f);over_h=(uint32_t)((float)height*(1.f+o)*sc+.5f);
