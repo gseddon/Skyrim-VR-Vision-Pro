@@ -258,6 +258,24 @@ def capture(args):
             link.symlink_to(target, target_is_directory=True)
             result.setdefault('diagnostic', {})['saves_dir'] = dict(link=str(link), target=str(target),
                 scope='persistent saves directory linked into the private root; contents are user data, not recorded')
+        # --mods-dir DIR: DIR/Data holds a flattened loose-file mod tree (textures, meshes, ...). Each top-level entry of
+        # DIR/Data becomes a symlink inside this run's overlay Data, so the game finds it through the overlay; the install
+        # is only read. DIR is private user data (git-ignored), never committed. No ESP/BSA handling: those need plugins.txt.
+        mods = getattr(args, 'mods_dir', None)
+        if mods:
+            mdata = Path(mods).resolve(strict=True) / 'Data'
+            if not mdata.is_dir():
+                raise ValueError('--mods-dir: expected DIR/Data')
+            odata = overlay / assets.relative_to(source) / 'Data'
+            odata.mkdir(parents=True, exist_ok=True)
+            linked = {}
+            for ent in sorted(mdata.iterdir()):
+                if (assets / 'Data' / ent.name).exists():
+                    raise ValueError(f'--mods-dir: Data/{ent.name} already exists in the install; refusing to shadow it')
+                (odata / ent.name).symlink_to(ent, target_is_directory=ent.is_dir())
+                linked[ent.name] = sum(1 for p in ent.rglob('*') if p.is_file()) if ent.is_dir() else 1
+            result.setdefault('diagnostic', {})['mods_dir'] = dict(source=str(mdata), linked_entries=linked,
+                scope='loose files linked into the run overlay; install untouched; effect on the game unverified until a file trace shows the opens')
         # --overlay-ini FILE:SECTION:KEY=VALUE: a per-run copy of an ini of the asset tree (FILE is relative to --asset-root)
         # inside this run's overlay with one key set; the original is only read. The game reads the copy through the overlay.
         for spec in getattr(args, 'overlay_ini', None) or []:
@@ -488,6 +506,7 @@ def main():
     ap.add_argument('--audio-capture', metavar='FILE', help='diagnostic only: VXRT_XAUDIO2_CAPTURE, the XAudio2 mastering mix ("VXCA" header, float32) written to FILE; keep game audio private')
     ap.add_argument('--prefs-seed', metavar='DIR|none', help='a tree copied into the run\'s private root (drive_c/...) before start; default for --experimental-xrizer: tools/prefs_seed/<appid> when present; none: no seed')
     ap.add_argument('--saves-dir', metavar='DIR', help='link C:\\users\\vxrt\\Documents\\My Games\\Skyrim VR\\Saves of the run\'s private root to DIR (created if missing) so saves persist across runs')
+    ap.add_argument('--mods-dir', metavar='DIR', help='diagnostic: link each top-level entry of DIR/Data (a flattened loose-file mod tree) into the run\'s overlay Data; the install is not touched')
     ap.add_argument('--overlay-ini', action='append', metavar='FILE:SECTION:KEY=VALUE', help='diagnostic only, repeatable: set one ini key in a per-run copy of FILE (from the asset root) inside the run\'s overlay, e.g. Skyrim.ini:General:sIntroSequence= (empty value); the original is not touched')
     ap.add_argument('--dump-eyes', action='store_true', help='diagnostic only: the experimental dev host writes raw RGBA of the published eyes for frames 1, 2, 60, 300 and 600 under <out>/eyes')
     ap.add_argument('--diag-env', action='append', metavar='NAME[=VALUE]', help='diagnostic only, repeatable: one of the renderer tracing knobs (%s)' % ', '.join(sorted(DIAG_ENV)))
