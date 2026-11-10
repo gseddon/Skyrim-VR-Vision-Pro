@@ -295,3 +295,49 @@ The BSA loads automatically because its name matches the ESP (`SkyUI_SE.esp`/`.b
 ### 8.5 Phasing of SkyUI (also in the combined plan)
 
 After the data layer (M0) and the SKSE core (M1/M2), before HIGGS: SkyUI needs no exe patches of its own, so it is the cheapest consumer of the SKSE bootstrap and the first end-to-end proof of Papyrus natives and Scaleform extension. Acceptance: Mac strict AOT, no `ERR_SKSE_*` box, MCM page opens and saves a setting to the overlay; the headset check is a human opening the menu with the Sense controllers and reading it.
+
+## 9. Skyland on the Mac: loose-file proof, A/B, full-install smoke (2026-11-11)
+
+Subject: actual game on the Mac development host (strict AOT, `--experimental-xrizer`, synthetic head, Helgen cart intro with the scripted pad, empty `sIntroSequence` through `--overlay-ini`), **not a headset**. Runtime built from this branch; AOT set `aot-fpcr-d5b2320`; shader cache a private clone of the 10,807-entry cache (no `pending/` appeared in any run, so no new shader was needed). Texture bytes are summed from `VXRT_TRACE_TEXTURES` lines (`Direct3D: texture WxH ... mips M format F`), BC block sizes from the DXGI format, all mips; the host is not paced by a display, so its frame rate is a throughput proxy and noisy. Logs: `build/mods-<label>/startup.log` in the worktree (git-ignored); runs list `/tmp/claude/perf/mods/runs.log`.
+
+### 9.1 Loose files override the BSAs with no ini change [measured]
+
+| Run | Mods | What the trace shows |
+| --- | --- | --- |
+| P0 | none | `GetFileAttributesEx(...\data\TEXTURES\): error 2`, same for `MESHES`: the game probes the loose directories at start and finds none |
+| P1 | one file, `Textures/Landscape/dirt01.dds` (from Skyland) | `data\TEXTURES\` found; `FindFirstFile` lists `Landscape\` and `dirt01.dds` (size 699192 = the mod's file); later `CreateFile(...\data\TEXTURES\Landscape\dirt01.dds): opened`. No `[Archive]` key was set |
+| S1 | full install (below) | 414 loose texture opens and 314 loose mesh opens, `Plugins.txt` opened, both ESPs opened (`fopen(...\DATA\Lit Road Signs.esp)`); the game also looked for `data/Lit Road Signs.ini`, i.e. it registered the plugin |
+
+So `--mods-dir` works for textures, meshes and ESPs, and `bInvalidateOlderFiles` / `sResourceDataDirsFinal` are not needed (the section 2 assumption holds for VR 1.4.15 on our runtime).
+
+### 9.2 A/B, tier 1 (Landscapes + Whiterun, 516 files, 661 MB), 150 s each, order A B B A
+
+| Run | Mod | Textures created | BC bytes | Other bytes | Total | Frames / s (proxy) | Fallbacks | Footprint max |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A1 | no | 2517 | 1467 MB | 686 MB | 2153 MB | 6001 in 141 s (42) | 0 | 6439 MB |
+| B1 | tier 1 | 2570 | 1478 MB | 690 MB | 2168 MB | 8274 in 142 s (58) | 0 | not captured |
+| B2 | tier 1 | 2568 | 1480 MB | 690 MB | 2169 MB | 8545 in 143 s (60) | 0 | not captured |
+| A2 | no | 2542 | 1489 MB | 682 MB | 2171 MB | 9871 in 144 s (69) | 0 | not captured |
+
+Reading: **texture memory created is the same with and without the mod (2153 to 2171 without, 2168 and 2169 with; the spread between the two identical no-mod runs is 18 MB)**, in this scene (Helgen forest, the part of the world the tier-1 files cover least). The frame-rate proxy ranges overlap (42 and 69 without, 58 and 60 with) and cannot show a difference; it is not a measure of the headset. Footprint: only A1 was captured correctly (6.3 to 6.4 GB; my sampler matched the Python wrapper in the other three runs: a sampler bug, fixed afterwards). A planned B3/A3 pair was refused by the harness (`user_not_playing`: another agent's `vxrt-d3d11-replay` was running), not overridden. No crash in any run (exit by the harness time limit).
+
+### 9.3 Full install smoke, S1 [measured]
+
+Install: `tools/fomod_auto.py` applied the FOMOD's own choices into `build/private/mods/skyland-aio-1k-full` (APFS clones; df before and after: 82.99 GB and 83.00 GB free). Rules: every option of a SelectAny group; the first (preselected) option of an exclusive group, which gives Tan Granite Mountains (4096x4096, the "default" variant), Skyking Galaxy night sky (4096x2048), Grey towns, Dirt Roads "No" and Snowy Stone Roads (the first options, no files), Blended Roads and the SMIM patch, all ten cities, forts, ruins, ships, tents, windows, road signs and lanterns, Dawnguard, Dragonborn and the road-sign add-ons except Point The Way (the FOMOD says it conflicts with Lit Road Signs). Plugins with official masters only: `Lit Road Signs.esp` and `Skyland Watercolor - Slow Green-Vanilla.esp` (the iNeed twin has the same size and records and is an alternative; the two RW2 ones are skipped). 34 LE-format NIFs removed and listed in `manifest.json` (not copied). Three tool logs in the download were not copied.
+
+| Item | Value |
+| --- | --- |
+| Files | 2057 (1917 DDS, 138 NIF, 2 ESP) |
+| Size | 2,632,276,741 bytes (2.45 GiB) |
+| `Plugins.txt` | `*Lit Road Signs.esp`, `*Skyland Watercolor - Slow Green-Vanilla.esp` (SE-style; the game reads `C:\users\vxrt\AppData\Local\Skyrim VR\Plugins.txt`, which the runtime maps to `<root>/drive_c/users/vxrt/AppData/Local/Skyrim VR/Plugins.txt`) |
+| Lite variant (no mountains, no night sky) | `skyland-aio-1k-full-lite`, 2049 files, 2,507,844,381 bytes |
+
+S1 (200 s, tracing every open, so slower than the A/B runs): textures created 2583, 2157 MB (BC 1468 MB), 14,684 frames in 191 s, **0 fallbacks, no crash**, no new shader (`pending/` absent), footprint rose to a **maximum of 6688 MB** against 6439 MB in A1 (single runs, and S1 ran 50 s longer with all-opens tracing: +250 MB is an upper estimate of the difference, not a measurement of it). The full install again created the same texture bytes (2157 MB), so the first look suggests the cost is not in the textures this scene loads; the 4096x4096 mountain textures only load where the mountains are in view.
+
+### 9.4 Eye crops (left eye, 1024x1024 raw RGBA dumped by the dev host)
+
+`/tmp/claude/perf/mods/crops/` (private game imagery, not committed): `compare_A2_f6600_NOMOD_vs_B1_f5850_MOD.png`, `compare_A1_f5550_NOMOD_vs_B1_f6000_MOD.png`, `compare_A2_f6300_NOMOD_vs_B2_f5700_MOD.png` (no mod on the left, tier 1 on the right, a magenta bar between, a 600x400 crop of the lower scene) and the whole left eyes `A*_f*_lefteye.png`, `B*_f*_lefteye.png`. The pairs were chosen as the frames with the smallest 128x128 pixel difference between runs, because the cart's position at a given frame number differs between runs (the best same-config pairs, A1/A2 and B1/B2, differ by 7 to 10 of 255 on average, the same as no-mod against mod, so a pixel difference cannot be attributed to the mod; the eye can judge the rocks and road). First look at A2/B1: the boulders and the wooden cart parts differ in grain and contrast; the scene is dark fog and an unquantified claim of "better" is not made here.
+
+### 9.5 Readiness for a headset try
+
+Ready for a first device copy of the full tree, with these cautions: (1) the device file system is case-sensitive, so the build must contain the `files.c` change of this branch (overlay names looked up case-insensitively); the test for it passes on a Mac but only the device exercises it; (2) the footprint margin on the headset was about 1 GB at a 7.2 GB peak, the Mac showed up to +250 MB with the full install: use the lite tree first if `available_mb` falls under 400; (3) HIGGS, PLANCK and SkyUI need SKSE VR, which the runtime cannot load yet, so they are not in this run. Nothing here says the look or the frame time are acceptable on the headset.
