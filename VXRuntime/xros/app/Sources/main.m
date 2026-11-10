@@ -191,6 +191,15 @@ __attribute__((constructor)) static void early(void) {
     int argc = *_NSGetArgc(); char **argv = *_NSGetArgv();
     for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "-test")) snprintf(g_test, sizeof g_test, "%s", argv[i + 1]);
     for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "-game")) { snprintf(g_test, sizeof g_test, "%s", argv[i + 1]); g_game = 1; }
+    // -game skyrimvr -xrizer: use xrizer as the game's OpenVR (the XROS_XRIZER_GAME=1 build: the fixture's host, offscreen
+    // pair shown side by side in the simulator's one view). Opt-in by that argument; in any other build, or without it,
+    // these variables are not set (and in a build without the fixture they would be inert).
+    if (g_game && !strcmp(g_test, "skyrimvr"))
+        for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "-xrizer")) {
+            setenv("VXRT_XRIZER_XROS_FIXTURE", "1", 0);
+            setenv("VXRT_XRIZER_XROS_OFFSCREEN", "1", 0);
+            setenv("VXRT_XRIZER_XROS_PRESENT", "1", 0);
+        }
     // Select the local input/presentation backend before Swift starts the immersive space.
     if (!strcmp(g_test, "native_vr_d3d11")) {
         setenv("VXRT_NATIVE_VR", "1", 1);
@@ -269,7 +278,7 @@ static void status(NSString *s) { dispatch_async(dispatch_get_main_queue(), ^{ g
 //   VXRT_SKYRIM_EXE  the exe (default <VXRT_SKYRIM_DIR>/SkyrimVR.exe)
 // As on the Mac harness (tools/vxrt_native_startup.py): no Steam variables, VXRT_NO_WINE, strict AOT (set by the caller),
 // the game's writes in <root>/overlay_skyrimvr, working folder the game folder. Nothing here sets up xrizer/OpenVR:
-// see the plan (the xrizer path is still compile-time XRIZER_XROS_FIXTURE only).
+// xrizer: only with -xrizer and the XROS_XRIZER_GAME=1 build (see main(), and the plan).
 static int skyrimvr_start(const char *root, char **exe_out, char ***argv_out, int *argc_out) {
     static char dir_game[1400], exe[1600], ov[3000], dir[1400];
     struct stat st;

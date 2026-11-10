@@ -55,12 +55,7 @@ python3 tools/skyrim_aot_pipeline.py --config tools/skyrim_aot_skyrimvr.json --t
 
 (Pass `--cache` explicitly: the default is under the current checkout's own `build/private`, which for a worktree is deleted with it.) Success looks like `status: built` in `$OUT/result.json` and `$OUT/game_fw/VXA_skyrimvr_exe_<hash>_p0.framework` ... `_p10`, plus six DLL frameworks, about 17 in all *(estimate: the Mac set has 11 exe parts + 6 DLL dylibs from the same compiler and `part_mb: 16`; the code is the same ARM64 but rebased, so the count should match)*.
 
-Then link the result into the app's library directory and build (also not now):
-
-```sh
-ln -sfn $OUT/game_fw $M/VXRuntime/build/xrsimulator/game_fw
-make -C VXRuntime XROS_SDK=xrsimulator XROS_CODE_SIGNING=NO xros-app      # embeds and ad-hoc signs every VXA_*.framework
-```
+The app build step (superseded by the final command list at the end of this file, which uses `XROS_XRIZER_GAME=1`) links `game_fw` into the build dir and runs `xros-app`; `embed_aot_frameworks.sh` signs each framework (ad hoc with `XROS_CODE_SIGNING=NO`).
 
 - **Disk** *(estimate)*: cache 370 MB (the Mac set is 369 MB; same code size), `game_fw` hard links 0 MB extra, app bundle +370 MB, simulator install another copy. The pipeline's per-module `.s` text for the exe (32,163,430 ARM64 words, from the Mac log) is transient and deleted per module; I did not measure its size (expect on the order of 1 GB or more of free space during the exe module).
 - **Time** *(estimate)*: the Mac run (aot-pipeline5, jobs 10, all 7 modules) took about 17 s end to end from log and cache timestamps (exe: `vxrt-aot gen` 5.43 s, module done after ~11 s). Expect 20 to 60 s for xrsimulator (same assembler work through `xcrun`); the signing of ~17 frameworks and `xcodebuild` time are not estimated. A concurrent measurement will slow it, which is why it waits.
@@ -73,7 +68,9 @@ make -C VXRuntime XROS_SDK=xrsimulator XROS_CODE_SIGNING=NO xros-app      # embe
 - [x] (drafted, uncompiled, unrun) `-game skyrimvr` in `main.m` `game_start` -> `skyrimvr_start`: only with that argument; `VXRT_SKYRIM_DIR` (default `<root>/SkyrimVR`), `VXRT_SKYRIM_EXE` (default `<dir>/SkyrimVR.exe`; must be the prepared exe, sha `8daf0519...`, because module names carry a hash of the file), cwd the game folder, Steam variables cleared, `VXRT_NO_WINE=1`, `VXRT_OVERLAY=<dir>:<root>/overlay_skyrimvr`, `VXRT_DLL_PATH=bundle/redist` when present (msvcp140, d3dx9_42, X3DAudio1_7 must be in the game folder or there).
 - [x] (drafted, uncompiled, unrun) Configurable root: `VXRT_GAME_ROOT` overrides `<Documents>/root` for every game; unset = unchanged. Info.plist/launch-argument forms are left for AVP Play Prerequisite 3.
 - [ ] Review the draft with a compile (the first build): `main.m` and `d3d11.m` have never been compiled.
-- [ ] xrizer outside fixture mode (**not started; larger than a minimal change, so only described**). The path is compile-time `XRIZER_XROS_FIXTURE` / `VXRT_XRIZER_XROS_FIXTURE` in four places: `loader.c` (~24-28 includes, ~1663-1688 registers xrizer's OpenVR exports as `openvr_api.dll` only for the fixture, after `vx_xros_fixture_wait_ready()`), `native_vr_present.m` (4 `#ifdef` blocks), `VXImmersive.swift` (7 `#if`, lines 27-335) and the Makefile (fixture flags: bundle id, `-force_load` of `libvxrt.a`, `libaot.a`, `libklepton.a`, `libxrizer.a`, only for `XROS_SDK=xrsimulator` and `XROS_CODE_SIGNING=NO`, with `XROS_AOT_OUTPUT_ROOT` scratch). Needed: (a) a runtime opt-in (an env/launch flag, e.g. `VXRT_XRIZER_XROS=1`) instead of the compile-time fixture switch in `loader.c`, still failing closed when compositor geometry is unavailable; (b) the fixture-only audit exports stay fixture-only; (c) the Swift side feeds the real compositor surface/pose for a non-fixture game; (d) a Makefile variable that adds the xrizer/klepton static libs and `-licucore -lz` to the normal app without the fixture bundle and without replacing `xros-aot-tests`' bundle, so `libaot.a` plus `game_fw` both link. Decide whether the fixture and the game share one app build before writing it.
+- [x] (drafted, uncompiled, unrun) xrizer for `-game skyrimvr`, reusing the fixture's path, about 30 changed lines and no xrizer source change. The fixture was already runtime-selected by env (`VXRT_XRIZER_XROS_FIXTURE=1`, `_OFFSCREEN=1`, `_PRESENT=1`: `loader.c` registers xrizer's OpenVR exports as `openvr_api.dll` and waits for the compositor, `VXImmersive.swift` offers head/optics and shows the acquired pair side by side in the simulator's one view), so only two pieces were needed: (a) `XROS_XRIZER_GAME=1` in the Makefile: implies the fixture build (same `libxrizer.a`/`libklepton.a` link, same sources, dir `build/xrsimulator-xrizer-fixture`, bundle id `...XrizerGame`), builds no fixture guest, and `xros-aot-tests` only makes the registry (arena) and an empty `libaot.a`; the game's frameworks come from `$(XROS_DIR)/game_fw`; (b) `main.m`: with `-game skyrimvr -xrizer` it sets those three variables before Swift starts. Without `-xrizer`, or in any other build, they are not set (and are inert without the fixture build). The default app, `-game cyberpunk` and the existing fixture build (`XROS_XRIZER_FIXTURE=1`) are unchanged (`make -n` shows the same recipes). No Mac file was edited: `loader.c`, `native_vr_present.m` and `VXImmersive.swift` are untouched, and the Mac build never sets `VXRT_XRIZER_XROS_FIXTURE`.
+  - Not verified (nothing compiled or run): that the fixture's host takes a real game's `Submit` through `xrizer_guest_d3d.m` (the fixture guest is a tiny D3D11 program); that `wait_ready` (30 s, needs ARKit tracking or 45 frames) is met before Skyrim's `VR_Init`; that the pinned `owned-apple-test` xrizer build supports Skyrim's OpenVR interface versions as on the Mac dev host; head only, hands reported disconnected (no controllers: Skyrim may sit at "Press Any Button"); the side-by-side view is an inspection layout, not stereo.
+  - This is the simulator only (the Makefile errors on any other SDK). A device build of this path is a separate task.
 - [ ] BC texture decoder: **removed from scope** (user decision 2026-11-10). The simulator refuses BC textures explicitly (`BC_REFUSED`); the headset has native BC.
 - [ ] GCKeyboard to input host v3: `xros_ui.m` already turns GCKeyboard keys into WM_KEYDOWN/WM_CHAR; Skyrim VR reads controllers through OpenVR, so route keyboard/pad state into the input host v3 as scripted controller input for the simulator (the Mac used `VXRT_XINPUT_SCRIPT`; it needs a simulator-side equivalent to get past "Press Any Button").
 - [ ] Copy game data into the simulator container (`xcrun simctl get_app_container <udid> <bundle id> data`, `Documents/root/...`): `Data/`, `.ini` files, media. Never from the Steam install in place; use a private copy, keep it out of git.
@@ -103,16 +100,21 @@ cd <this worktree>
 # 1. modules (about a minute, estimate)
 python3 tools/skyrim_aot_pipeline.py --config tools/skyrim_aot_skyrimvr.json --target xrsimulator --dry-run --out $OUT
 python3 tools/skyrim_aot_pipeline.py --config tools/skyrim_aot_skyrimvr.json --target xrsimulator --build --out $OUT --cache $CACHE
-# 2. app (embeds game_fw; ad-hoc signed)
-mkdir -p VXRuntime/build/xrsimulator && ln -sfn $OUT/game_fw VXRuntime/build/xrsimulator/game_fw
-make -C VXRuntime XROS_SDK=xrsimulator xros-lib
-make -C VXRuntime XROS_SDK=xrsimulator XROS_CODE_SIGNING=NO xros-app
-# 3. the game folder in the simulator container (private copy; prepared exe, never the Steam install in place)
-xcrun simctl boot <udid>; xcrun simctl install <udid> VXRuntime/build/xrsimulator/derived/Build/Products/Debug-xrsimulator/VXRuntimeHost.app
-D=$(xcrun simctl get_app_container <udid> marimokodai.VXRuntimeHost data)/Documents/root/SkyrimVR
+# 2. xrizer static libs for xrsimulator (once; xros-lib runs this too). Output: $M/build/xros-host-static/latest/{libxrizer.a,libklepton.a}
+#    in THIS checkout's build/ (the app's link line reads ../build/xros-host-static/latest). Needs the repository-local Rust toolchain
+#    with the aarch64-apple-visionos-sim target (unverified that it is installed there); offline, locked.
+export XRIZER_RUST_ROOT=/Users/gseddon/git/VeRantyx/build/toolchains/xrizer-rust
+make -C VXRuntime XROS_SDK=xrsimulator XROS_XRIZER_GAME=1 xros-xrizer-static-probe
+# 3. app (embeds game_fw; ad-hoc signed; unsigned simulator build only). Build dir: VXRuntime/build/xrsimulator-xrizer-fixture
+mkdir -p VXRuntime/build/xrsimulator-xrizer-fixture && ln -sfn $OUT/game_fw VXRuntime/build/xrsimulator-xrizer-fixture/game_fw
+make -C VXRuntime XROS_SDK=xrsimulator XROS_XRIZER_GAME=1 XROS_CODE_SIGNING=NO xros-app
+#    (the plain default app stays: make -C VXRuntime XROS_SDK=xrsimulator xros-app, unchanged)
+# 4. the game folder in the simulator container (private copy; prepared exe, never the Steam install in place)
+xcrun simctl boot <udid>; xcrun simctl install <udid> VXRuntime/build/xrsimulator-xrizer-fixture/derived/Build/Products/Debug-xrsimulator/VXRuntimeHost.app
+D=$(xcrun simctl get_app_container <udid> marimokodai.VXRuntimeHost.XrizerGame data)/Documents/root/SkyrimVR
 mkdir -p "$D"   # then copy: Data/ (or only what start-up reads), *.ini, the six DLLs, prepared/SkyrimVR.exe (sha 8daf0519...)
-# 4. run, start-up only
-SIMCTL_CHILD_VXRT_AOT_STRICT=1 xcrun simctl launch --console-pty <udid> marimokodai.VXRuntimeHost -game skyrimvr
+# 5. run, start-up only
+SIMCTL_CHILD_VXRT_AOT_STRICT=1 xcrun simctl launch --console-pty <udid> marimokodai.VXRuntimeHost.XrizerGame -game skyrimvr -xrizer
 grep -E 'reserved|aot:.*(opened|image at)|fallbacks to the translator|BC_REFUSED|Direct3D|VR_Init' $D/../../vxrt.log
 ```
-The app target, bundle id and simulator app path above come from the Makefile and `project.yml` as read, and the `xros-app` target also runs `xros-aot-tests` (the test programs' modules); both are unverified until run. Until the xrizer plumbing exists, criterion 6 cannot be met.
+The app target, bundle id and simulator app path above come from the Makefile and `project.yml` as read, and the `xros-app` target also runs `xros-aot-tests` (the test programs' modules); both are unverified until run. Criterion 6 depends on the `XROS_XRIZER_GAME=1` build below (drafted, unverified).
