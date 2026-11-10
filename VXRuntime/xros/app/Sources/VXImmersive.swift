@@ -43,6 +43,10 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         }
         let r = VXImmersiveRenderer(layerRenderer, q)
         Task {
+            // The accessory session start (ARKit run with the Sense controllers, which can wait on a permission prompt)
+            // must never hold the compositor loop back: the loader waits for the loop's first geometry (30 s), so the
+            // adapter is started beside the loop, after it. (Device run 1: awaited before the loop, no frame ever ran.)
+            var startAdapter: VXNativeXRTracking?
             if WorldTrackingProvider.isSupported {
                 var handsAllowed = false
                 if HandTrackingProvider.isSupported && vx_xros_native_enabled() != 0 {
@@ -73,7 +77,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                             let adapter = VXNativeXRTracking(session: r.arSession, world: r.worldTracking,
                                 hands: r.nativeInput.handTrackingEnabled ? r.nativeInput.hands : nil, gate: r.trackingGate)
                             r.nativeXRTracking = adapter
-                            await adapter.start()
+                            startAdapter = adapter
                         } else {
                             vxrt_jlog("vr_error", "\"what\":\"spatial clock calibration failed\"")
                         }
@@ -84,6 +88,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
             thread.name = "VX compositor"
             thread.qualityOfService = .userInteractive
             thread.start()
+            if let adapter = startAdapter { Task { await adapter.start() } }
         }
     }
 
