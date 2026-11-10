@@ -17,6 +17,13 @@ int vx_xros_immersive_stats(char *buf, uint32_t len);
 /* Mean age (seconds) of the fresh pairs shown: presentation time minus the pose time the game rendered for. */
 double vx_xros_immersive_age_ema(void);
 int vx_xros_fixture_start(void *device, void *queue);
+/* Per-frame timing record (native_vr_present.m): sample (offer) time, game submit time, and the drain of the shown pairs. */
+void vx_xros_timing_offer(uint64_t id, double predicted_display);
+void vx_xros_timing_submit(uint64_t id);
+int vx_xros_timing_submitted(void);
+int vx_xros_load_stage(void);
+int vx_xros_gate_json(char *buf, uint32_t len);
+int vx_xros_timing_drain(char *buf, uint32_t len, double epoch, int stats, unsigned max_pairs, unsigned *left);
 /* Drawables supply their actual optical transforms and tangents; prediction is
  * in the verified compositor/Mach seconds epoch. A null head is identity and
  * untracked. Tracked bits require the caller's observed device anchor. */

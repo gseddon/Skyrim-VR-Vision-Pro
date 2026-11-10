@@ -145,6 +145,20 @@ static inline void vx_eye_ring_drain(vx_eye_ring *r) {
     if (!r) return;
     pthread_mutex_lock(&r->lock); while (r->inflight) pthread_cond_wait(&r->cv, &r->lock); pthread_mutex_unlock(&r->lock);
 }
+/* Block until fewer than `limit` pairs are in flight (submitted by the game, its GPU work and the copy not yet complete), at most `timeout_ms`.
+ * Returns the milliseconds waited (0 when nothing had to be). Used to start the game's next frame only when its pose will be fresh when
+ * the GPU gets to it: with a GPU-bound game and two frames queued, a pose was about two frame times old by the time it was drawn. */
+static inline double vx_eye_ring_wait_below(vx_eye_ring *r, unsigned limit, unsigned timeout_ms) {
+    if (!r || !limit) return 0;
+    struct timespec t0, until; clock_gettime(CLOCK_REALTIME, &t0); until = t0;
+    until.tv_sec += timeout_ms / 1000; until.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
+    if (until.tv_nsec >= 1000000000L) { ++until.tv_sec; until.tv_nsec -= 1000000000L; }
+    pthread_mutex_lock(&r->lock);
+    while (r->inflight >= limit) if (pthread_cond_timedwait(&r->cv, &r->lock, &until)) break;
+    pthread_mutex_unlock(&r->lock);
+    struct timespec t1; clock_gettime(CLOCK_REALTIME, &t1);
+    return (double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+}
 static inline unsigned vx_eye_ring_inflight(vx_eye_ring *r) {
     if (!r) return 0;
     pthread_mutex_lock(&r->lock); unsigned n = r->inflight; pthread_mutex_unlock(&r->lock); return n;
