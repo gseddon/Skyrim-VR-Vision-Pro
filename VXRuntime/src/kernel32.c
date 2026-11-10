@@ -136,6 +136,7 @@ static WINAPI void ExitProcess(DWORD code) {
         vx_log("ExitProcess(%u) from %s+%#llx", code, m ? m->name : "?", m ? (unsigned long long)((uint8_t *)VX_RETURN_ADDRESS() - m->base) : 0ull);
     }
     vx_profile_finish();
+    { void d3d11_capture_finish(void); d3d11_capture_finish(); }   // (VXRT_D3D11_CAPTURE: the end record, the file closed)
     vx_jobs_process_exit();
 #ifdef __aarch64__
     { void xa_report(void); xa_report(); }                       // (statically recompiled code: how much ran, src/arm64.c)
