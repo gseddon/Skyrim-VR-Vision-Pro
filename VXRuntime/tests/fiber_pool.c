@@ -32,7 +32,8 @@ static int queue_n;
 static void *home[FIBERS];
 static volatile LONG steps_done, wrong_current, migrations;
 static DWORD last_thread[FIBERS];
-static volatile LONG stop;
+static volatile LONG stop, started;
+static volatile LONG ran_here[THREADS + 1];     // (steps each worker has resumed a fiber for)
 static void WINAPI pool_body(void *param) {
     int i = (int)(INT_PTR)param;
     volatile double acc = i;                              // (a local that must survive switches and threads)
@@ -53,11 +54,22 @@ static DWORD WINAPI worker(void *arg) {
     CHECK(me != NULL);
     CHECK(SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST));   // (rewrote gs:0x20 on macOS)
     CHECK(gs_fiber() == me && gs_fiber_data() == (void *)0x5eed);
+    // Every worker is up before any takes a fiber: otherwise, on a loaded machine, the first one can run all the
+    // steps before the others are scheduled at all, and no fiber would ever change threads.
+    int slot = InterlockedIncrement(&started) - 1;
+    while (started < THREADS) Sleep(0);
     while (!stop) {
         void *f = NULL;
         EnterCriticalSection(&lock);
         if (queue_n) {
             int k = (GetCurrentThreadId() + queue_n) % queue_n;   // (not in order, so fibers change threads)
+            // Prefer a fiber that last ran on another thread, so that the hand-off does not depend on the OS
+            // scheduler: a fiber one worker parked is resumed by a different one.
+            for (int j = 0; j < queue_n; j++) {
+                int c = (k + j) % queue_n, o = 0;
+                for (int i = 0; i < FIBERS; i++) if (pool[i] == queue[c]) o = last_thread[i] != GetCurrentThreadId();
+                if (o) { k = c; break; }
+            }
             f = queue[k]; queue[k] = queue[--queue_n];
         }
         LeaveCriticalSection(&lock);
@@ -68,7 +80,11 @@ static DWORD WINAPI worker(void *arg) {
         EnterCriticalSection(&lock);
         queue[queue_n++] = f;                             // (once it has left: then it can be resumed elsewhere)
         LeaveCriticalSection(&lock);
-        if (steps_done >= STEPS) stop = 1;
+        ran_here[slot]++;
+        // (done once enough steps ran, and every worker took part, and a fiber has changed thread)
+        int all = 1;
+        for (int i = 0; i < THREADS; i++) if (!ran_here[i]) all = 0;
+        if (steps_done >= STEPS && all && migrations > 0) stop = 1;
     }
     CHECK(ConvertFiberToThread());
     return 0;
