@@ -410,6 +410,12 @@ build/smc.exe: tests/smc.c
 	@mkdir -p build
 	$(MINGW) -O1 -o $@ $<
 
+build/smc_data_threads.exe: tests/smc_data_threads.c
+	@mkdir -p build
+	$(MINGW) -O1 -static -o $@ $<
+
+tests: build/smc_data_threads.exe
+
 build/order.exe: tests/order.c
 	@mkdir -p build
 	$(MINGW) -O1 -o $@ $<
@@ -1645,6 +1651,7 @@ runtime-tests: export VXRT_NO_ACTIVATE = 1
 runtime-tests: $(VXRT) build/vxrt-npu tests
 	$(VXRT) build/hello_k32.exe
 	$(VXRT) build/smc.exe
+	n=0; while [ $$n -lt 40 ]; do $(VXRT) build/smc_data_threads.exe >/dev/null || exit 1; n=$$((n+1)); done
 	$(VXRT) build/order.exe
 	$(VXRT) build/hello_crt.exe one "two words"
 	$(VXRT) build/game_imports.exe
