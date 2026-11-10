@@ -460,7 +460,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                         }
                     }
                 }
-                if ok == 0 { clear(cb, color, depth) }
+                if ok != 0 { Self.shownGamePair = true } else { clear(cb, color, depth) }
             }
             captureOutput(cb, d)
             d.encodePresent(commandBuffer: cb)
@@ -528,7 +528,20 @@ final class VXImmersiveRenderer: @unchecked Sendable {
 
     // (no game frame yet: a mid grey-blue that pulses slowly, so the wearer can tell the app is alive, and a head-locked
     // light square in the middle of each eye. Depth far.)
+    nonisolated(unsafe) static var shownGamePair = false
     private func clear(_ cb: MTLCommandBuffer, _ color: MTLTexture, _ depth: MTLTexture) {
+        // Once a game pair has been shown the placeholder never comes back (a hitch, a stale pair, a swapchain change): black, at the
+        // finite depth. Before the first pair: the pulsing blue and the marker.
+        if Self.shownGamePair {
+            let hold = MTLRenderPassDescriptor()
+            hold.colorAttachments[0].texture = color; hold.colorAttachments[0].loadAction = .clear
+            hold.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1); hold.colorAttachments[0].storeAction = .store
+            hold.depthAttachment.texture = depth; hold.depthAttachment.loadAction = .clear; hold.depthAttachment.clearDepth = 0.05
+            hold.depthAttachment.storeAction = .store
+            cb.makeRenderCommandEncoder(descriptor: hold)?.endEncoding()
+            cleared += 1
+            return
+        }
         let pulse = 0.5 + 0.5 * sin(CACurrentMediaTime() * 2 * Double.pi / 3)
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = color

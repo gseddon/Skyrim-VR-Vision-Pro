@@ -66,7 +66,10 @@ int vx_xros_fixture_present_begin(double time) {
         g_imm.last_id=g_native_frame.pose.frame_id; ++g_imm.fresh; ++g_imm.i_fresh; g_imm.age_sum+=age;
         if(age>g_imm.age_max)g_imm.age_max=age;
     } else { ++g_imm.repeat; ++g_imm.i_repeat; if(age>g_imm.rep_age_max)g_imm.rep_age_max=age; }
-    return current;
+    /* A pair that is too old (a game hitch longer than a second) is counted stale but still shown, reprojected to the head: the last
+     * picture is better than the placeholder (the wearer saw the blue and pink screen flicker in between). Only an untracked pair is not drawn. */
+    (void)current;
+    return g_native_frame.pose.tracking_valid ? 1 : 0;
 }
 /* JSON fields for the host log: totals and this interval's counts (the interval restarts here). */
 int vx_xros_immersive_stats(char *buf, uint32_t len) {
@@ -131,12 +134,14 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
             [blit endEncoding];
             id<MTLBuffer> buf = probe[eye]; int e2 = eye; BOOL bgra = tex.pixelFormat == MTLPixelFormatBGRA8Unorm || tex.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB;
             NSUInteger w = tex.width, h = tex.height;
+            struct { float s[4], d[4]; } fr; memcpy(fr.s, g_native_frame.pose.frustum[eye], sizeof fr.s); memcpy(fr.d, tan, sizeof fr.d);
             [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
                 (void)done;
                 const uint8_t *b = buf.contents; unsigned sum[3] = {0,0,0}, mx = 0;
                 for (unsigned i = 0; i < 9; i++) { unsigned r = b[i*4 + (bgra ? 2 : 0)], g = b[i*4 + 1], bl = b[i*4 + (bgra ? 0 : 2)];
                     sum[0] += r; sum[1] += g; sum[2] += bl; if (r > mx) mx = r; if (g > mx) mx = g; if (bl > mx) mx = bl; }
-                vx_log("native VR pair probe: eye %d %lux%lu mean rgb %u %u %u of 255, brightest sample channel %u (9 points)", e2, (unsigned long)w, (unsigned long)h, sum[0]/9, sum[1]/9, sum[2]/9, mx);
+                vx_log("native VR pair probe: eye %d %lux%lu mean rgb %u %u %u of 255, brightest sample channel %u (9 points); game tan l/r/t/b %.4f %.4f %.4f %.4f, drawable tan %.4f %.4f %.4f %.4f", e2, (unsigned long)w, (unsigned long)h, sum[0]/9, sum[1]/9, sum[2]/9, mx,
+                       (double)fr.s[0], (double)fr.s[1], (double)fr.s[2], (double)fr.s[3], (double)fr.d[0], (double)fr.d[1], (double)fr.d[2], (double)fr.d[3]);
             }];
         }
     }
