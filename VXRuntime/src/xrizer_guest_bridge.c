@@ -273,7 +273,7 @@ static WINAPI matrix34 *fntable_transform(matrix34 *out, int eye) {
 // (TrackedDevicePose_t, 80 bytes on both sides: a 3x4 matrix, two vectors, eTrackingResult, bPoseIsValid, bDeviceIsConnected)
 static void note_poses(const char *what, int result, const void *render, uint32_t count) {
     static unsigned calls; calls++;
-    if (calls > 5 && calls % 900) return;
+    if (calls > 30 && calls % 900) return;
     const uint8_t *p = render ? VX_LOW(render) : NULL;
     int32_t tracking = 0; float m[12] = { 0 };
     if (p && count) { memcpy(m, p, sizeof m); memcpy(&tracking, p + 72, 4); }

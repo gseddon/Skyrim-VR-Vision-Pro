@@ -68,7 +68,9 @@ actor VXNativeXRTracking {
             return
         }
         for name in [NSNotification.Name.GCControllerDidConnect, .GCControllerDidDisconnect] {
-            let token = NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+            let token = NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [weak self] note in
+                let controller = note.object as? GCController
+                vxrt_jlog("xr_controllers", "\"what\":\"\(name.rawValue == NSNotification.Name.GCControllerDidConnect.rawValue ? "controller connected" : "controller disconnected")\",\"category\":\"\(controller?.productCategory ?? "?")\",\"name\":\"\(controller?.vendorName ?? "?")\",\"re_run\":\"queued\"")
                 Task { await self?.refresh() }
             }
             observers.append(token)
