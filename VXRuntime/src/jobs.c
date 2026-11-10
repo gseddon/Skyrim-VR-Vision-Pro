@@ -276,9 +276,11 @@ int vx_jobs_watchdog(void) {
 
 // This process is ending (ExitProcess, exit, an unhandled exception): as Windows closes its handles, its kill-on-close
 // jobs end their processes now. The jobs stay locked: nothing joins them any more.
+extern void vx_library_cache_finish(void);   // (d3d12.m: the shader library cache's summary line)
 void vx_jobs_process_exit(void) {
     static int once;
     if (__atomic_exchange_n(&once, 1, __ATOMIC_ACQ_REL)) return;
+    vx_library_cache_finish();
     int locked = 0;
     for (int i = 0; i < 100 && !(locked = !pthread_mutex_trylock(&g_jobs_lock)); i++) usleep(1000);
     if (!locked) return;                         // (held by a thread that stopped with it: the watchdog does this)

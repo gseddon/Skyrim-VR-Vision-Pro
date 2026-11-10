@@ -73,7 +73,9 @@ Roughly in order: measure first, then the likely big wins.
 6. **Game settings as a baseline.** Shadow resolution and distance, grass, decals, TAA, and SSAO/godrays in the ini files, through the seeded prefs (`tools/prefs_seed/`). It's cheap to sweep with the harness. Alternate the runs (A B B A).
 7. **No shader compile on the headset** (AVP Play plan milestone 2a). Cold compiles cost about 31 ms each, and 600+ shaders are seen in one session.
    - The headset would hitch badly with no warm OS cache.
-   - Bring back the parked metallib cache branch and add `xcrun -sdk xros metal` precompilation on the Mac.
+   - **Done on the Mac (2026-11-10, branch `worktree-agent-a691a5a18fa249fbc`):** the parked cache (`a9da0bc`) is merged and redesigned. It now lives in `VXRuntime/src/shader_cache.m`, shared by D3D11 and D3D12. The key is a hash of the translated MSL plus language version (fixed at Metal 3.1 for D3D11) plus math mode, so fast-math (`VXRT_D3D11_FAST_MATH=1`) and safe-math libraries never alias. The game never runs the offline compiler: a hit loads `<key>.metallib`, a miss compiles in process and writes the source to `<cache>/pending/<key>.metal` plus `.flags`. `tools/shadercache_fill.sh [DIR [SDK]]` compiles pending in parallel (SDK `macosx` by default; `xros` for the headset set, not run). Default cache for Mac dev play: `build/private/shadercache` (set by `tools/vxrt_native_startup.py`; `VXRT_SHADER_CACHE` overrides, `0` is off). A Skyrim boot has about 10800 distinct shaders (18975 requests): about 150 MB of libraries, about 80 s to fill on this Mac. `rm -rf build/private/shadercache` clears it.
+   - D3D11 now keeps one `MTLLibrary` per distinct source per process (`VXRT_D3D11_LIBRARY_REUSE=0` turns it off): 18975 requests became 10807 compiles or loads.
+   - Still to do for the headset: build the `xros` set from a Mac boot's pending sources, ship it as the read-only cache, and measure on the simulator and device.
    - Possibly add `MTLBinaryArchive` for PSOs later.
    - This fixes hitches, not the steady frame rate.
 8. **Copies on the present path.**
