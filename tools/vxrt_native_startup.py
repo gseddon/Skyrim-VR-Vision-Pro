@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-DIAG_ENV = {'VXRT_STATS', 'VXRT_TRACE_PASSES', 'VXRT_PASS_DUMP', 'VXRT_TRACE_DRAWS', 'VXRT_TRACE_TEXTURES', 'VXRT_TRACE_MAPS', 'VXRT_DUMP_SHADERS', 'VXRT_DRAW_SNAPSHOT', 'VXRT_TRACE_AUDIO', 'VXRT_XRIZER_DEV_DUMP_EVERY', 'VXRT_TRACE_CLEAR_STACK', 'VXRT_DIAG_RTTI_ARRAY', 'VXRT_DIAG_RTTI_ARRAY_WORDS', 'VXRT_TRACE_DRAW_STACK', 'VXRT_TRACE_INI'}
+DIAG_ENV = {'VXRT_STATS', 'VXRT_TRACE_WINDOWS', 'VXRT_TRACE_PASSES', 'VXRT_PASS_DUMP', 'VXRT_TRACE_DRAWS', 'VXRT_TRACE_TEXTURES', 'VXRT_TRACE_MAPS', 'VXRT_DUMP_SHADERS', 'VXRT_DRAW_SNAPSHOT', 'VXRT_TRACE_AUDIO', 'VXRT_XRIZER_DEV_DUMP_EVERY', 'VXRT_TRACE_CLEAR_STACK', 'VXRT_DIAG_RTTI_ARRAY', 'VXRT_DIAG_RTTI_ARRAY_WORDS', 'VXRT_TRACE_DRAW_STACK', 'VXRT_TRACE_INI'}
 import re
 import signal
 import struct
@@ -253,6 +253,12 @@ def capture(args):
                    VXRT_AOT_STRICT='1', VXRT_NO_WINE='1', VXRT_STEAM_BRIDGE='0', VXRT_MESSAGEBOX='auto',
                    VXRT_NO_ACTIVATE='1', VXRT_MUTE='1', VERANTYX_AUDIO='0', TMPDIR=str(temp),
                    VXRT_LOG_TIME='1', VXRT_TRACE_CALLS='3')
+        if getattr(args, 'audio', False):
+            env['VXRT_MUTE'] = '0'; env['VERANTYX_AUDIO'] = '1'
+            result.setdefault('diagnostic', {})['audio'] = 'unmuted: XAudio2/WASAPI output to the Mac default output device'
+        if getattr(args, 'hud', False):
+            env['MTL_HUD_ENABLED'] = '1'
+            result.setdefault('diagnostic', {})['metal_hud'] = 'MTL_HUD_ENABLED=1: Apple Metal Performance HUD on the Metal layers'
         env[sessions.MARKER] = str(out)               # marks this run's processes as harness-owned for other runs
         if dlls:
             env['VXRT_DLL_PATH'] = ':'.join(map(str, dlls))
@@ -426,6 +432,8 @@ def main():
     ap.add_argument('--xinput-script', default=None, metavar='SPEC', help='diagnostic only: VXRT_XINPUT_SCRIPT, a scripted virtual gamepad START_S:BUTTONS:HOLD_S[,...] (e.g. 40:A:0.3) with times from process start')
     ap.add_argument('--xinput-repeat', default=None, metavar='SPEC', help='diagnostic only: press a scripted-gamepad button repeatedly, BUTTONS@FROM_S-TO_S/EVERY_S[:HOLD_S] (e.g. A@30-120/3), merged with --xinput-script; the same virtual gamepad as --xinput-script')
     ap.add_argument('--stay-active', action='store_true', help='VXRT_STAY_ACTIVE=1: the game window stays the active window when the Mac moves on to another app (a game played in a headset is seldom frontmost; an inactive Skyrim pauses its world)')
+    ap.add_argument('--audio', action='store_true', help='unmute: VXRT_MUTE=0, the game\'s sound goes to the Mac\'s default output device (the harness mutes by default)')
+    ap.add_argument('--hud', action='store_true', help='diagnostic only: MTL_HUD_ENABLED=1, Apple\'s Metal Performance HUD')
     ap.add_argument('--aot-splits', default=None, metavar='FILE', help='diagnostic only: VXRT_AOT_SPLITS file the runtime writes with the x86 instructions whose ordered access crossed 16 bytes (input for vxrt-aot)')
     ap.add_argument('--d3d11-capture', default=None, metavar='FILE', help='diagnostic only: VXRT_D3D11_CAPTURE, record the Direct3D 11 calls for VXRuntime/build/vxrt-d3d11-replay into FILE (new, outside the repository)')
     ap.add_argument('--d3d11-capture-eye-frames', type=int, default=None, metavar='N', help='diagnostic only: with --d3d11-capture, stop the capture after the VR frame with id N')
