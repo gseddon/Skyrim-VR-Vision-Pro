@@ -65,7 +65,7 @@ final class VXSettings: ObservableObject {
     static let eyeHeightKey = "vxrt.stageEyeHeight"
 
     static let renderScaleRange = 0.5...1.0
-    static let renderScaleBuiltIn = 0.55
+    static let renderScaleBuiltIn = 0.65
     static let eyeHeightRange = 1.0...2.2
     static let eyeHeightBuiltIn = 1.6
     static let predictRange = 0.0...140.0
