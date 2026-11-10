@@ -495,7 +495,7 @@ static int g_booted;
     if (started) return;
     started = YES;
     CGSize s = self.view.bounds.size;
-    jlog("window", "\"w\":%.0f,\"h\":%.0f,\"scale\":%.1f", s.width, s.height, self.view.traitCollection.displayScale);
+    jlog("window", "\"w\":%.0f,\"h\":%.0f,\"scale\":%.1f,\"scene\":\"%s\",\"vc\":\"%p\"", s.width, s.height, self.view.traitCollection.displayScale, self.view.window.windowScene.session.persistentIdentifier.UTF8String ?: "none", (__bridge void *)self);
     vxrt_boot(self.view);
 }
 @end
