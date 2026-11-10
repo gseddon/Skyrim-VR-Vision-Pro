@@ -84,6 +84,8 @@ final class VXImmersiveRenderer: @unchecked Sendable {
             return
         }
         let prior = previous
+        VXLifecycle.spaceOpen = true   // a compositor layer exists: the space is open, whoever asked for it
+        VXImmersiveController.shared.setNeedsResume(false)
         let r = VXImmersiveRenderer(layerRenderer, q, previous: prior)
         previous = r
         if prior != nil {
@@ -257,6 +259,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                 layerRenderer.waitUntilRunning()
                 vxrt_jlog("vr_resume", "\"frames\":\(Self.frameCount)")
                 resumeFramesToLog = 12
+                VXImmersiveController.shared.setNeedsResume(false)   // the layer runs again: the Resume window has done its job
                 continue
             default:
                 autoreleasepool { frame() }
