@@ -439,6 +439,23 @@ void vx_thread_attach(void) {
     vx_thread_live(1);                                         // (OpenThread finds it by its ID from now on: sync.c)
 }
 
+// TlsFree and TlsAlloc: the slot's value is zero in every thread afterwards, as on Windows. (A program that frees an index and
+// is handed it again, or a thread-local index another module freed, reads NULL with TlsGetValue, not the old owner's pointer.)
+void vx_tls_clear_slot(unsigned i, unsigned minimum_available) {
+    pthread_mutex_lock(&g_tebs_lock);
+    for (int t = 0; t < g_teb_count; t++) {
+        void **v;
+        if (i < minimum_available) v = &((void **)(g_tebs[t] + TEB_TLS_SLOTS))[i];
+        else {
+            void **x = *(void ***)(g_tebs[t] + TEB_TLS_EXPANSION);
+            if (!x) continue;
+            v = &x[i - minimum_available];
+        }
+        *v = NULL;
+    }
+    pthread_mutex_unlock(&g_tebs_lock);
+}
+
 void vx_thread_detach(void) {
     uint8_t *teb = pthread_getspecific(g_teb_key);
     if (!teb) return;
