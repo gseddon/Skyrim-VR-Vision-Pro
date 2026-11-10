@@ -20,31 +20,15 @@ static void **g_gs_vtbl, **g_vs_vtbl, **g_ps_vtbl, **g_cs_vtbl, **g_uav_vtbl, **
 static int reads_target(const d3d_view *srv, const d3d_view *out, int depth);
 static void gpu11_release_mtl_object(void *object);
 
-// Compile options for every Direct3D 11 shader library: Metal's safe math, as d3d12.m and gpu_ir_metal.m use, so NaN,
-// infinity and signed zero behave as D3D's IEEE rules say (isnan, min/max with NaN, x/0). Default fast math may
-// assume they never occur. One retained object shared by all compiles. VXRT_D3D11_FAST_MATH=1 restores Metal's default.
-// The shader library cache key includes this math mode (see d3d11_library_options), so fast and safe libraries never alias.
-static MTLCompileOptions *d3d11_compile_options(void) {
-    static MTLCompileOptions *options;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        options = [MTLCompileOptions new];
-        const char *e = getenv("VXRT_D3D11_FAST_MATH");
-        if (e && *e == '1') return;
-        if (@available(macOS 15.0, *)) options.mathMode = MTLMathModeSafe;
-        else options.fastMathEnabled = NO;
-    });
-    return options;
-}
-// The options a library is really made with: d3d11_compile_options with the language version fixed to Metal 3.1, which
-// is what the offline compiler of the shader cache (d3d12.m, vx_library_cache_load) builds with, so a library made from
-// source and one loaded from the cache are the same program. The cache key includes the math mode of these options.
-static MTLCompileOptions *d3d11_library_options(void) {
-    static MTLCompileOptions *options;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ options = [d3d11_compile_options() copy]; options.languageVersion = MTLLanguageVersion3_1; });
-    return options;
-}
+// Compile options for every Direct3D 11 shader library (safe math unless VXRT_D3D11_FAST_MATH=1; the cache key includes
+// the math mode) and the ones a library is really made with (Metal 3.1): src/shader_cache.m, which the offline manifest
+// tool (tools/shader_manifest.m) links too, so it builds the same sources and keys.
+extern MTLCompileOptions *vx_d3d11_compile_options(void);
+extern MTLCompileOptions *vx_d3d11_library_options(void);
+extern NSString *vx_d3d11_dual_source(const char *msl);
+extern NSString *vx_d3d11_vs_kernel_source(const char *msl_kernel, const char *kinds);
+static MTLCompileOptions *d3d11_compile_options(void) { return vx_d3d11_compile_options(); }
+static MTLCompileOptions *d3d11_library_options(void) { return vx_d3d11_library_options(); }
 // Shader libraries come from the shader cache (d3d12.m; VXRT_SHADER_CACHE) when this source was compiled before and
 // the fill script compiled it (tools/shadercache_fill.sh), else from Metal's compiler, which keeps its own cache in the user's cache folder (but rotates it
 // at about 330 MB, shared by every program). The source is the translator's output, so its hash covers the DXBC and the
@@ -62,6 +46,33 @@ static int d3d11_library_reuse(void) {
     static int on = -1;
     if (on < 0) { const char *e = getenv("VXRT_D3D11_LIBRARY_REUSE"); on = !(e && *e == '0'); }
     return on;
+}
+// VXRT_SHADER_MANIFEST=<file>: every source that was not in the shader cache (a miss) is also appended there as one line of
+// a shader manifest, tab separated: DXBC sha-256, stage (ps vs gs cs), variant kind (base dual-source pass-through
+// vs-kernel), its parameters (vs-kernel: reg:kind of each input), the translator revision (dxbc.h) and the cache key the
+// runtime made of the source. tools/shader_manifest_build turns a manifest back into the same sources and keys from the
+// game's own files (VISIONOS_PORT.md, "Shaders from a manifest"). What a request is for is set by variant_log, which
+// every request passes just before the library layer; the miss is found on that same thread.
+static __thread struct { unsigned char sha[32]; int stage, set; char kind[24], params[600]; } g_vctx;
+static void manifest_miss(uint64_t key) {
+    static FILE *f; static int init; static pthread_mutex_t lk = PTHREAD_MUTEX_INITIALIZER;
+    static NSMutableSet *seen;
+    if (!g_vctx.set) return;
+    pthread_mutex_lock(&lk);
+    if (!init) {
+        init = 1; seen = [NSMutableSet set];
+        const char *p = getenv("VXRT_SHADER_MANIFEST");
+        if (p && *p && (f = fopen(p, "a")) && ftell(f) == 0)
+            fprintf(f, "# vxrt-shader-manifest 1\n# translator=%d\n# columns: dxbc-sha256 stage kind params translator cache-key\n", DXBC_TRANSLATOR_REV);
+    }
+    if (f && ![seen containsObject:@(key)]) {
+        [seen addObject:@(key)];
+        for (int i = 0; i < 32; i++) fprintf(f, "%02x", g_vctx.sha[i]);
+        fprintf(f, "\t%s\t%s\t%s\t%d\t%016llx\n", g_vctx.stage == 0 ? "ps" : g_vctx.stage == 1 ? "vs" : g_vctx.stage == 2 ? "gs" : "cs",
+                g_vctx.kind, g_vctx.params, DXBC_TRANSLATOR_REV, (unsigned long long)key);
+        fflush(f);
+    }
+    pthread_mutex_unlock(&lk);
 }
 static void d3d11_library_async(id<MTLDevice> dev, NSString *source, int sync, void (^done)(id<MTLLibrary>, NSError *)) {
     int reuse = d3d11_library_reuse();
@@ -99,6 +110,7 @@ static void d3d11_library_async(id<MTLDevice> dev, NSString *source, int sync, v
     uint64_t key = 0;
     id<MTLLibrary> cached = vx_library_cache_load(dev, source, options, &key);
     if (cached) { done(cached, nil); return; }
+    manifest_miss(key);
     uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     void (^finished)(id<MTLLibrary>, NSError *) = ^(id<MTLLibrary> lib, NSError *err) {
         if (lib && key) vx_library_cache_store(source, options, key, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0);
@@ -158,6 +170,8 @@ static pthread_mutex_t g_variant_lock = PTHREAD_MUTEX_INITIALIZER;
 // into it, for counting the variants per shader (tab separated: dxbc sha256, stage, kind, fnv-1a of the MSL, extra).
 static void variant_log(const d3d_shader *s, const char *kind, const char *msl, const char *extra) {
     static FILE *f; static int init; static pthread_mutex_t lk = PTHREAD_MUTEX_INITIALIZER;
+    memcpy(g_vctx.sha, s->sha, 32); g_vctx.stage = s->info.type; g_vctx.set = 1;
+    snprintf(g_vctx.kind, sizeof g_vctx.kind, "%s", kind); snprintf(g_vctx.params, sizeof g_vctx.params, "%s", extra ? extra : "");
     pthread_mutex_lock(&lk);
     if (!init) { init = 1; const char *p = getenv("VXRT_SHADER_VARIANT_LOG"); if (p && *p) f = fopen(p, "a"); }
     if (f) {
@@ -173,9 +187,8 @@ static id<MTLFunction> dual_source_function(d3d_device *dev, d3d_shader *s) {
     pthread_mutex_lock(&g_variant_lock);
     if (!s->dual_tried) {
         s->dual_tried = 1;
-        const char *msl = s->info.msl, *at = msl ? strstr(msl, " o1 [[color(1)]];") : NULL;
-        if (at) {
-            NSString *source = [NSString stringWithFormat:@"%.*s o1 [[color(0), index(1)]];%s", (int)(at - msl), msl, at + strlen(" o1 [[color(1)]];")];
+        NSString *source = vx_d3d11_dual_source(s->info.msl);
+        if (source) {
             NSError *err = nil;
             variant_log(s, "dual-source", source.UTF8String, "");
             id<MTLLibrary> lib = d3d11_library((__bridge id<MTLDevice>)dev->mtl, source, &err);
@@ -2450,20 +2463,14 @@ static id<MTLComputePipelineState> vs_kernel_pipeline(d3d_context *c, d3d_draw_s
     if (cached) return cached == [NSNull null] ? nil : cached;   // (failures are remembered too: no retry per draw)
     // Compute stage input converts formats only within a kind: the kernel's inputs are declared as the layout's
     // formats deliver them (signed or unsigned integers, or floats), as the IA would hand their bits over.
-    NSMutableString *source = [NSMutableString stringWithUTF8String:vs->info.msl_kernel ? vs->info.msl_kernel : ""];
+    NSMutableString *kinds = [NSMutableString string];   // (the manifest's parameter: "reg:kind,...")
     if (s->layout) for (uint32_t i = 0; i < s->layout->n; i++) {
         const layout_attr *a = &s->layout->attr[i];
-        int kind = format_kind(vertex_format(a->format, NULL));
-        const char *want = kind == 1 ? "int4" : kind == 2 ? "uint4" : "float4";
-        for (int k = 0; k < 3; k++) {
-            static const char *const types[3] = { "float4", "int4", "uint4" };
-            NSString *from = [NSString stringWithFormat:@"    %s v%u [[attribute(%u)]];", types[k], a->reg, a->reg];
-            NSString *to = [NSString stringWithFormat:@"    %s v%u [[attribute(%u)]];", want, a->reg, a->reg];
-            [source replaceOccurrencesOfString:from withString:to options:0 range:NSMakeRange(0, source.length)];
-        }
+        [kinds appendFormat:@"%s%u:%d", i ? "," : "", a->reg, format_kind(vertex_format(a->format, NULL))];
     }
+    NSString *source = vx_d3d11_vs_kernel_source(vs->info.msl_kernel, kinds.UTF8String);
     NSError *err = nil;
-    if (source.length) variant_log(vs, "vs-kernel", source.UTF8String, key.UTF8String);
+    if (source.length) variant_log(vs, "vs-kernel", source.UTF8String, kinds.UTF8String);
     id<MTLLibrary> lib = source.length ? d3d11_library((__bridge id<MTLDevice>)c->base.dev->mtl, source, &err) : nil;
     id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"vx_main"] : nil;
     id<MTLComputePipelineState> pso = nil;
