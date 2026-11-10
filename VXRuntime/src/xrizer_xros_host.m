@@ -67,10 +67,6 @@ static int upscale_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTex
 #endif
 
 #define EVENT_CAPACITY 16
-struct vx_xros_xrizer_host {
-    pthread_mutex_t lock;
-    vx_xros_xrizer_mode mode;
-    vx_xros_xrizer_platform platform;
 /* The colour space of an eye image the game submitted. Skyrim (and every D3D11 title that submits R8G8B8A8_UNORM as OpenVR Gamma/Auto)
  * holds gamma-encoded texels in a plain UNORM texture (third_party/xrizer/upstream/src/graphics_backends/metal.rs copies them as stored).
  * The headset drawable is BGRA8Unorm_sRGB, which encodes whatever the presenter writes: a UNORM image labelled linear was sampled raw
@@ -86,6 +82,10 @@ static vx_native_vr_color_space eye_color_space(MTLPixelFormat f) {
     return VX_NATIVE_VR_COLOR_LINEAR;
 }
 
+struct vx_xros_xrizer_host {
+    pthread_mutex_t lock;
+    vx_xros_xrizer_mode mode;
+    vx_xros_xrizer_platform platform;
     vx_xros_xrizer_static_api api;
     KlNativeMetalHost metal;
     KlNativeImageSyncHost sync;
