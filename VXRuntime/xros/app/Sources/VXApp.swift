@@ -42,6 +42,10 @@ struct VXRuntimeApp: App {
         // Klepton's scene conventions (visionos/Sources/KleptonApp.swift, Immersive.systemOverlays): the Home indicator and
         // hand-gesture affordance do not sit on top of the game's picture. A request, not a guarantee. VXRT_OVERLAYS=1 undoes it.
         .persistentSystemOverlays(ProcessInfo.processInfo.environment["VXRT_OVERLAYS"] == "1" ? .automatic : .hidden)
+        // The wearer's real hands and arms are not shown "punched through" the game's picture (the user's choice, 2026-11-10): the same
+        // scene modifier Klepton uses (KleptonApp.swift .upperLimbVisibility). VXRT_SHOW_HANDS=1 shows them; a Klepton frontend setting later
+        // (default: hidden).
+        .upperLimbVisibility(ProcessInfo.processInfo.environment["VXRT_SHOW_HANDS"] == "1" ? .visible : .hidden)
     }
 }
 
