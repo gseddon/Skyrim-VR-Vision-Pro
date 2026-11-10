@@ -43,7 +43,7 @@ We have **not** measured:
 
 The dev host reports 1024×1024 per eye. The real headset will recommend a much larger size, so expect several times the pixel cost.
 
-## Ideas to investigate (none started)
+## Ideas to investigate (see the second session results below for what was tried)
 
 Roughly in order: measure first, then the likely big wins.
 
@@ -85,6 +85,42 @@ Roughly in order: measure first, then the likely big wins.
    - Check how much the strict AOT code's flag and memory-ordering handling costs per frame (the earlier ordered-access work in the continuation plan is relevant).
    - A Rosetta run of the same scene would give a reference number. Label it a development reference.
 10. **Headset-specific factors.** Thermals, the chip (M2 or M5 Vision Pro), and the compositor's frame pacing and reprojection behaviour on visionOS. These are unknown until a device run, which needs its own authorization.
+
+## Second session results (2026-11-10)
+
+Evidence is private, under `/tmp/claude/perf/` (`idea1/`, `idea2/`, `splits/`, `ab/`, each with a `STATUS.md`). All Mac M4 Pro.
+
+**Idea 1, the bottleneck** (replay of `p1300.cap`, frames 2000-3000, unpaced):
+- About 147 eye pairs/s, with GPU about 5.7 ms/pair and renderer CPU about 3.5 ms/pair (inferred by subtracting the capture read).
+- The renderer is not the limit at 1024² on the Mac. At headset resolution on an M2, the GPU will be (inferred).
+- Stereo is one 2048×1024 side-by-side target, so idea 5 needs no vertex amplification.
+
+**Idea 2, tile traffic** (replay, frame 2401):
+- The 2048×1024 eye passes are 88% of GPU time, and the main scene pass alone is 50%.
+- Dropping all loads and stores (a bound only) would take 5.5 ms to about 4.5 ms.
+- Realistic rules save less than 0.1 ms each: full-overwrite loads 8% of traffic, wasted stores 3.7%, no-remap merge 2.7%.
+- No attachment qualifies for memoryless, because all of them have the SRV bind flag.
+- A full merge with colour-slot remap (about 20% of traffic) is untested.
+- **The replay is not deterministic:** two identical runs differ by up to 57 per channel. Not investigated.
+
+**Unaligned ordered-access signals** (actual game, 180 s, one run):
+- 623 k signals in a roughly 10 s load burst, then about 0.7/s.
+- 40 new addresses: 24 in the exe and 16 in `binkw64`, which has no split profile.
+- Candidate profiles are in `/tmp/claude/perf/splits/`. Not fed back yet.
+
+**A/B runs** (`ab/STATUS.md`):
+
+| Change | Result | Status |
+|---|---|---|
+| Call tracing off (`VXRT_TRACE_CALLS` was hard-coded to 3) | process CPU about 20% lower, pairs +2% (paced) | merged: play script default off, `--trace-calls N` |
+| getenv cache (`trace_draw` re-read it per draw) | no measurable change in replay | merged as a bug fix |
+| Clear-fold (`VXRT_D3D11_NO_CLEAR_FOLD`) | GPU busy about 10% lower, but replay wall time about 0.9 s per 600 frames slower (CPU) | not merged; branch `worktree-agent-a814e1bc84fd5f28d` (`f05ce8c`) |
+| Render scale 0.7 / + MetalFX spatial (`VXRT_METALFX=spatial`) | no change on the title screen, which is not pixel-bound; MetalFX adds about 0.9 ms | not merged; branch `worktree-agent-a2cc909b5445acafd` (`0fe740a`) |
+
+- All live A/B runs sat on "Press Any Button". A repeatable in-world scene, for example loading a save automatically, is needed before render scale, MetalFX or game CPU work can be judged.
+- visionOS 26.1 SDK: only `MTLFXSpatialScaler` is available. The temporal scaler, the denoised scaler and the frame interpolator are `API_UNAVAILABLE(visionos)`.
+
+The simulator start-up build is on branch `worktree-agent-ae7b8d9026697ef2b`; see `plans/2026-11-10-skyrim-simulator-build.md`.
 
 ## Open correctness items to keep in mind
 
