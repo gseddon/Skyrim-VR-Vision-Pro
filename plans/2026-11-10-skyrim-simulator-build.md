@@ -118,3 +118,26 @@ SIMCTL_CHILD_VXRT_AOT_STRICT=1 xcrun simctl launch --console-pty <udid> marimoko
 grep -E 'reserved|aot:.*(opened|image at)|fallbacks to the translator|BC_REFUSED|Direct3D|VR_Init' $D/../../vxrt.log
 ```
 The app target, bundle id and simulator app path above come from the Makefile and `project.yml` as read, and the `xros-app` target also runs `xros-aot-tests` (the test programs' modules); both are unverified until run. Criterion 6 depends on the `XROS_XRIZER_GAME=1` build below (drafted, unverified).
+
+## Result of the first start-up run (2026-11-10) -- simulator, start-up only
+
+Subject: visionOS 26.1 simulator (Apple Vision Pro device 82807DF6, existing, not reset), actual SkyrimVR.exe (prepared, sha `8daf0519...`), `-game skyrimvr -xrizer`, app `marimokodai.VXRuntimeHost.XrizerGame` built with `XROS_XRIZER_GAME=1 XROS_CODE_SIGNING=NO`. One launch, about 2 s of runtime. Not a headset, not rendering, not playability. Evidence (not committed): `/tmp/claude/sim/` (`mods.log`, `app.log`, `install.log`, `run1/vxrt.log`, `run1/host_log.jsonl`).
+
+Builds: modules `--target xrsimulator` (out `aot-xrsimulator2`, first try `aot-xrsimulator1` died with `No space left on device`, removed): 15 s, 17 frameworks, 368 MB (exe 11 parts + 6 DLLs); the pipeline deletes its transient assembly. xrizer static libs for xrsimulator: 36 s. App (`xros-app`): 76 s, 17 frameworks embedded, app 410 MB. Game folder: `Data` (14 GB) APFS-cloned (no extra disk) plus ini, DLLs and the prepared exe.
+
+Against the six points:
+1. App launches with the Skyrim frameworks embedded: **observed** (17 `VXA_*.framework`; all opened by `dlopen`, 0.2 to 11.3 ms each).
+2. Arena reserves at `0x7000000000`: **observed** (`host_log`: `"event":"arena","addr":"0x7000000000","size_mb":1024,"reserved":1`; the game's own VirtualAlloc then took `0x7040000000` and `0x70e0000000`, in the app's range).
+3. AOT registry loads all 7 modules: **observed** (11 exe parts at `0x7000000000`, binkw64 `0x7003930000`, steam_api64 `0x7003a40000`, msvcp140 `0x7003a80000`, d3dx9_42 `0x7003b10000`, X3DAudio1_7 `0x7003d90000`; `openvr_api.dll` is replaced by xrizer's export module, so its framework was not opened).
+4. Strict AOT entries > 0, fallback 0: **observed**: `aot: 3492196 entries into recompiled code, 0 C function calls, 3480636 native calls ... 0 fallbacks to the translator (0 addresses)`. One `aot: missing import stub 0x10a9bc0c0 from SkyrimVR.exe+0xc53384` at the stop.
+5. D3D11 device creation: **not reached** (no `Direct3D` log line).
+6. xrizer / OpenVR init: **observed**: `Initializing XRizer version 0.5.0`, `Creating OpenXR session with graphics API xrizer::metal_graphics::Metal`, session READY, `xrizer OpenVR: InitInternal2 ... error 0`, `GetGenericInterface IVRSystem_019 ... error 0`. The fixture host started (`xrizer_offscreen_start started:true`, head tracked, hands disconnected).
+
+Stop reason (not BC_REFUSED, which was not reached): `SkyrimVR.exe: DLL DINPUT8.dll not found` at load, then `called an unimplemented function: DINPUT8.dll!DirectInput8Create` and the program stopped (about 2 s). On visionOS `directinput.m` is left out (`xros_stubs.c`: `vx_directinput_init` is empty), so neither `dinput8.dll` nor `setupapi.dll` (which `directinput.m` also registers; Skyrim's controller enumeration uses it on the Mac) exists. Also logged: 7 imports not implemented, `GetFileInformationByHandleExW` and `SetFileInformationByHandleW` missing from kernel32, `SteamAPI_Init` failed (expected without Steam).
+
+Not fixed here, deliberately: a `dinput8.dll` / `setupapi.dll` stand-in in `xros_stubs.c` needs generated ABI thunks (`xros_stubs.c` is not in the thunk scan) and an input decision (fail the call, or route GCKeyboard / controller state), so it is a design change.
+
+- [x] Modules for xrsimulator built (17 frameworks, arena `0x7000000000`).
+- [x] xrizer static libs for xrsimulator built; `XROS_XRIZER_GAME=1` app built; frameworks embedded; installed in the simulator.
+- [x] Criteria 1, 2, 3, 4, 6 observed as above (start-up only).
+- [ ] Criterion 5 (D3D11 device creation) and the BC_REFUSED stop: not reached; blocked by the missing `dinput8.dll`/`setupapi.dll`.
