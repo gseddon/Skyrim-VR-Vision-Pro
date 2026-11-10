@@ -338,13 +338,13 @@ XROS_FIXTURE_BUNDLE_ID ?= gseddon.dev.vxrt.VXRuntimeHost.$(if $(filter 1,$(XROS_
 XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
 xros-app: xros-lib xros-aot-tests
 ifeq ($(XROS_XRIZER_FIXTURE),1)
-	@test "$(XROS_CODE_SIGNING)" = NO || { echo 'the xrizer fixture/immersive build requires XROS_CODE_SIGNING=NO (it is not signed for a device here)' >&2; exit 2; }
+	@test "$(XROS_SDK)" != xrsimulator -o "$(XROS_CODE_SIGNING)" = NO || { echo 'the simulator xrizer fixture/immersive build requires XROS_CODE_SIGNING=NO' >&2; exit 2; }
 	mkdir -p $(XROS_DIR)/project
 	ln -sfn $(abspath xros/app/Sources) $(XROS_DIR)/project/Sources
 	ln -sfn $(abspath xros/app/embed_aot_frameworks.sh) $(XROS_DIR)/project/embed_aot_frameworks.sh
 	python3 -c 'from pathlib import Path; import sys; s=Path(sys.argv[1]).read_text(); old="../../build/xros/bundle"; assert s.count(old)==1; Path(sys.argv[2]).write_text(s.replace(old,sys.argv[3]))' xros/app/project.yml $(XROS_DIR)/project/project.yml $(abspath $(XROS_DIR)/bundle)
 	cd $(XROS_DIR)/project && xcodegen generate --quiet
-	xcodebuild -project $(XROS_DIR)/project/VXRuntimeHost.xcodeproj -scheme VXRuntimeHost -destination 'generic/platform=$(if $(filter xrsimulator,$(XROS_SDK)),visionOS Simulator,visionOS)' -derivedDataPath $(XROS_DIR)/derived -quiet ARCHS=arm64 CODE_SIGNING_ALLOWED=NO VXRT_LIBDIR=$(CURDIR)/$(XROS_DIR) 'HEADER_SEARCH_PATHS=$(CURDIR)/src $(CURDIR)/translator' $(XROS_FIXTURE_APP_FLAGS) build
+	xcodebuild -project $(XROS_DIR)/project/VXRuntimeHost.xcodeproj -scheme VXRuntimeHost -destination 'generic/platform=$(if $(filter xrsimulator,$(XROS_SDK)),visionOS Simulator,visionOS)' -derivedDataPath $(XROS_DIR)/derived $(if $(filter 1,$(XROS_ALLOW_PROVISIONING)),-allowProvisioningUpdates) -quiet ARCHS=arm64 CODE_SIGNING_ALLOWED=$(if $(filter xrsimulator,$(XROS_SDK)),NO,$(XROS_CODE_SIGNING)) VXRT_LIBDIR=$(CURDIR)/$(XROS_DIR) 'HEADER_SEARCH_PATHS=$(CURDIR)/src $(CURDIR)/translator' $(XROS_FIXTURE_APP_FLAGS) build
 else
 	cd xros/app && xcodegen generate --quiet
 	xcodebuild -project xros/app/VXRuntimeHost.xcodeproj -scheme VXRuntimeHost -destination 'generic/platform=$(if $(filter xrsimulator,$(XROS_SDK)),visionOS Simulator,visionOS)' -derivedDataPath $(XROS_DIR)/derived $(if $(filter 1,$(XROS_ALLOW_PROVISIONING)),-allowProvisioningUpdates) -quiet ARCHS=arm64 CODE_SIGNING_ALLOWED=$(XROS_CODE_SIGNING) VXRT_LIBDIR=$(CURDIR)/$(XROS_DIR) build
