@@ -201,8 +201,8 @@ int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],co
     float over_tan[8]; uint32_t over_w=width,over_h=height;
     {
         static float overscan=-1;
-        if(overscan<0){const char *e=getenv("VXRT_OVERSCAN");char *end=NULL;float v=e&&*e?strtof(e,&end):0.10f;
-            overscan=(e&&*e&&(!end||*end||v<0||v>0.5f))?0.10f:v;
+        if(overscan<0){const char *e=getenv("VXRT_OVERSCAN");char *end=NULL;float v=e&&*e?strtof(e,&end):0.f;
+            overscan=(e&&*e&&(!end||*end||v<0||v>0.5f))?0.f:v;
             vx_log("xrizer xros fixture: overscan %.2f per side (VXRT_OVERSCAN)",overscan);}
         float o=(vx_xros_immersive_enabled() && !immersive_mono) ? overscan : 0.f;
         for(unsigned i=0;i<8;i++)over_tan[i]=tangents[i]*(1.f+o);
