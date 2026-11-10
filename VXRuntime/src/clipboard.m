@@ -8,7 +8,9 @@
 // EmptyClipboard makes the opener's window the owner. The memory GetClipboardData hands out belongs to the clipboard,
 // as on Windows: the program must not free it, and it lasts until the clipboard is emptied or the format read again.
 // AddClipboardFormatListener windows get WM_CLIPBOARDUPDATE when the pasteboard changes (it is looked at 3 times a second).
-// VXRT_PASTEBOARD=<name>: a pasteboard of that name instead of the general one (the tests use their own).
+// VXRT_PASTEBOARD=<name>: a pasteboard of that name instead of the general one (the tests use their own, named for
+// the run: two runs at once on one name wrote over each other). With VXRT_PASTEBOARD_TEMP=1 the pasteboard is
+// released when the process exits, so those names do not pile up in the pasteboard server.
 #import <AppKit/AppKit.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -320,7 +322,12 @@ static const vx_export user32[] = {
     VX_EXPORT(RemoveClipboardFormatListener), VX_EXPORT(RegisterClipboardFormatA), VX_EXPORT(RegisterClipboardFormatW),
     VX_EXPORT(GetClipboardFormatNameA), VX_EXPORT(GetClipboardFormatNameW),
 };
+static void release_temp_pasteboard(void) {
+    @autoreleasepool { [pasteboard() releaseGlobally]; }
+}
 void vx_clipboard_init(void) {
+    const char *temp = getenv("VXRT_PASTEBOARD_TEMP"), *name = getenv("VXRT_PASTEBOARD");
+    if (temp && *temp == '1' && name && *name) atexit(release_temp_pasteboard);
     vx_register_module("user32.dll", user32, sizeof user32 / sizeof user32[0]);
 }
 

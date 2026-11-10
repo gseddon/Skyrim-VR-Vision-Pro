@@ -66,8 +66,7 @@ static void test_memory(void) {
     GET(kernel32, BOOL (WINAPI *)(perf_info *, DWORD), K32GetPerformanceInfo);
     BYTE *p = VirtualAlloc(NULL, 65536, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     BYTE *ro = VirtualAlloc(NULL, 65536, MEM_RESERVE | MEM_COMMIT, PAGE_READONLY);
-    BYTE *gone = VirtualAlloc(NULL, 65536, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    CHECK(p && ro && gone && VirtualFree(gone, 0, MEM_RELEASE));
+    CHECK(p && ro);
     memset(p, 0x5a, 65536);
     CHECK(DiscardVirtualMemory(p, 65536) == ERROR_SUCCESS);
     CHECK(DiscardVirtualMemory(p + 1, 4096) == ERROR_INVALID_PARAMETER);          // not page-aligned
@@ -129,8 +128,19 @@ static void test_memory(void) {
     range_entry r = { p, 65536 };
     CHECK(PrefetchVirtualMemory(GetCurrentProcess(), 1, &r, 0));
     SetLastError(0); CHECK(!PrefetchVirtualMemory(GetCurrentProcess(), 1, &r, 1) && GetLastError() == ERROR_INVALID_PARAMETER);
-    working_set_entry ws[2] = { { p, 0 }, { gone, ~(ULONG_PTR)0 } };
-    CHECK(K32QueryWorkingSetEx(GetCurrentProcess(), ws, sizeof ws));
+    // A released address: it is released right before it is asked about, and asked about again at another address if
+    // something took it. The process is not alone in its address space: Apple's GameController framework (started by
+    // the XInput init) loads and maps in the background for a while after startup, and can land on the address just
+    // released (on Windows too, any thread's allocation or DLL load can). Released at the top of this test it was
+    // taken in about 1 run in 25 (kernelx "memory" line 135).
+    working_set_entry ws[2] = { { p, 0 }, { NULL, ~(ULONG_PTR)0 } };
+    BYTE *gone = NULL;
+    for (int attempt = 0; attempt < 8 && ws[1].attributes != 0; attempt++) {
+        gone = VirtualAlloc(NULL, 65536, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        CHECK(gone && VirtualFree(gone, 0, MEM_RELEASE));
+        ws[1].address = gone;
+        CHECK(K32QueryWorkingSetEx(GetCurrentProcess(), ws, sizeof ws));
+    }
     CHECK((ws[0].attributes & 1) && ((ws[0].attributes >> 4) & 0x7ff) == PAGE_READWRITE);   // Valid, Win32Protection
     CHECK(ws[1].attributes == 0);                                                // released: nothing there
     SetLastError(0); CHECK(!K32QueryWorkingSetEx(GetCurrentProcess(), ws, 8) && GetLastError() == ERROR_BAD_LENGTH);
@@ -241,9 +251,22 @@ static void test_process(void) {
     GET(kernel32, wer_fn, WerRegisterRuntimeExceptionModule);
     GET(kernel32, wer_fn, WerUnregisterRuntimeExceptionModule);
     DWORD n1 = 0, n2 = 0;
-    CHECK(GetProcessHandleCount(GetCurrentProcess(), &n1) && n1 > 0);
-    HANDLE e = CreateEventA(NULL, TRUE, FALSE, NULL);
-    CHECK(GetProcessHandleCount(GetCurrentProcess(), &n2) && n2 == n1 + 1);
+    // The count includes the process's open host descriptors, and other threads open and close some: Apple's
+    // GameController framework (started by the XInput init) opens its resources in the background for a while after
+    // startup (kernelx "processes" line 246 failed in about 1 run in 25, n2 == n1 or n1 + 2). As on Windows, where
+    // another thread's handles come and go, a count that moved by something else is measured again; an event that
+    // is never counted still fails after the attempts.
+    HANDLE e = NULL;
+    for (int attempt = 0; attempt < 20; attempt++) {
+        CHECK(GetProcessHandleCount(GetCurrentProcess(), &n1) && n1 > 0);
+        e = CreateEventA(NULL, TRUE, FALSE, NULL);
+        CHECK(GetProcessHandleCount(GetCurrentProcess(), &n2));
+        if (n2 == n1 + 1) break;
+        CloseHandle(e); e = NULL;
+        Sleep(20);
+    }
+    CHECK(e && n2 == n1 + 1);
+    if (!e) e = CreateEventA(NULL, TRUE, FALSE, NULL);
     ULONG64 c1 = 0, c2 = 0;
     CHECK(QueryProcessCycleTime(GetCurrentProcess(), &c1) && c1 > 0);
     volatile double x = 0; for (int i = 0; i < 2000000; i++) x += i * 0.5;
