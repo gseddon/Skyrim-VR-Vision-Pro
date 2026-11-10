@@ -285,3 +285,21 @@ Logs: `/tmp/claude/perf/compositor/run{A,B,C,D}/` (host_log.jsonl, vxrt.log); an
 * Expose hand visibility (`VXRT_SHOW_HANDS`, default hidden) in the same settings.
 
 Checks on the merged branch (compositor 3f347e6 plus codex/standalone-import): `make -C VXRuntime -j8 check` exit 0; `third_party/klepton_openxr/build-test.sh` exit 0; simulator fixture (`-test xrizer_xros_guest`, offscreen present): drawable max_delta 0 on both pairs, fresh 2 repeats 1, 49 AOT entries, 0 fallbacks. Confirmation run E (defaults: no markers, hands hidden) was launched on the headset; the user's verdict is not recorded here.
+
+### Render-scale sweep: is Skyrim VR pixel-bound on the headset? (2026-11-10, branch `pixeltest`)
+
+Subject: the actual game on the physical Vision Pro (Apple M2 GPU), installed signed app (bundle `gseddon.dev.vxrt.SkyrimVR`, the merged compositor build, render scale lever `VXRT_RENDER_SCALE`), defaults otherwise (gate on, hands hidden, overscan 0). `VXRT_STATS=1` for the game's "GPU: busy N% of the last 2 s" lines (union of the game's command-buffer GPU times), `VXRT_LOG_TEE=1` so the runtime log is read from the launch console. Tools: `tools/device_scale_sweep.sh`, `tools/device_scale_analyze.py`. Logs: `/tmp/claude/perf/pixeltest/sweep2/arm_1_0.7` (pid 1098) and `/tmp/claude/perf/pixeltest/sweep3/arm_{1_0.5,2_1.0,3_0.7}`. The sensor was covered, so the pose is static (fine for GPU throughput). The scene was the Skyrim title ("Press Any Button") and then the main menu, not the cart ride. The user pressed the button late in the 1.0 arm and soon after the title in the 0.7 arm; the 0.5 arm was not confirmed to leave the title (no drop in fresh pairs at any time, same behaviour as the title in the other arms), so scenes are matched by the log, not by the arm. Screenshots were not usable (devicectl cannot capture visionOS; the Xcode route copied a stale file), and the device's file service stalled and needed a headset reboot, so the first sweep was discarded.
+
+GPU ms per pair = GPU busy fraction x 1000 / fresh pairs per second, over the stated window after the first fresh pair (head-tracked seconds only). Compositor 100 fps, 0 late frames in every arm.
+
+| Scene | Scale | Render target per eye | Fresh pairs/s | GPU busy | GPU ms/pair | Pair age (sample to shown) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Title | 0.5 | 1116x1060 | 99.8 (at the 100/s compositor rate, a cap) | 66% | 6.6 | 37 ms |
+| Title | 0.7 | 1564x1483 | 65 (arm 1 of sweep2, +40..110 s) | 83% | 12.8 | not computed |
+| Title | 1.0 | 2233x2120 | 33.9 | 86% | 25.4 | not computed |
+| Main menu | 0.7 | 1564x1483 | 28.8 | 78% | 27.0 | 72 ms |
+| Main menu | 1.0 | 2233x2120 | 16.1 | 82% | 51.0 | 81 ms |
+
+Ratios against pixel count: title GPU ms/pair 0.7 / 0.5 = 1.94x (pixels 1.96x), 1.0 / 0.7 = 1.98x (pixels 2.04x); menu 1.0 / 0.7 = 1.89x (pixels 2.04x). Fresh pairs/s at 0.5 over 0.7 in the title is at least 1.54x (0.5 was held at 100/s by the compositor rate). No 0.5 arm was measured in the menu, and no arm was repeated.
+
+**Verdict by the rule (>= 1.5x fresh pairs/s at 0.5 vs 0.7, or GPU ms/pair scaling with pixels): pixel-bound.** GPU time per pair is proportional to the pixel count with no visible fixed part, so the frame time is shading and bandwidth over pixels. The menu at 0.7 needs 27 ms per pair; a 90 Hz game needs about 11 ms. Not measured: per-pass GPU time (`VXRT_GPU_PROFILE` was not run), the cart ride, and a comparison of image quality. Fresh pairs below the display rate are also shaped by the one-pair-in-flight gate (GPU busy stays at 78 to 86%, not 100%).
