@@ -1411,7 +1411,10 @@ static XrResult XRAPI_CALL klxr_WaitFrame(XrSession session, const XrFrameWaitIn
     if (!session->running) return XR_ERROR_SESSION_NOT_RUNNING;
     if (!frame_configured) return XR_ERROR_FUNCTION_UNSUPPORTED;
     if (session->frame_ticket) {
-        if (!session->frame_poison) return XR_ERROR_CALL_ORDER_INVALID;
+        // A frame waited (and perhaps begun) but never ended is discarded by the next xrWaitFrame, as OpenXR allows (a begun frame is
+        // likewise discarded by the next xrBeginFrame): an application that cannot present yet and keeps polling (xrizer, while the game
+        // loads) must not be refused with CALL_ORDER_INVALID. Acquired swapchain images still pin the frame.
+        if (!session->frame_poison && session_has_acquired_images(session)) return XR_ERROR_CALL_ORDER_INVALID;
         XrResult cancel = cancel_ticket(session);
         if (cancel != XR_SUCCESS) return cancel;
     }

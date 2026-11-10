@@ -69,10 +69,14 @@ final class VXImmersiveRenderer: @unchecked Sendable {
             if singleRun {
                 r.spatialClockCalibrated = Self.clockMatchesMach()
                 if r.spatialClockCalibrated {
-                    let adapter = VXNativeXRTracking(session: r.arSession, world: r.worldTracking, hands: nil, gate: r.trackingGate)
+                    // The head in its own session first (the loop and the game's poses depend on it), then the Sense controllers in
+                    // a second ARKitSession: the same ARKit world origin (Klepton's room planes use a second session too), and a
+                    // controller run that blocks leaves the head alone. (Device run 4: one combined run never returned.)
+                    do { try await r.arSession.run([r.worldTracking]); r.tracking = true; vxrt_jlog("head_session", "\"what\":\"running\"") }
+                    catch { vxrt_jlog("vr_error", "\"what\":\"world tracking: \(error.localizedDescription)\"") }
+                    let adapter = VXNativeXRTracking(session: ARKitSession(), world: r.worldTracking, hands: nil, gate: r.trackingGate, accessoryOnly: true)
                     r.nativeXRTracking = adapter
                     await adapter.start()
-                    r.tracking = true
                     return
                 }
                 vxrt_jlog("vr_error", "\"what\":\"spatial clock calibration failed\"")

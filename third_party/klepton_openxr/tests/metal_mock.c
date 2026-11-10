@@ -220,15 +220,17 @@ int main(void) {
     assert(create_space(session, &rs, &stage) == XR_SUCCESS);
     rs.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
     assert(create_space(session, &rs, &view) == XR_SUCCESS);
-    next_sample = (KlNativeFrameSample){ .ticket = &dev, .frame_id = 101, .pose_id = 201,
-        .predicted_display_time = 100, .predicted_display_period = 10, .should_render = XR_TRUE,
+    next_sample = (KlNativeFrameSample){ .ticket = &dev, .frame_id = 100, .pose_id = 200,
+        .predicted_display_time = 95, .predicted_display_period = 10, .should_render = XR_TRUE,
         .head_location_flags = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT,
         .local_from_head = { .orientation.w = 1, .position = {1, 1.5f, -2} },
         .head_from_eye = { { .orientation.w = 1, .position.x = -0.03f }, { .orientation.w = 1, .position.x = 0.03f } },
         .fov = { {-.8f,.8f,.8f,-.8f}, {-.8f,.8f,.8f,-.8f} } };
     XrFrameState fs = { .type = XR_TYPE_FRAME_STATE };
-    assert(wait_frame(session, NULL, &fs) == XR_SUCCESS && fs.shouldRender == XR_TRUE && fs.predictedDisplayTime == 100);
-    assert(wait_frame(session, NULL, &fs) == XR_ERROR_CALL_ORDER_INVALID);
+    assert(wait_frame(session, NULL, &fs) == XR_SUCCESS && fs.shouldRender == XR_TRUE && fs.predictedDisplayTime == 95);
+    next_sample.frame_id = 101; next_sample.pose_id = 201; next_sample.predicted_display_time = 100;
+    unsigned cancelled_at_rewait = cancelled;
+    assert(wait_frame(session, NULL, &fs) == XR_SUCCESS && cancelled == cancelled_at_rewait + 1);   // a frame waited and never ended is discarded by the next wait
     XrViewLocateInfo vi = { .type = XR_TYPE_VIEW_LOCATE_INFO, .viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, .displayTime = 100, .space = view };
     XrViewState vs = { .type = XR_TYPE_VIEW_STATE };
     XrView views[2] = { {.type = XR_TYPE_VIEW}, {.type = XR_TYPE_VIEW} };
@@ -244,7 +246,7 @@ int main(void) {
     assert(end_frame(session, &fi) == XR_ERROR_RUNTIME_FAILURE);
     assert(destroy_session(session) == XR_ERROR_SESSION_RUNNING);
     cancel_result = XR_SUCCESS;
-    assert(end_frame(session, &fi) == XR_SUCCESS && cancelled == 2 && published == 0);
+    assert(end_frame(session, &fi) == XR_SUCCESS && cancelled == 3 && published == 0);
     next_sample.frame_id = 102; next_sample.pose_id = 202; next_sample.predicted_display_time = 110;
     next_sample.stage_valid = XR_TRUE; next_sample.local_from_stage.orientation.w = 1;
     next_sample.local_from_stage.position.y = -1;
@@ -270,9 +272,9 @@ int main(void) {
     assert(begin_frame(session, NULL) == XR_SUCCESS); fi.displayTime = 130;
     assert(end_frame(session, &fi) == XR_SUCCESS && published == 0);
     next_sample.frame_id = 0; next_sample.pose_id = 205; next_sample.predicted_display_time = 140;
-    unsigned cancelled_before = cancelled;
+    unsigned cancelled_discard = cancelled;
     assert(wait_frame(session, NULL, &fs) == XR_ERROR_RUNTIME_FAILURE);
-    assert(cancelled == cancelled_before + 1); /* opaque ticket still cancellable */
+    assert(cancelled == cancelled_discard + 1); /* opaque ticket still cancellable */
     assert(destroy_space(view) == XR_SUCCESS);
     assert(destroy_space(stage) == XR_SUCCESS);
     assert(destroy_space(local) == XR_SUCCESS);
