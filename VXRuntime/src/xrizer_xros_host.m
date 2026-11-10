@@ -275,6 +275,19 @@ int vx_xros_host_gate_json(char *buf, uint32_t len) {
     g_sg.cpu_sum=g_sg.cpu_max=g_sg.gap_sum=0; g_sg.cpu_n=g_sg.gap_n=0;   /* racy by design: diagnostics only */
     return n;
 }
+/* While the compositor layer is paused (headset off, Crown peek, backgrounded) or gone, no sample reaches the mailbox. The wait used to time out
+ * every 2 s and WaitGetPoses returned an error, so the game kept running a frame loop at 0.5 fps with a ~6 GB footprint in the background, and the
+ * system SIGKILLed it about 15 s into a pause (device 2026-11-10 22:25:17). Now WaitFrame stays blocked on the mailbox's condition variable for
+ * the whole pause: it wakes when a sample arrives (the layer resumed), when the mailbox is stopped, or when the pause flag clears. */
+volatile int vx_pause_audio __attribute__((weak));   /* shared with audio.m and xaudio2.m (weak definitions merge): their output callbacks write silence while set */
+static volatile int g_paused;
+static volatile double g_pause_t0;
+void vx_xros_set_paused(int paused) {
+    paused = paused ? 1 : 0;
+    if (g_paused == paused) return;
+    g_paused = paused; vx_pause_audio = paused;
+    if (paused) g_pause_t0 = sg_now();
+}
 static XrResult wait_frame(void *ctx, KlNativeFrameSample *sample) {
     vx_xros_xrizer_host *h=ctx;
     int mode=gate_mode();
@@ -286,6 +299,12 @@ static XrResult wait_frame(void *ctx, KlNativeFrameSample *sample) {
         }
     }
     XrResult r=vx_xros_mailbox_wait(h->mailbox, 2000, sample);
+    if (r==XR_ERROR_RUNTIME_FAILURE && g_paused) {
+        double idle0=sg_now(); unsigned long chunks=0;
+        vx_log("pause_idle_start: WaitFrame blocks until the layer resumes (paused %.1f s ago)", idle0-g_pause_t0);
+        while (r==XR_ERROR_RUNTIME_FAILURE && g_paused) { r=vx_xros_mailbox_wait(h->mailbox, 60000, sample); ++chunks; }
+        vx_log("pause_idle_end: WaitFrame blocked %.2f s (%lu waits), result %d", sg_now()-idle0, chunks, (int)r);
+    }
     if (h->ring && r==XR_SUCCESS) { pthread_mutex_lock(&h->ring->lock); g_sg.ret=sg_now(); pthread_mutex_unlock(&h->ring->lock); }
     return r;
 }

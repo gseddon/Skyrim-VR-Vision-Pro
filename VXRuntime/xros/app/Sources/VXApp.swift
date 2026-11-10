@@ -25,9 +25,16 @@ struct VXRuntimeApp: App {
         _ = VXImmersiveController.shared   // the app-level owner of the immersive space exists before any view
         // Main-thread heartbeat every 0.5 s: the last one before a system kill says when the app stopped being alive, and
         // the frame counter says whether the compositor loop was still presenting.
+        var lastCPU = 0.0, lastWall = CACurrentMediaTime()
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+            // process CPU over the last beat in % of one core (all threads: the game's workers keep running while its render thread idles in a pause)
+            var ru = rusage(); getrusage(RUSAGE_SELF, &ru)
+            let cpu = Double(ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) + Double(ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1e6
+            let wall = CACurrentMediaTime()
+            let cpuPct = (cpu - lastCPU) / max(wall - lastWall, 0.001) * 100
+            lastCPU = cpu; lastWall = wall
             let ago = VXImmersiveRenderer.lastFrameUptime > 0 ? CACurrentMediaTime() - VXImmersiveRenderer.lastFrameUptime : -1
-            vxrt_jlog("heartbeat", "\"frames\":\(VXImmersiveRenderer.frameCount),\"last_frame_ago_s\":\(String(format: "%.3f", ago)),\"app_state\":\(UIApplication.shared.applicationState.rawValue)")
+            vxrt_jlog("heartbeat", "\"frames\":\(VXImmersiveRenderer.frameCount),\"last_frame_ago_s\":\(String(format: "%.3f", ago)),\"cpu_pct\":\(String(format: "%.0f", cpuPct)),\"app_state\":\(UIApplication.shared.applicationState.rawValue)")
         }   // (main.m: the program starts without the window if no window has appeared within a few seconds)
     }
     var body: some Scene {
