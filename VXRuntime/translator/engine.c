@@ -325,7 +325,8 @@ int xe_smc_write(xe *e, uint64_t addr) {
     uint64_t pg = addr & ~(uint64_t)(PAGE - 1);
     pthread_mutex_lock(&e->lock);
     page_rec *r = page_at(e, pg, 0);
-    if (!r || !r->protected) {                                            // (another thread's write gave it back just now, or a flush did;
+    if (!r) { pthread_mutex_unlock(&e->lock); return 0; }                 // (never watched: not an SMC fault, whatever else it is)
+    if (!r->protected) {                                                  // (another thread's write gave it back just now;
         // or the page cannot be written at all, freed or read-only: the program's access violation, not a retry for ever.)
         // Asked with the lock held: after it, another thread's watch_block may protect the page again for new
         // translations, and the page would look unwritable to a write that only has to go again.
