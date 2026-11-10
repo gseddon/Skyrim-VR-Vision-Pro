@@ -309,6 +309,7 @@ xrizer owns the OpenVR compatibility behavior. It does not supply Apple's OpenXR
 4. **Prove the integrated fixture on physical Vision Pro early.** Use metre-based world geometry and independently specified eye transforms/projections, not just the current clip-space triangle. Verify tracking, one actual controller mapping, lifecycle, frame age and GPU ownership without streaming or a helper. Probe address space/memory before attempting large game packaging.
 5. **Advance Skyrim through measured checkpoints where reachable.** Run its code-coverage investigation now, in parallel with XR work; do not wait until the entire XR stack is finished to discover whether its original executable can execute under strict AOT. Join the game to the proven XR path only after the relevant code and fixture gates are satisfied.
 6. **Expand correctness and performance coverage.** Scene transitions, saves, audio, additional input/overlay paths, required sample counts/formats and sustained thermals follow an actual working scene. Do not tune pixels before correctness and fresh-frame measurements exist.
+7. **Mods, after the base game is playable.** Data mods through the overlay, then SKSE VR, SkyUI VR, VRIK, HIGGS and PLANCK, planned in [2026-11-10-skyrim-vr-mods.md](2026-11-10-skyrim-vr-mods.md); research in [the mods report](../research/2026-11-10-skyrim-vr-mods.md).
 
 ### Immediate uncertainties and stop conditions
 
@@ -350,7 +351,8 @@ Sources inspected in the main checkout were at `86e179f`; the separate port work
 - A new x86-64-to-C compiler, DXVK/Vulkan graphics replacement, Wine/ReactOS code, or a Linux/Android guest environment. GPL/LGPL licensing alone is no longer excluded; the user explicitly approved xrizer reuse and the repository policy now reflects that.
 - Streaming, Mac-assisted authentication, Windows Steam/CEF development, and authentication emulation as prerequisites for this investigation.
 - Manufactured ownership/account responses, anti-cheat work, changes to original game/Valve/Microsoft installations, and distribution of translated game code. Private-copy unpacking/preparation for the owned game is explicitly authorized; preserve original and prepared identities, settings/saves in overlays, and generated artifacts locally.
-- Original 2011 Skyrim, an older flat-game VR conversion, SKSE/mods, frame generation, flat-frame stereo synthesis and broad performance tuning during the first proof.
+- Original 2011 Skyrim, an older flat-game VR conversion, frame generation, flat-frame stereo synthesis and broad performance tuning during the first proof.
+- SKSE/mods: out of scope for this plan's first proof; now planned separately in [Skyrim VR mod stack](2026-11-10-skyrim-vr-mods.md).
 - Implementing the entire OpenVR SDK before identifying and testing the required interface subset.
 
 ## Clarifying Questions and Decisions
