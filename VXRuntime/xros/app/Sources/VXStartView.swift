@@ -147,7 +147,7 @@ struct VXSettingsPage: View {
                                        in: VXSettings.renderScaleRange, step: 0.05)
                                 Text(String(format: "%.0f%%", settings.renderScale * 100)).font(.system(.body, design: .monospaced)).frame(width: 70)
                             }
-                            note("The size the game draws each eye at, as a share of the display's. Lower is smoother on a busy scene; higher is sharper. 55% with MetalFX is the default.")
+                            note("The size the game draws each eye at, as a share of the display's. Lower is smoother on a busy scene; higher is sharper. 65% with MetalFX is the default.")
                             Picker("Upscaling", selection: $settings.upscale) {
                                 Text("MetalFX").tag(VXUpscale.metalfx)
                                 Text("Bilinear").tag(VXUpscale.bilinear)
