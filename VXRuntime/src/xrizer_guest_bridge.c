@@ -2,6 +2,7 @@
 #include "vx.h"
 #include "xrizer_guest_bridge.h"
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 typedef struct { float m[4][4]; } matrix44;
@@ -230,418 +231,454 @@ typedef struct { float x, y; } overlay_vec2;
 typedef struct { overlay_vec2 top_left, bottom_right; } overlay_rect2;
 static const char *const overlay_names[82] = {"FindOverlay", "CreateOverlay", "DestroyOverlay", "SetHighQualityOverlay", "GetHighQualityOverlay", "GetOverlayKey", "GetOverlayName", "SetOverlayName", "GetOverlayImageData", "GetOverlayErrorNameFromEnum", "SetOverlayRenderingPid", "GetOverlayRenderingPid", "SetOverlayFlag", "GetOverlayFlag", "SetOverlayColor", "GetOverlayColor", "SetOverlayAlpha", "GetOverlayAlpha", "SetOverlayTexelAspect", "GetOverlayTexelAspect", "SetOverlaySortOrder", "GetOverlaySortOrder", "SetOverlayWidthInMeters", "GetOverlayWidthInMeters", "SetOverlayAutoCurveDistanceRangeInMeters", "GetOverlayAutoCurveDistanceRangeInMeters", "SetOverlayTextureColorSpace", "GetOverlayTextureColorSpace", "SetOverlayTextureBounds", "GetOverlayTextureBounds", "GetOverlayRenderModel", "SetOverlayRenderModel", "GetOverlayTransformType", "SetOverlayTransformAbsolute", "GetOverlayTransformAbsolute", "SetOverlayTransformTrackedDeviceRelative", "GetOverlayTransformTrackedDeviceRelative", "SetOverlayTransformTrackedDeviceComponent", "GetOverlayTransformTrackedDeviceComponent", "GetOverlayTransformOverlayRelative", "SetOverlayTransformOverlayRelative", "ShowOverlay", "HideOverlay", "IsOverlayVisible", "GetTransformForOverlayCoordinates", "PollNextOverlayEvent", "GetOverlayInputMethod", "SetOverlayInputMethod", "GetOverlayMouseScale", "SetOverlayMouseScale", "ComputeOverlayIntersection", "IsHoverTargetOverlay", "GetGamepadFocusOverlay", "SetGamepadFocusOverlay", "SetOverlayNeighbor", "MoveGamepadFocusToNeighbor", "SetOverlayDualAnalogTransform", "GetOverlayDualAnalogTransform", "SetOverlayTexture", "ClearOverlayTexture", "SetOverlayRaw", "SetOverlayFromFile", "GetOverlayTexture", "ReleaseNativeOverlayHandle", "GetOverlayTextureSize", "CreateDashboardOverlay", "IsDashboardVisible", "IsActiveDashboardOverlay", "SetDashboardOverlaySceneProcess", "GetDashboardOverlaySceneProcess", "ShowDashboard", "GetPrimaryDashboardDevice", "ShowKeyboard", "ShowKeyboardForOverlay", "GetKeyboardText", "HideKeyboard", "SetKeyboardTransformAbsolute", "SetKeyboardPositionForOverlay", "SetOverlayIntersectionMask", "GetOverlayFlags", "ShowMessageOverlay", "CloseMessageOverlay"};
 static uint8_t overlay_seen[82];
+// ---- keyboard: xrizer answers ShowKeyboard* with RequestFailed (the game then waits for a text that never comes) and
+// GetKeyboardText is todo!(). Until a real text-entry path exists (visionOS), a keyboard request is answered as if the user
+// accepted the text the game offered (its existing text, or "Dragonborn" when empty): success, then VREvent_KeyboardDone
+// and VREvent_KeyboardClosed through PollNextOverlayEvent (ShowKeyboardForOverlay) or IVRSystem::PollNextEvent (ShowKeyboard).
+static struct { pthread_mutex_t lock; char text[256]; uint64_t user; int next, count, to_system; } overlay_kbd = { PTHREAD_MUTEX_INITIALIZER };
+static void overlay_keyboard_show(const char *existing, uint64_t user, int to_system, const char *what) {
+    pthread_mutex_lock(&overlay_kbd.lock);
+    snprintf(overlay_kbd.text, sizeof overlay_kbd.text, "%s", existing && *existing ? existing : "Dragonborn");
+    overlay_kbd.user = user; overlay_kbd.to_system = to_system; overlay_kbd.next = 0; overlay_kbd.count = 2;
+    vx_log("xrizer_guest_bridge: %s: no on-screen keyboard yet; accepting the offered text '%s' (KeyboardDone, KeyboardClosed queued for %s)",
+           what, overlay_kbd.text, to_system ? "IVRSystem::PollNextEvent" : "PollNextOverlayEvent");
+    pthread_mutex_unlock(&overlay_kbd.lock);
+}
+// Writes the next queued keyboard event in the Windows VREvent_t layout (data at byte 16); returns 0 when none is due.
+static int overlay_keyboard_event(void *event, uint32_t size, int to_system) {
+    int got = 0;
+    pthread_mutex_lock(&overlay_kbd.lock);
+    if (event && size >= 32 && overlay_kbd.next < overlay_kbd.count && overlay_kbd.to_system == to_system) {
+        uint32_t type = overlay_kbd.next == 0 ? 1202 /* VREvent_KeyboardDone */ : 1200 /* VREvent_KeyboardClosed */, device = 0xffffffffu;
+        memset(event, 0, size < 64 ? size : 64);
+        memcpy(event, &type, 4); memcpy((char *)event + 4, &device, 4);
+        memcpy((char *)event + 24, &overlay_kbd.user, 8);        // VREvent_Keyboard_t: cNewInput[8] at 16, uUserValue at 24
+        overlay_kbd.next++; got = 1;
+        vx_log("xrizer_guest_bridge: keyboard event %u delivered (user value %llu)", type, (unsigned long long)overlay_kbd.user);
+    }
+    pthread_mutex_unlock(&overlay_kbd.lock);
+    return got;
+}
 static void overlay_note(unsigned slot) {   // the first call of each method is logged (which methods a game uses)
     if (!overlay_seen[slot]) { overlay_seen[slot] = 1; vx_log("xrizer_guest_bridge: IVROverlay_018::%s (slot %u) called", overlay_names[slot], slot); }
 }
 typedef int32_t (*overlay_native_0_fn)(void *, void *, void *);
 static WINAPI int32_t overlay_0(guest_object *self, void * a0, void * a1) { // FindOverlay
-    require(self == &overlay); overlay_note(0); overlay_native_0_fn fn = (overlay_native_0_fn)native_table(self)[0];
+    require(self == &overlay); overlay_note(0); overlay_native_0_fn fn = (overlay_native_0_fn)native_table(self)[0]; (void)fn;
     return fn(self->native, a0, a1);
 }
 typedef int32_t (*overlay_native_1_fn)(void *, void *, void *, void *);
 static WINAPI int32_t overlay_1(guest_object *self, void * a0, void * a1, void * a2) { // CreateOverlay
-    require(self == &overlay); overlay_note(1); overlay_native_1_fn fn = (overlay_native_1_fn)native_table(self)[1];
+    require(self == &overlay); overlay_note(1); overlay_native_1_fn fn = (overlay_native_1_fn)native_table(self)[1]; (void)fn;
     return fn(self->native, a0, a1, a2);
 }
 typedef int32_t (*overlay_native_2_fn)(void *, uint64_t);
 static WINAPI int32_t overlay_2(guest_object *self, uint64_t a0) { // DestroyOverlay
-    require(self == &overlay); overlay_note(2); overlay_native_2_fn fn = (overlay_native_2_fn)native_table(self)[2];
+    require(self == &overlay); overlay_note(2); overlay_native_2_fn fn = (overlay_native_2_fn)native_table(self)[2]; (void)fn;
     return fn(self->native, a0);
 }
 typedef int32_t (*overlay_native_3_fn)(void *, uint64_t);
 static WINAPI int32_t overlay_3(guest_object *self, uint64_t a0) { // SetHighQualityOverlay
-    require(self == &overlay); overlay_note(3); overlay_native_3_fn fn = (overlay_native_3_fn)native_table(self)[3];
+    require(self == &overlay); overlay_note(3); overlay_native_3_fn fn = (overlay_native_3_fn)native_table(self)[3]; (void)fn;
     return fn(self->native, a0);
 }
 typedef uint64_t (*overlay_native_4_fn)(void *);
 static WINAPI uint64_t overlay_4(guest_object *self) { // GetHighQualityOverlay
-    require(self == &overlay); overlay_note(4); overlay_native_4_fn fn = (overlay_native_4_fn)native_table(self)[4];
+    require(self == &overlay); overlay_note(4); overlay_native_4_fn fn = (overlay_native_4_fn)native_table(self)[4]; (void)fn;
     return fn(self->native);
 }
 typedef uint32_t (*overlay_native_5_fn)(void *, uint64_t, void *, uint32_t, void *);
 static WINAPI uint32_t overlay_5(guest_object *self, uint64_t a0, void * a1, uint32_t a2, void * a3) { // GetOverlayKey
-    require(self == &overlay); overlay_note(5); overlay_native_5_fn fn = (overlay_native_5_fn)native_table(self)[5];
-    return fn(self->native, a0, a1, a2, a3);
+    require(self == &overlay); overlay_note(5); overlay_native_5_fn fn = (overlay_native_5_fn)native_table(self)[5]; (void)fn;
+    return 0;
 }
 typedef uint32_t (*overlay_native_6_fn)(void *, uint64_t, void *, uint32_t, void *);
 static WINAPI uint32_t overlay_6(guest_object *self, uint64_t a0, void * a1, uint32_t a2, void * a3) { // GetOverlayName
-    require(self == &overlay); overlay_note(6); overlay_native_6_fn fn = (overlay_native_6_fn)native_table(self)[6];
-    return fn(self->native, a0, a1, a2, a3);
+    require(self == &overlay); overlay_note(6); overlay_native_6_fn fn = (overlay_native_6_fn)native_table(self)[6]; (void)fn;
+    return 0;
 }
 typedef int32_t (*overlay_native_7_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_7(guest_object *self, uint64_t a0, void * a1) { // SetOverlayName
-    require(self == &overlay); overlay_note(7); overlay_native_7_fn fn = (overlay_native_7_fn)native_table(self)[7];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(7); overlay_native_7_fn fn = (overlay_native_7_fn)native_table(self)[7]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_8_fn)(void *, uint64_t, void *, uint32_t, void *, void *);
 static WINAPI int32_t overlay_8(guest_object *self, uint64_t a0, void * a1, uint32_t a2, void * a3, void * a4) { // GetOverlayImageData
-    require(self == &overlay); overlay_note(8); overlay_native_8_fn fn = (overlay_native_8_fn)native_table(self)[8];
-    return fn(self->native, a0, a1, a2, a3, a4);
+    require(self == &overlay); overlay_note(8); overlay_native_8_fn fn = (overlay_native_8_fn)native_table(self)[8]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef void * (*overlay_native_9_fn)(void *, int32_t);
 static WINAPI void * overlay_9(guest_object *self, int32_t a0) { // GetOverlayErrorNameFromEnum
-    require(self == &overlay); overlay_note(9); overlay_native_9_fn fn = (overlay_native_9_fn)native_table(self)[9];
+    require(self == &overlay); overlay_note(9); overlay_native_9_fn fn = (overlay_native_9_fn)native_table(self)[9]; (void)fn;
     return fn(self->native, a0);
 }
 typedef int32_t (*overlay_native_10_fn)(void *, uint64_t, uint32_t);
 static WINAPI int32_t overlay_10(guest_object *self, uint64_t a0, uint32_t a1) { // SetOverlayRenderingPid
-    require(self == &overlay); overlay_note(10); overlay_native_10_fn fn = (overlay_native_10_fn)native_table(self)[10];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(10); overlay_native_10_fn fn = (overlay_native_10_fn)native_table(self)[10]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef uint32_t (*overlay_native_11_fn)(void *, uint64_t);
 static WINAPI uint32_t overlay_11(guest_object *self, uint64_t a0) { // GetOverlayRenderingPid
-    require(self == &overlay); overlay_note(11); overlay_native_11_fn fn = (overlay_native_11_fn)native_table(self)[11];
-    return fn(self->native, a0);
+    require(self == &overlay); overlay_note(11); overlay_native_11_fn fn = (overlay_native_11_fn)native_table(self)[11]; (void)fn;
+    return 0;
 }
 typedef int32_t (*overlay_native_12_fn)(void *, uint64_t, int32_t, uint8_t);
 static WINAPI int32_t overlay_12(guest_object *self, uint64_t a0, int32_t a1, uint8_t a2) { // SetOverlayFlag
-    require(self == &overlay); overlay_note(12); overlay_native_12_fn fn = (overlay_native_12_fn)native_table(self)[12];
+    require(self == &overlay); overlay_note(12); overlay_native_12_fn fn = (overlay_native_12_fn)native_table(self)[12]; (void)fn;
     return fn(self->native, a0, a1, a2);
 }
 typedef int32_t (*overlay_native_13_fn)(void *, uint64_t, int32_t, void *);
 static WINAPI int32_t overlay_13(guest_object *self, uint64_t a0, int32_t a1, void * a2) { // GetOverlayFlag
-    require(self == &overlay); overlay_note(13); overlay_native_13_fn fn = (overlay_native_13_fn)native_table(self)[13];
-    return fn(self->native, a0, a1, a2);
+    require(self == &overlay); overlay_note(13); overlay_native_13_fn fn = (overlay_native_13_fn)native_table(self)[13]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_14_fn)(void *, uint64_t, float, float, float);
 static WINAPI int32_t overlay_14(guest_object *self, uint64_t a0, float a1, float a2, float a3) { // SetOverlayColor
-    require(self == &overlay); overlay_note(14); overlay_native_14_fn fn = (overlay_native_14_fn)native_table(self)[14];
+    require(self == &overlay); overlay_note(14); overlay_native_14_fn fn = (overlay_native_14_fn)native_table(self)[14]; (void)fn;
     return fn(self->native, a0, a1, a2, a3);
 }
 typedef int32_t (*overlay_native_15_fn)(void *, uint64_t, void *, void *, void *);
 static WINAPI int32_t overlay_15(guest_object *self, uint64_t a0, void * a1, void * a2, void * a3) { // GetOverlayColor
-    require(self == &overlay); overlay_note(15); overlay_native_15_fn fn = (overlay_native_15_fn)native_table(self)[15];
-    return fn(self->native, a0, a1, a2, a3);
+    require(self == &overlay); overlay_note(15); overlay_native_15_fn fn = (overlay_native_15_fn)native_table(self)[15]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_16_fn)(void *, uint64_t, float);
 static WINAPI int32_t overlay_16(guest_object *self, uint64_t a0, float a1) { // SetOverlayAlpha
-    require(self == &overlay); overlay_note(16); overlay_native_16_fn fn = (overlay_native_16_fn)native_table(self)[16];
+    require(self == &overlay); overlay_note(16); overlay_native_16_fn fn = (overlay_native_16_fn)native_table(self)[16]; (void)fn;
     return fn(self->native, a0, a1);
 }
 typedef int32_t (*overlay_native_17_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_17(guest_object *self, uint64_t a0, void * a1) { // GetOverlayAlpha
-    require(self == &overlay); overlay_note(17); overlay_native_17_fn fn = (overlay_native_17_fn)native_table(self)[17];
+    require(self == &overlay); overlay_note(17); overlay_native_17_fn fn = (overlay_native_17_fn)native_table(self)[17]; (void)fn;
     return fn(self->native, a0, a1);
 }
 typedef int32_t (*overlay_native_18_fn)(void *, uint64_t, float);
 static WINAPI int32_t overlay_18(guest_object *self, uint64_t a0, float a1) { // SetOverlayTexelAspect
-    require(self == &overlay); overlay_note(18); overlay_native_18_fn fn = (overlay_native_18_fn)native_table(self)[18];
+    require(self == &overlay); overlay_note(18); overlay_native_18_fn fn = (overlay_native_18_fn)native_table(self)[18]; (void)fn;
     return fn(self->native, a0, a1);
 }
 typedef int32_t (*overlay_native_19_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_19(guest_object *self, uint64_t a0, void * a1) { // GetOverlayTexelAspect
-    require(self == &overlay); overlay_note(19); overlay_native_19_fn fn = (overlay_native_19_fn)native_table(self)[19];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(19); overlay_native_19_fn fn = (overlay_native_19_fn)native_table(self)[19]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_20_fn)(void *, uint64_t, uint32_t);
 static WINAPI int32_t overlay_20(guest_object *self, uint64_t a0, uint32_t a1) { // SetOverlaySortOrder
-    require(self == &overlay); overlay_note(20); overlay_native_20_fn fn = (overlay_native_20_fn)native_table(self)[20];
+    require(self == &overlay); overlay_note(20); overlay_native_20_fn fn = (overlay_native_20_fn)native_table(self)[20]; (void)fn;
     return fn(self->native, a0, a1);
 }
 typedef int32_t (*overlay_native_21_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_21(guest_object *self, uint64_t a0, void * a1) { // GetOverlaySortOrder
-    require(self == &overlay); overlay_note(21); overlay_native_21_fn fn = (overlay_native_21_fn)native_table(self)[21];
+    require(self == &overlay); overlay_note(21); overlay_native_21_fn fn = (overlay_native_21_fn)native_table(self)[21]; (void)fn;
     return fn(self->native, a0, a1);
 }
 typedef int32_t (*overlay_native_22_fn)(void *, uint64_t, float);
 static WINAPI int32_t overlay_22(guest_object *self, uint64_t a0, float a1) { // SetOverlayWidthInMeters
-    require(self == &overlay); overlay_note(22); overlay_native_22_fn fn = (overlay_native_22_fn)native_table(self)[22];
+    require(self == &overlay); overlay_note(22); overlay_native_22_fn fn = (overlay_native_22_fn)native_table(self)[22]; (void)fn;
     return fn(self->native, a0, a1);
 }
 typedef int32_t (*overlay_native_23_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_23(guest_object *self, uint64_t a0, void * a1) { // GetOverlayWidthInMeters
-    require(self == &overlay); overlay_note(23); overlay_native_23_fn fn = (overlay_native_23_fn)native_table(self)[23];
+    require(self == &overlay); overlay_note(23); overlay_native_23_fn fn = (overlay_native_23_fn)native_table(self)[23]; (void)fn;
     return fn(self->native, a0, a1);
 }
 typedef int32_t (*overlay_native_24_fn)(void *, uint64_t, float, float);
 static WINAPI int32_t overlay_24(guest_object *self, uint64_t a0, float a1, float a2) { // SetOverlayAutoCurveDistanceRangeInMeters
-    require(self == &overlay); overlay_note(24); overlay_native_24_fn fn = (overlay_native_24_fn)native_table(self)[24];
+    require(self == &overlay); overlay_note(24); overlay_native_24_fn fn = (overlay_native_24_fn)native_table(self)[24]; (void)fn;
     return fn(self->native, a0, a1, a2);
 }
 typedef int32_t (*overlay_native_25_fn)(void *, uint64_t, void *, void *);
 static WINAPI int32_t overlay_25(guest_object *self, uint64_t a0, void * a1, void * a2) { // GetOverlayAutoCurveDistanceRangeInMeters
-    require(self == &overlay); overlay_note(25); overlay_native_25_fn fn = (overlay_native_25_fn)native_table(self)[25];
+    require(self == &overlay); overlay_note(25); overlay_native_25_fn fn = (overlay_native_25_fn)native_table(self)[25]; (void)fn;
     return fn(self->native, a0, a1, a2);
 }
 typedef int32_t (*overlay_native_26_fn)(void *, uint64_t, int32_t);
 static WINAPI int32_t overlay_26(guest_object *self, uint64_t a0, int32_t a1) { // SetOverlayTextureColorSpace
-    require(self == &overlay); overlay_note(26); overlay_native_26_fn fn = (overlay_native_26_fn)native_table(self)[26];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(26); overlay_native_26_fn fn = (overlay_native_26_fn)native_table(self)[26]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_27_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_27(guest_object *self, uint64_t a0, void * a1) { // GetOverlayTextureColorSpace
-    require(self == &overlay); overlay_note(27); overlay_native_27_fn fn = (overlay_native_27_fn)native_table(self)[27];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(27); overlay_native_27_fn fn = (overlay_native_27_fn)native_table(self)[27]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_28_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_28(guest_object *self, uint64_t a0, void * a1) { // SetOverlayTextureBounds
-    require(self == &overlay); overlay_note(28); overlay_native_28_fn fn = (overlay_native_28_fn)native_table(self)[28];
+    require(self == &overlay); overlay_note(28); overlay_native_28_fn fn = (overlay_native_28_fn)native_table(self)[28]; (void)fn;
     return fn(self->native, a0, a1);
 }
 typedef int32_t (*overlay_native_29_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_29(guest_object *self, uint64_t a0, void * a1) { // GetOverlayTextureBounds
-    require(self == &overlay); overlay_note(29); overlay_native_29_fn fn = (overlay_native_29_fn)native_table(self)[29];
+    require(self == &overlay); overlay_note(29); overlay_native_29_fn fn = (overlay_native_29_fn)native_table(self)[29]; (void)fn;
     return fn(self->native, a0, a1);
 }
 typedef uint32_t (*overlay_native_30_fn)(void *, uint64_t, void *, uint32_t, void *, void *);
 static WINAPI uint32_t overlay_30(guest_object *self, uint64_t a0, void * a1, uint32_t a2, void * a3, void * a4) { // GetOverlayRenderModel
-    require(self == &overlay); overlay_note(30); overlay_native_30_fn fn = (overlay_native_30_fn)native_table(self)[30];
-    return fn(self->native, a0, a1, a2, a3, a4);
+    require(self == &overlay); overlay_note(30); overlay_native_30_fn fn = (overlay_native_30_fn)native_table(self)[30]; (void)fn;
+    return 0;
 }
 typedef int32_t (*overlay_native_31_fn)(void *, uint64_t, void *, void *);
 static WINAPI int32_t overlay_31(guest_object *self, uint64_t a0, void * a1, void * a2) { // SetOverlayRenderModel
-    require(self == &overlay); overlay_note(31); overlay_native_31_fn fn = (overlay_native_31_fn)native_table(self)[31];
-    return fn(self->native, a0, a1, a2);
+    require(self == &overlay); overlay_note(31); overlay_native_31_fn fn = (overlay_native_31_fn)native_table(self)[31]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_32_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_32(guest_object *self, uint64_t a0, void * a1) { // GetOverlayTransformType
-    require(self == &overlay); overlay_note(32); overlay_native_32_fn fn = (overlay_native_32_fn)native_table(self)[32];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(32); overlay_native_32_fn fn = (overlay_native_32_fn)native_table(self)[32]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_33_fn)(void *, uint64_t, int32_t, void *);
 static WINAPI int32_t overlay_33(guest_object *self, uint64_t a0, int32_t a1, void * a2) { // SetOverlayTransformAbsolute
-    require(self == &overlay); overlay_note(33); overlay_native_33_fn fn = (overlay_native_33_fn)native_table(self)[33];
+    require(self == &overlay); overlay_note(33); overlay_native_33_fn fn = (overlay_native_33_fn)native_table(self)[33]; (void)fn;
     return fn(self->native, a0, a1, a2);
 }
 typedef int32_t (*overlay_native_34_fn)(void *, uint64_t, void *, void *);
 static WINAPI int32_t overlay_34(guest_object *self, uint64_t a0, void * a1, void * a2) { // GetOverlayTransformAbsolute
-    require(self == &overlay); overlay_note(34); overlay_native_34_fn fn = (overlay_native_34_fn)native_table(self)[34];
+    require(self == &overlay); overlay_note(34); overlay_native_34_fn fn = (overlay_native_34_fn)native_table(self)[34]; (void)fn;
     return fn(self->native, a0, a1, a2);
 }
 typedef int32_t (*overlay_native_35_fn)(void *, uint64_t, uint32_t, void *);
 static WINAPI int32_t overlay_35(guest_object *self, uint64_t a0, uint32_t a1, void * a2) { // SetOverlayTransformTrackedDeviceRelative
-    require(self == &overlay); overlay_note(35); overlay_native_35_fn fn = (overlay_native_35_fn)native_table(self)[35];
+    require(self == &overlay); overlay_note(35); overlay_native_35_fn fn = (overlay_native_35_fn)native_table(self)[35]; (void)fn;
     return fn(self->native, a0, a1, a2);
 }
 typedef int32_t (*overlay_native_36_fn)(void *, uint64_t, void *, void *);
 static WINAPI int32_t overlay_36(guest_object *self, uint64_t a0, void * a1, void * a2) { // GetOverlayTransformTrackedDeviceRelative
-    require(self == &overlay); overlay_note(36); overlay_native_36_fn fn = (overlay_native_36_fn)native_table(self)[36];
-    return fn(self->native, a0, a1, a2);
+    require(self == &overlay); overlay_note(36); overlay_native_36_fn fn = (overlay_native_36_fn)native_table(self)[36]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_37_fn)(void *, uint64_t, uint32_t, void *);
 static WINAPI int32_t overlay_37(guest_object *self, uint64_t a0, uint32_t a1, void * a2) { // SetOverlayTransformTrackedDeviceComponent
-    require(self == &overlay); overlay_note(37); overlay_native_37_fn fn = (overlay_native_37_fn)native_table(self)[37];
-    return fn(self->native, a0, a1, a2);
+    require(self == &overlay); overlay_note(37); overlay_native_37_fn fn = (overlay_native_37_fn)native_table(self)[37]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_38_fn)(void *, uint64_t, void *, void *, uint32_t);
 static WINAPI int32_t overlay_38(guest_object *self, uint64_t a0, void * a1, void * a2, uint32_t a3) { // GetOverlayTransformTrackedDeviceComponent
-    require(self == &overlay); overlay_note(38); overlay_native_38_fn fn = (overlay_native_38_fn)native_table(self)[38];
-    return fn(self->native, a0, a1, a2, a3);
+    require(self == &overlay); overlay_note(38); overlay_native_38_fn fn = (overlay_native_38_fn)native_table(self)[38]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_39_fn)(void *, uint64_t, void *, void *);
 static WINAPI int32_t overlay_39(guest_object *self, uint64_t a0, void * a1, void * a2) { // GetOverlayTransformOverlayRelative
-    require(self == &overlay); overlay_note(39); overlay_native_39_fn fn = (overlay_native_39_fn)native_table(self)[39];
+    require(self == &overlay); overlay_note(39); overlay_native_39_fn fn = (overlay_native_39_fn)native_table(self)[39]; (void)fn;
     return fn(self->native, a0, a1, a2);
 }
 typedef int32_t (*overlay_native_40_fn)(void *, uint64_t, uint64_t, void *);
 static WINAPI int32_t overlay_40(guest_object *self, uint64_t a0, uint64_t a1, void * a2) { // SetOverlayTransformOverlayRelative
-    require(self == &overlay); overlay_note(40); overlay_native_40_fn fn = (overlay_native_40_fn)native_table(self)[40];
+    require(self == &overlay); overlay_note(40); overlay_native_40_fn fn = (overlay_native_40_fn)native_table(self)[40]; (void)fn;
     return fn(self->native, a0, a1, a2);
 }
 typedef int32_t (*overlay_native_41_fn)(void *, uint64_t);
 static WINAPI int32_t overlay_41(guest_object *self, uint64_t a0) { // ShowOverlay
-    require(self == &overlay); overlay_note(41); overlay_native_41_fn fn = (overlay_native_41_fn)native_table(self)[41];
+    require(self == &overlay); overlay_note(41); overlay_native_41_fn fn = (overlay_native_41_fn)native_table(self)[41]; (void)fn;
     return fn(self->native, a0);
 }
 typedef int32_t (*overlay_native_42_fn)(void *, uint64_t);
 static WINAPI int32_t overlay_42(guest_object *self, uint64_t a0) { // HideOverlay
-    require(self == &overlay); overlay_note(42); overlay_native_42_fn fn = (overlay_native_42_fn)native_table(self)[42];
+    require(self == &overlay); overlay_note(42); overlay_native_42_fn fn = (overlay_native_42_fn)native_table(self)[42]; (void)fn;
     return fn(self->native, a0);
 }
 typedef uint8_t (*overlay_native_43_fn)(void *, uint64_t);
 static WINAPI uint8_t overlay_43(guest_object *self, uint64_t a0) { // IsOverlayVisible
-    require(self == &overlay); overlay_note(43); overlay_native_43_fn fn = (overlay_native_43_fn)native_table(self)[43];
+    require(self == &overlay); overlay_note(43); overlay_native_43_fn fn = (overlay_native_43_fn)native_table(self)[43]; (void)fn;
     return fn(self->native, a0);
 }
 typedef int32_t (*overlay_native_44_fn)(void *, uint64_t, int32_t, overlay_vec2, void *);
 static WINAPI int32_t overlay_44(guest_object *self, uint64_t a0, int32_t a1, overlay_vec2 a2, void * a3) { // GetTransformForOverlayCoordinates
-    require(self == &overlay); overlay_note(44); overlay_native_44_fn fn = (overlay_native_44_fn)native_table(self)[44];
-    return fn(self->native, a0, a1, a2, a3);
+    require(self == &overlay); overlay_note(44); overlay_native_44_fn fn = (overlay_native_44_fn)native_table(self)[44]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef uint8_t (*overlay_native_45_fn)(void *, uint64_t, void *, uint32_t);
 static WINAPI uint8_t overlay_45(guest_object *self, uint64_t a0, void * a1, uint32_t a2) { // PollNextOverlayEvent
-    require(self == &overlay); overlay_note(45); overlay_native_45_fn fn = (overlay_native_45_fn)native_table(self)[45];
-    return fn(self->native, a0, a1, a2);
+    require(self == &overlay); overlay_note(45); overlay_native_45_fn fn = (overlay_native_45_fn)native_table(self)[45]; (void)fn;
+    if (overlay_keyboard_event(a1, a2, 0)) return 1;
+    _Alignas(8) unsigned char ne[64] = {0};
+    uint8_t r = fn(self->native, a0, a1 ? ne : NULL, a1 ? (a2 < sizeof ne ? a2 : (uint32_t)sizeof ne) : 0);   // xrizer's events use the native pack(4) layout
+    if (r && a1 && a2 >= 20) { memcpy(a1, ne, 12); memcpy((char *)a1 + 16, ne + 12, 4); }
+    return r;
 }
 typedef int32_t (*overlay_native_46_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_46(guest_object *self, uint64_t a0, void * a1) { // GetOverlayInputMethod
-    require(self == &overlay); overlay_note(46); overlay_native_46_fn fn = (overlay_native_46_fn)native_table(self)[46];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(46); overlay_native_46_fn fn = (overlay_native_46_fn)native_table(self)[46]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_47_fn)(void *, uint64_t, int32_t);
 static WINAPI int32_t overlay_47(guest_object *self, uint64_t a0, int32_t a1) { // SetOverlayInputMethod
-    require(self == &overlay); overlay_note(47); overlay_native_47_fn fn = (overlay_native_47_fn)native_table(self)[47];
+    require(self == &overlay); overlay_note(47); overlay_native_47_fn fn = (overlay_native_47_fn)native_table(self)[47]; (void)fn;
     return fn(self->native, a0, a1);
 }
 typedef int32_t (*overlay_native_48_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_48(guest_object *self, uint64_t a0, void * a1) { // GetOverlayMouseScale
-    require(self == &overlay); overlay_note(48); overlay_native_48_fn fn = (overlay_native_48_fn)native_table(self)[48];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(48); overlay_native_48_fn fn = (overlay_native_48_fn)native_table(self)[48]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_49_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_49(guest_object *self, uint64_t a0, void * a1) { // SetOverlayMouseScale
-    require(self == &overlay); overlay_note(49); overlay_native_49_fn fn = (overlay_native_49_fn)native_table(self)[49];
+    require(self == &overlay); overlay_note(49); overlay_native_49_fn fn = (overlay_native_49_fn)native_table(self)[49]; (void)fn;
     return fn(self->native, a0, a1);
 }
 typedef uint8_t (*overlay_native_50_fn)(void *, uint64_t, void *, void *);
 static WINAPI uint8_t overlay_50(guest_object *self, uint64_t a0, void * a1, void * a2) { // ComputeOverlayIntersection
-    require(self == &overlay); overlay_note(50); overlay_native_50_fn fn = (overlay_native_50_fn)native_table(self)[50];
+    require(self == &overlay); overlay_note(50); overlay_native_50_fn fn = (overlay_native_50_fn)native_table(self)[50]; (void)fn;
     return fn(self->native, a0, a1, a2);
 }
 typedef uint8_t (*overlay_native_51_fn)(void *, uint64_t);
 static WINAPI uint8_t overlay_51(guest_object *self, uint64_t a0) { // IsHoverTargetOverlay
-    require(self == &overlay); overlay_note(51); overlay_native_51_fn fn = (overlay_native_51_fn)native_table(self)[51];
-    return fn(self->native, a0);
+    require(self == &overlay); overlay_note(51); overlay_native_51_fn fn = (overlay_native_51_fn)native_table(self)[51]; (void)fn;
+    return 0;
 }
 typedef uint64_t (*overlay_native_52_fn)(void *);
 static WINAPI uint64_t overlay_52(guest_object *self) { // GetGamepadFocusOverlay
-    require(self == &overlay); overlay_note(52); overlay_native_52_fn fn = (overlay_native_52_fn)native_table(self)[52];
-    return fn(self->native);
+    require(self == &overlay); overlay_note(52); overlay_native_52_fn fn = (overlay_native_52_fn)native_table(self)[52]; (void)fn;
+    return 0;
 }
 typedef int32_t (*overlay_native_53_fn)(void *, uint64_t);
 static WINAPI int32_t overlay_53(guest_object *self, uint64_t a0) { // SetGamepadFocusOverlay
-    require(self == &overlay); overlay_note(53); overlay_native_53_fn fn = (overlay_native_53_fn)native_table(self)[53];
-    return fn(self->native, a0);
+    require(self == &overlay); overlay_note(53); overlay_native_53_fn fn = (overlay_native_53_fn)native_table(self)[53]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_54_fn)(void *, int32_t, uint64_t, uint64_t);
 static WINAPI int32_t overlay_54(guest_object *self, int32_t a0, uint64_t a1, uint64_t a2) { // SetOverlayNeighbor
-    require(self == &overlay); overlay_note(54); overlay_native_54_fn fn = (overlay_native_54_fn)native_table(self)[54];
-    return fn(self->native, a0, a1, a2);
+    require(self == &overlay); overlay_note(54); overlay_native_54_fn fn = (overlay_native_54_fn)native_table(self)[54]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_55_fn)(void *, int32_t, uint64_t);
 static WINAPI int32_t overlay_55(guest_object *self, int32_t a0, uint64_t a1) { // MoveGamepadFocusToNeighbor
-    require(self == &overlay); overlay_note(55); overlay_native_55_fn fn = (overlay_native_55_fn)native_table(self)[55];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(55); overlay_native_55_fn fn = (overlay_native_55_fn)native_table(self)[55]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_56_fn)(void *, uint64_t, int32_t, void *, float);
 static WINAPI int32_t overlay_56(guest_object *self, uint64_t a0, int32_t a1, void * a2, float a3) { // SetOverlayDualAnalogTransform
-    require(self == &overlay); overlay_note(56); overlay_native_56_fn fn = (overlay_native_56_fn)native_table(self)[56];
-    return fn(self->native, a0, a1, a2, a3);
+    require(self == &overlay); overlay_note(56); overlay_native_56_fn fn = (overlay_native_56_fn)native_table(self)[56]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_57_fn)(void *, uint64_t, int32_t, void *, void *);
 static WINAPI int32_t overlay_57(guest_object *self, uint64_t a0, int32_t a1, void * a2, void * a3) { // GetOverlayDualAnalogTransform
-    require(self == &overlay); overlay_note(57); overlay_native_57_fn fn = (overlay_native_57_fn)native_table(self)[57];
-    return fn(self->native, a0, a1, a2, a3);
+    require(self == &overlay); overlay_note(57); overlay_native_57_fn fn = (overlay_native_57_fn)native_table(self)[57]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_58_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_58(guest_object *self, uint64_t a0, void * a1) { // SetOverlayTexture
-    require(self == &overlay); overlay_note(58); overlay_native_58_fn fn = (overlay_native_58_fn)native_table(self)[58];
+    require(self == &overlay); overlay_note(58); overlay_native_58_fn fn = (overlay_native_58_fn)native_table(self)[58]; (void)fn;
     return fn(self->native, a0, a1);
 }
 typedef int32_t (*overlay_native_59_fn)(void *, uint64_t);
 static WINAPI int32_t overlay_59(guest_object *self, uint64_t a0) { // ClearOverlayTexture
-    require(self == &overlay); overlay_note(59); overlay_native_59_fn fn = (overlay_native_59_fn)native_table(self)[59];
+    require(self == &overlay); overlay_note(59); overlay_native_59_fn fn = (overlay_native_59_fn)native_table(self)[59]; (void)fn;
     return fn(self->native, a0);
 }
 typedef int32_t (*overlay_native_60_fn)(void *, uint64_t, void *, uint32_t, uint32_t, uint32_t);
 static WINAPI int32_t overlay_60(guest_object *self, uint64_t a0, void * a1, uint32_t a2, uint32_t a3, uint32_t a4) { // SetOverlayRaw
-    require(self == &overlay); overlay_note(60); overlay_native_60_fn fn = (overlay_native_60_fn)native_table(self)[60];
-    return fn(self->native, a0, a1, a2, a3, a4);
+    require(self == &overlay); overlay_note(60); overlay_native_60_fn fn = (overlay_native_60_fn)native_table(self)[60]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_61_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_61(guest_object *self, uint64_t a0, void * a1) { // SetOverlayFromFile
-    require(self == &overlay); overlay_note(61); overlay_native_61_fn fn = (overlay_native_61_fn)native_table(self)[61];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(61); overlay_native_61_fn fn = (overlay_native_61_fn)native_table(self)[61]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_62_fn)(void *, uint64_t, void *, void *, void *, void *, void *, void *, void *, void *);
 static WINAPI int32_t overlay_62(guest_object *self, uint64_t a0, void * a1, void * a2, void * a3, void * a4, void * a5, void * a6, void * a7, void * a8) { // GetOverlayTexture
-    require(self == &overlay); overlay_note(62); overlay_native_62_fn fn = (overlay_native_62_fn)native_table(self)[62];
-    return fn(self->native, a0, a1, a2, a3, a4, a5, a6, a7, a8);
+    require(self == &overlay); overlay_note(62); overlay_native_62_fn fn = (overlay_native_62_fn)native_table(self)[62]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_63_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_63(guest_object *self, uint64_t a0, void * a1) { // ReleaseNativeOverlayHandle
-    require(self == &overlay); overlay_note(63); overlay_native_63_fn fn = (overlay_native_63_fn)native_table(self)[63];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(63); overlay_native_63_fn fn = (overlay_native_63_fn)native_table(self)[63]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_64_fn)(void *, uint64_t, void *, void *);
 static WINAPI int32_t overlay_64(guest_object *self, uint64_t a0, void * a1, void * a2) { // GetOverlayTextureSize
-    require(self == &overlay); overlay_note(64); overlay_native_64_fn fn = (overlay_native_64_fn)native_table(self)[64];
-    return fn(self->native, a0, a1, a2);
+    require(self == &overlay); overlay_note(64); overlay_native_64_fn fn = (overlay_native_64_fn)native_table(self)[64]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_65_fn)(void *, void *, void *, void *, void *);
 static WINAPI int32_t overlay_65(guest_object *self, void * a0, void * a1, void * a2, void * a3) { // CreateDashboardOverlay
-    require(self == &overlay); overlay_note(65); overlay_native_65_fn fn = (overlay_native_65_fn)native_table(self)[65];
-    return fn(self->native, a0, a1, a2, a3);
+    require(self == &overlay); overlay_note(65); overlay_native_65_fn fn = (overlay_native_65_fn)native_table(self)[65]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef uint8_t (*overlay_native_66_fn)(void *);
 static WINAPI uint8_t overlay_66(guest_object *self) { // IsDashboardVisible
-    require(self == &overlay); overlay_note(66); overlay_native_66_fn fn = (overlay_native_66_fn)native_table(self)[66];
+    require(self == &overlay); overlay_note(66); overlay_native_66_fn fn = (overlay_native_66_fn)native_table(self)[66]; (void)fn;
     return fn(self->native);
 }
 typedef uint8_t (*overlay_native_67_fn)(void *, uint64_t);
 static WINAPI uint8_t overlay_67(guest_object *self, uint64_t a0) { // IsActiveDashboardOverlay
-    require(self == &overlay); overlay_note(67); overlay_native_67_fn fn = (overlay_native_67_fn)native_table(self)[67];
-    return fn(self->native, a0);
+    require(self == &overlay); overlay_note(67); overlay_native_67_fn fn = (overlay_native_67_fn)native_table(self)[67]; (void)fn;
+    return 0;
 }
 typedef int32_t (*overlay_native_68_fn)(void *, uint64_t, uint32_t);
 static WINAPI int32_t overlay_68(guest_object *self, uint64_t a0, uint32_t a1) { // SetDashboardOverlaySceneProcess
-    require(self == &overlay); overlay_note(68); overlay_native_68_fn fn = (overlay_native_68_fn)native_table(self)[68];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(68); overlay_native_68_fn fn = (overlay_native_68_fn)native_table(self)[68]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_69_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_69(guest_object *self, uint64_t a0, void * a1) { // GetDashboardOverlaySceneProcess
-    require(self == &overlay); overlay_note(69); overlay_native_69_fn fn = (overlay_native_69_fn)native_table(self)[69];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(69); overlay_native_69_fn fn = (overlay_native_69_fn)native_table(self)[69]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef void (*overlay_native_70_fn)(void *, void *);
 static WINAPI void overlay_70(guest_object *self, void * a0) { // ShowDashboard
-    require(self == &overlay); overlay_note(70); overlay_native_70_fn fn = (overlay_native_70_fn)native_table(self)[70];
-    fn(self->native, a0);
+    require(self == &overlay); overlay_note(70); overlay_native_70_fn fn = (overlay_native_70_fn)native_table(self)[70]; (void)fn;
+    return;
 }
 typedef uint32_t (*overlay_native_71_fn)(void *);
 static WINAPI uint32_t overlay_71(guest_object *self) { // GetPrimaryDashboardDevice
-    require(self == &overlay); overlay_note(71); overlay_native_71_fn fn = (overlay_native_71_fn)native_table(self)[71];
-    return fn(self->native);
+    require(self == &overlay); overlay_note(71); overlay_native_71_fn fn = (overlay_native_71_fn)native_table(self)[71]; (void)fn;
+    return 0;
 }
 typedef int32_t (*overlay_native_72_fn)(void *, int32_t, int32_t, void *, uint32_t, void *, uint8_t, uint64_t);
 static WINAPI int32_t overlay_72(guest_object *self, int32_t a0, int32_t a1, void * a2, uint32_t a3, void * a4, uint8_t a5, uint64_t a6) { // ShowKeyboard
-    require(self == &overlay); overlay_note(72); overlay_native_72_fn fn = (overlay_native_72_fn)native_table(self)[72];
-    return fn(self->native, a0, a1, a2, a3, a4, a5, a6);
+    require(self == &overlay); overlay_note(72); overlay_native_72_fn fn = (overlay_native_72_fn)native_table(self)[72]; (void)fn;
+    overlay_keyboard_show((const char *)a4, a6, 1, "IVROverlay_018::ShowKeyboard"); return 0;
 }
 typedef int32_t (*overlay_native_73_fn)(void *, uint64_t, int32_t, int32_t, void *, uint32_t, void *, uint8_t, uint64_t);
 static WINAPI int32_t overlay_73(guest_object *self, uint64_t a0, int32_t a1, int32_t a2, void * a3, uint32_t a4, void * a5, uint8_t a6, uint64_t a7) { // ShowKeyboardForOverlay
-    require(self == &overlay); overlay_note(73); overlay_native_73_fn fn = (overlay_native_73_fn)native_table(self)[73];
-    return fn(self->native, a0, a1, a2, a3, a4, a5, a6, a7);
+    require(self == &overlay); overlay_note(73); overlay_native_73_fn fn = (overlay_native_73_fn)native_table(self)[73]; (void)fn;
+    overlay_keyboard_show((const char *)a5, a7, 0, "IVROverlay_018::ShowKeyboardForOverlay"); return 0;
 }
 typedef uint32_t (*overlay_native_74_fn)(void *, void *, uint32_t);
 static WINAPI uint32_t overlay_74(guest_object *self, void * a0, uint32_t a1) { // GetKeyboardText
-    require(self == &overlay); overlay_note(74); overlay_native_74_fn fn = (overlay_native_74_fn)native_table(self)[74];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(74); overlay_native_74_fn fn = (overlay_native_74_fn)native_table(self)[74]; (void)fn;
+    pthread_mutex_lock(&overlay_kbd.lock);
+    uint32_t n = (uint32_t)strlen(overlay_kbd.text);
+    if (a0 && a1) { uint32_t c = n < a1 - 1 ? n : a1 - 1; memcpy(a0, overlay_kbd.text, c); ((char *)a0)[c] = 0; }
+    pthread_mutex_unlock(&overlay_kbd.lock);
+    return n;
 }
 typedef void (*overlay_native_75_fn)(void *);
 static WINAPI void overlay_75(guest_object *self) { // HideKeyboard
-    require(self == &overlay); overlay_note(75); overlay_native_75_fn fn = (overlay_native_75_fn)native_table(self)[75];
-    fn(self->native);
+    require(self == &overlay); overlay_note(75); overlay_native_75_fn fn = (overlay_native_75_fn)native_table(self)[75]; (void)fn;
+    pthread_mutex_lock(&overlay_kbd.lock); overlay_kbd.next = overlay_kbd.count = 0; pthread_mutex_unlock(&overlay_kbd.lock);
 }
 typedef void (*overlay_native_76_fn)(void *, int32_t, void *);
 static WINAPI void overlay_76(guest_object *self, int32_t a0, void * a1) { // SetKeyboardTransformAbsolute
-    require(self == &overlay); overlay_note(76); overlay_native_76_fn fn = (overlay_native_76_fn)native_table(self)[76];
-    fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(76); overlay_native_76_fn fn = (overlay_native_76_fn)native_table(self)[76]; (void)fn;
+    return;
 }
 typedef void (*overlay_native_77_fn)(void *, uint64_t, overlay_rect2);
 static WINAPI void overlay_77(guest_object *self, uint64_t a0, overlay_rect2 a1) { // SetKeyboardPositionForOverlay
-    require(self == &overlay); overlay_note(77); overlay_native_77_fn fn = (overlay_native_77_fn)native_table(self)[77];
-    fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(77); overlay_native_77_fn fn = (overlay_native_77_fn)native_table(self)[77]; (void)fn;
+    return;
 }
 typedef int32_t (*overlay_native_78_fn)(void *, uint64_t, void *, uint32_t, uint32_t);
 static WINAPI int32_t overlay_78(guest_object *self, uint64_t a0, void * a1, uint32_t a2, uint32_t a3) { // SetOverlayIntersectionMask
-    require(self == &overlay); overlay_note(78); overlay_native_78_fn fn = (overlay_native_78_fn)native_table(self)[78];
+    require(self == &overlay); overlay_note(78); overlay_native_78_fn fn = (overlay_native_78_fn)native_table(self)[78]; (void)fn;
     return fn(self->native, a0, a1, a2, a3);
 }
 typedef int32_t (*overlay_native_79_fn)(void *, uint64_t, void *);
 static WINAPI int32_t overlay_79(guest_object *self, uint64_t a0, void * a1) { // GetOverlayFlags
-    require(self == &overlay); overlay_note(79); overlay_native_79_fn fn = (overlay_native_79_fn)native_table(self)[79];
-    return fn(self->native, a0, a1);
+    require(self == &overlay); overlay_note(79); overlay_native_79_fn fn = (overlay_native_79_fn)native_table(self)[79]; (void)fn;
+    return 23;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef int32_t (*overlay_native_80_fn)(void *, void *, void *, void *, void *, void *, void *);
 static WINAPI int32_t overlay_80(guest_object *self, void * a0, void * a1, void * a2, void * a3, void * a4, void * a5) { // ShowMessageOverlay
-    require(self == &overlay); overlay_note(80); overlay_native_80_fn fn = (overlay_native_80_fn)native_table(self)[80];
-    return fn(self->native, a0, a1, a2, a3, a4, a5);
+    require(self == &overlay); overlay_note(80); overlay_native_80_fn fn = (overlay_native_80_fn)native_table(self)[80]; (void)fn;
+    return 5;   /* RequestFailed: xrizer's method is todo!() */
 }
 typedef void (*overlay_native_81_fn)(void *);
 static WINAPI void overlay_81(guest_object *self) { // CloseMessageOverlay
-    require(self == &overlay); overlay_note(81); overlay_native_81_fn fn = (overlay_native_81_fn)native_table(self)[81];
-    fn(self->native);
+    require(self == &overlay); overlay_note(81); overlay_native_81_fn fn = (overlay_native_81_fn)native_table(self)[81]; (void)fn;
+    return;
 }
 static void overlay_install(void) {
     for (unsigned i = 0; i < 82; i++) overlay_table[i] = NULL;
@@ -1082,6 +1119,7 @@ static WINAPI int controller_role(guest_object *self, uint32_t index) {
 // VREvent_t data is at byte 12. Current xrizer emits controller-sized payloads.
 static WINAPI uint8_t poll_event(guest_object *self, void *event, uint32_t size) {
     require(self == &system_object);
+    if (overlay_keyboard_event(event,size,1)) return 1;   // ShowKeyboard's events (see the IVROverlay keyboard note)
     native_poll_event_fn fn=(native_poll_event_fn)native_table(self)[30];
     _Alignas(8) unsigned char native_event[60]={0};
     uint8_t result=fn(self->native,event ? native_event : NULL,size >= 20 ? sizeof native_event : 0);
