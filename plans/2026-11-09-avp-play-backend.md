@@ -50,6 +50,26 @@ Milestone 1 below starts only after the first three are true.
 - [ ] `stage_sync.py --phase all [--dry-run]`: hard-link mirror into `KL_LX_MIRROR` of what the runtime reads (Data, .ini files, media). Leave out the code already compiled into the app. Copy it to the device root the runtime is configured with.
 - [ ] Owned fixture tests: the script's env handling and failure strings, and the mirror selection against a fake tree. No device.
 
+### 2a. Pre-compiled shaders, so the headset doesn't compile them
+
+Today Skyrim's D3D11 path translates each DXBC shader to MSL. The headset then compiles that MSL at run time with `newLibraryWithSource` (`VXRuntime/src/d3d11_draw.m:66`, `:178-179`, `:1059`), which costs time on first use and hitches mid-game.
+
+The D3D12 path already has what we need:
+- a metallib cache keyed by hash of source and options;
+- a read-only second cache shipped inside the app (`VXRT_D3D12_SHADER_CACHE_RO`);
+- `tools/xros_shadercache.sh`, which compiles on the Mac with `xcrun -sdk xros metal` (`VXRuntime/src/d3d12.m:758-867`; `VXRuntime/VISIONOS_PORT.md:210-220`).
+
+There, d3d12.exe went from 70 sources compiled on the headset to 70 loaded from the cache and 0 compiled (about 0.2 ms each). AVP Play does the same thing for Klepton games: it builds a pipeline list from the player's own files on the Mac, and the headset compiles it before the first start, with a progress bar (`Toolchain.swift:590-654`, `Installer.swift:900-920` in avp-play).
+
+- [ ] Give D3D11 the same cache: the same key scheme (source + compile options + runtime/translator version), a writable cache in `Documents/shadercache` and the read-only one in the app. Log a hit or miss per shader, so a miss is visible and never silently counted as a hit.
+- [ ] Collect Skyrim's shader set on the Mac. Gather the MSL that a dev-host run actually creates, with its options. Also find where Skyrim keeps its compiled DXBC, so the full set can be translated offline instead of only what one run happened to touch.
+- [ ] Compile the set in `run.sh` with `xcrun -sdk xros metal`, into the app's read-only cache, or synced like data if the app gets too large. Build it once per game build and translator version; a translator change must change the key.
+- [ ] Measure on the simulator: how many shaders were compiled from source vs. loaded, startup time, and hitches during the first minutes, with and without the cache. Then measure again on the headset.
+- [ ] Later, only if run-time pipeline-state creation still shows up after the metallibs: try a Metal binary archive (`MTLBinaryArchive`) with GPU binaries for the device. Either harvest it from a first headset run, or build it offline if the Xcode tools support the visionOS GPU. This is a measured follow-on, not assumed.
+- [ ] Keep the translated shaders private, like the translated code: they are derived from the game. They live in git-ignored directories and the user's own signed app.
+
+Standard Metal shader compilation stays allowed by `AGENTS.md`; doing it on the Mac ahead of time only saves time. This is not the CPU AOT rule.
+
 ### 3. Start window, play area and controller settings in our app
 
 - [ ] Port Klepton's start window (Start / Settings / Measure room) with MIT attribution in `THIRD_PARTY_NOTICES.md` and the component's source record.
