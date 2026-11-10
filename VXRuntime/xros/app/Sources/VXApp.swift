@@ -131,7 +131,13 @@ enum VXLifecycle {
         reopens += 1
         VXImmersiveController.shared.setNeedsResume(true)
         let delay = min(0.7 * Double(reopens), 5)
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { NotificationCenter.default.post(name: .vxReopenImmersive, object: nil) }
+        // The layer is gone: if the app is already leaving (Crown, doff), that is the signature of a Crown press; do not fight it.
+        let activeNow = appIsActive()
+        vxrt_jlog("layer_gone", "\"active\":\(activeNow),\"reopen\":\(reopens)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            if appIsActive() { NotificationCenter.default.post(name: .vxReopenImmersive, object: nil) }
+            else { suppressReopen("layer_invalidated") }
+        }
         return true
 #else
         return false
@@ -149,6 +155,20 @@ enum VXLifecycle {
     // apart; main.m's g_booted keeps the program to one start), so each instance's .task asked for the space. One open at a time: a second
     // caller while one is in flight (or the space is already open) does not call openImmersiveSpace again.
     nonisolated(unsafe) static var openInFlight = false
+    // A Crown press (or a notification, the headset coming off) invalidates the layer and sends the app to Home. Anything that then calls
+    // openImmersiveSpace / openWindow brings the app straight back to the front (the mask build 2f62975: "Home shows briefly, then Skyrim comes
+    // straight back": layerInvalidated() scheduled a reopen 0.7 s later whatever the app state, and openSpace retried every second). Rule: no open
+    // while the app is not active; the open that was wanted is remembered (`reopenWanted`) and done when the wearer brings the app back
+    // (didBecomeActive), or by an explicit tap on Resume. A real launch's first open is exempt.
+    nonisolated(unsafe) static var reopenWanted = false
+    nonisolated(unsafe) static var scenePhaseNow: ScenePhase = .active
+    // Cached from UIApplication's notifications (no main-thread hop: callers include the compositor thread and main itself).
+    nonisolated(unsafe) static var appActive = false
+    static func appIsActive() -> Bool { appActive && scenePhaseNow == .active }
+    static func suppressReopen(_ why: String, tag: String = "") {
+        reopenWanted = true
+        vxrt_jlog("reopen_suppressed", "\"why\":\"\(why)\",\"tag\":\"\(tag)\",\"app_active\":\(appActive),\"phase\":\"\(scenePhaseNow)\"")
+    }
     nonisolated(unsafe) static var backgroundExit: DispatchWorkItem?
     static var testExitSeconds: Double? { ProcessInfo.processInfo.environment["VXRT_BG_EXIT_S"].flatMap(Double.init).flatMap { $0 > 0 ? $0 : nil } }
     static func exitNow(_ reason: String, _ extra: String = "") {
@@ -192,17 +212,23 @@ enum VXLifecycle {
     static func observeApplication() {
         let nc = NotificationCenter.default
         func state() -> String { "\"app_state\":\(UIApplication.shared.applicationState.rawValue),\"frames\":\(VXImmersiveRenderer.frameCount),\"space_open\":\(spaceOpen),\"reopen_pending\":\(reopenPending)" }
-        nc.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in vxrt_jlog("app_resign_active", state()); dumpSystemLog("resign_active", seconds: 10) }
+        nc.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in appActive = false; vxrt_jlog("app_resign_active", state()); dumpSystemLog("resign_active", seconds: 10) }
         nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            appActive = true
             vxrt_jlog("app_become_active", state())
             backgroundExit?.cancel(); backgroundExit = nil
             // The space was closed (layer invalidated, or never opened) while we were away: bring it back now that the app is active.
-            if !spaceOpen && !reopenPending && VXImmersiveRenderer.frameCount > 0 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { nc.post(name: .vxReopenImmersive, object: nil) }
+            if !spaceOpen && !reopenPending && (VXImmersiveRenderer.frameCount > 0 || reopenWanted) {
+                vxrt_jlog("reopen_on_active", "\"wanted\":\(reopenWanted)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    if appIsActive() { reopenWanted = false; nc.post(name: .vxReopenImmersive, object: nil) } else { suppressReopen("not_active_after_become_active") }
+                }
             }
         }
         nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+            appActive = false
             vxrt_jlog("app_background", state())
+            vxrt_jlog("crown_bg", "\"space_open\":\(spaceOpen),\"frames\":\(VXImmersiveRenderer.frameCount)")
             dumpSystemLog("app_background")
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { dumpSystemLog("app_background+2s", seconds: 4) }
             guard let secs = testExitSeconds else { return }
@@ -231,6 +257,8 @@ enum VXLifecycle {
         }
         for attempt in 1...max(1, attempts) {
             if spaceOpen { reopenPending = false; return true }
+            // Not while the app is leaving or away (the first launch attempt is exempt: the app is coming to the front by itself).
+            if !(tag == "launch" && attempt == 1) && !appIsActive() { reopenPending = false; suppressReopen("not_active", tag: tag); return false }
             openInFlight = true
             let result = await VXImmersiveController.shared.openNow()
             openInFlight = false
@@ -253,6 +281,8 @@ enum VXLifecycle {
     // Backgrounding pauses; it no longer ends the process. VXRT_BG_EXIT_S=<s> (observeApplication) is the test-sweep exit, and
     // VXRT_EXIT_ON_BACKGROUND=1 restores the old immediate exit (Klepton's policy).
     static func scenePhaseChanged(to phase: ScenePhase) {
+        scenePhaseNow = phase
+        if phase != .active { vxrt_jlog("crown_bg", "\"phase\":\"\(phase)\",\"space_open\":\(spaceOpen),\"frames\":\(VXImmersiveRenderer.frameCount)") }
 #if XRIZER_XROS_FIXTURE
         guard vx_xros_immersive_enabled() != 0 else { return }
         // A background / inactive scene is a PAUSE: the compositor layer pauses and resumes by itself when the app is active again (device L3,
