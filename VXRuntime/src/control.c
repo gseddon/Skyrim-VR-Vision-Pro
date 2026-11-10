@@ -5,6 +5,7 @@
 //                              and where; the active window, the focus; whether the program is idle
 //   windows                    the same without the text (what a screenshot-only agent may know: tools/vxrt_screen.py)
 //   snapshot <hwnd> <path>     the window's client area as a PNG file (what GDI drew into it)
+//   snapshot-layers <hwnd> <path>  what snapshot-view shows, from the layers only (exact: no display in between)
 //   snapshot-view <hwnd> <path>  what its Mac window shows of it (the committed picture, its child windows, alpha),
 //                              at the window's backing scale, as a PNG file; answers the scale and the size in pixels
 //   click <hwnd> <x> <y>       a left click at client coordinates (hwnd 0: the active window, else the first visible one)
@@ -44,6 +45,7 @@
 #include <unistd.h>
 #include "ui.h"
 
+int vx_snapshot_layers_only;                 // (set by snapshot-layers around one snapshot-view; the control thread alone)
 static char g_path[104];
 static FILE *g_log;
 static double g_t0;
@@ -179,15 +181,20 @@ static void request(int fd, char *line) {
     } else if (!strcmp(cmd, "snapshot")) {
         while (*s == ' ') s++;
         if (!*s || !vx_ui_snapshot(h, s)) { reply_err(fd, "snapshot <hwnd> <path>: not written"); return; }
-    } else if (!strcmp(cmd, "snapshot-view")) {
+    } else if (!strcmp(cmd, "snapshot-view") || !strcmp(cmd, "snapshot-layers")) {
         while (*s == ' ') s++;
         char info[200] = "", b[320];
-        if (!*s || !vx_ui_snapshot_view(h, s, info, sizeof info)) { reply_err(fd, "snapshot-view <hwnd> <path>: not written (no Mac window shows it)"); return; }
+        // snapshot-layers: Core Animation's rendering only, never the window server's pixels, which depend on the
+        // display the window is on (its profile, scale and gamut) and are never exact
+        vx_snapshot_layers_only = !strcmp(cmd, "snapshot-layers");
+        int done = *s && vx_ui_snapshot_view(h, s, info, sizeof info);
+        vx_snapshot_layers_only = 0;
+        if (!done) { reply_err(fd, "snapshot-view <hwnd> <path>: not written (no Mac window shows it)"); return; }
         snprintf(b, sizeof b, "{\"ok\":true,\"hwnd\":%lld,%s}", (long long)(intptr_t)h, info);
         reply(fd, b);
         return;
     } else if (!strcmp(cmd, "close")) vx_window_post(h, WM_CLOSE, 0, 0);
-    else { reply_err(fd, "unknown request (state, windows, snapshot, snapshot-view, click, click-text, key, type, wheel, ime, clipboard, clipboard-set, close, wait-idle, tray, tray-click, tray-snapshot, menu, menu-pick, menu-cancel)"); return; }
+    else { reply_err(fd, "unknown request (state, windows, snapshot, snapshot-view, snapshot-layers, click, click-text, key, type, wheel, ime, clipboard, clipboard-set, close, wait-idle, tray, tray-click, tray-snapshot, menu, menu-pick, menu-cancel)"); return; }
     reply_ok(fd, h);
 }
 
