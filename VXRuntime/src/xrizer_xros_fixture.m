@@ -1,7 +1,9 @@
-/* Owned simulator fixture only: one existing compositor, injected head/input. */
+/* The xrizer host for the visionOS app's existing compositor: the owned fixture's host (simulator or device) and,
+ * with VXRT_XRIZER_XROS_IMMERSIVE=1 (main.m: -xrizer -immersive), the immersive presentation of a game's pairs.
+ * Input is the observed absence of hands unless the controller adapter feeds it. */
 #include <TargetConditionals.h>
-#if !TARGET_OS_SIMULATOR && !defined(VX_XROS_FIXTURE_SCAN)
-#error "xrizer xros fixture is simulator-only"
+#if !TARGET_OS_SIMULATOR && !TARGET_OS_VISION && !defined(VX_XROS_FIXTURE_SCAN)
+#error "xrizer xros host is for the visionOS app only"
 #endif
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -86,9 +88,14 @@ static XrResult input(void *ctx,KlNativeInputSample *sample) {
     *sample=(KlNativeInputSample){.sample_id=id,.sample_time=t,.hand_connected={(XrBool32)hands[0],(XrBool32)hands[1]}};
     return XR_SUCCESS;
 }
+int vx_xros_immersive_enabled(void) { const char *v=getenv("VXRT_XRIZER_XROS_IMMERSIVE"); return v && !strcmp(v,"1"); }
+/* The drawable the compositor gave: one view (the simulator) is shown as an inspection layout, two dedicated views
+ * (the headset) as stereo. Set by the compositor loop before the host starts. */
+static int immersive_mono;
+void vx_xros_immersive_set_mono(int mono) { immersive_mono=mono!=0; }
 int vx_xros_fixture_present_enabled(void) {
     const char *o=getenv("VXRT_XRIZER_XROS_OFFSCREEN"),*p=getenv("VXRT_XRIZER_XROS_PRESENT");
-    return vx_xros_fixture_enabled() && o && !strcmp(o,"1") && p && !strcmp(p,"1");
+    return vx_xros_fixture_enabled() && ((o && !strcmp(o,"1") && p && !strcmp(p,"1")) || (vx_xros_immersive_enabled() && immersive_mono));
 }
 void vx_xros_fixture_record_drawable(uint64_t frame,uint64_t pose,int completed,uint32_t format,const unsigned char samples[96]) {
     pthread_mutex_lock(&lock);
@@ -137,12 +144,12 @@ static int verify_drawable(uint64_t frame_id,unsigned variant) {
         (unsigned long long)frame_id,found,r.completed,r.format,worst,ok?"pass":"fail");
     return ok?0:-1;
 }
-int vx_xros_fixture_enabled(void) { const char *v=getenv("VXRT_XRIZER_XROS_FIXTURE"); return v && !strcmp(v,"1"); }
+int vx_xros_fixture_enabled(void) { const char *v=getenv("VXRT_XRIZER_XROS_FIXTURE"); return (v && !strcmp(v,"1")) || vx_xros_immersive_enabled(); }
 int vx_xros_fixture_start(void *device,void *queue) {
     if(!vx_xros_fixture_enabled() || !device || !queue)return -1;
     pthread_mutex_lock(&lock); int used=host || failed; pthread_mutex_unlock(&lock); if(used)return -1;
     vx_xros_xrizer_platform platform={VX_XROS_XRIZER_API_VERSION,sizeof(platform),NULL,begin,end,request_exit,input,vx_xros_controllers_sample,vx_xros_haptics_apply,vx_xros_haptics_stop};
-    vx_xros_xrizer_host *created=vx_xros_xrizer_create(VX_XROS_XRIZER_INJECTED_TEST,device,queue,&platform);
+    vx_xros_xrizer_host *created=vx_xros_xrizer_create(vx_xros_immersive_enabled() ? VX_XROS_XRIZER_PLATFORM : VX_XROS_XRIZER_INJECTED_TEST,device,queue,&platform);
     if(!created || vx_xrizer_guest_d3d_create(device,queue,vx_xros_xrizer_record_destination,created,&source))goto fail;
     host=created; fixture_device=(__bridge id<MTLDevice>)device; fixture_queue=(__bridge id<MTLCommandQueue>)queue;
     vx_xros_xrizer_static_api api={VX_XROS_XRIZER_API_VERSION,sizeof(api),xrizer_configure_openxr_provider,

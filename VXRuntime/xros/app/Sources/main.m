@@ -194,7 +194,22 @@ __attribute__((constructor)) static void early(void) {
     // -game skyrimvr -xrizer: use xrizer as the game's OpenVR (the XROS_XRIZER_GAME=1 build: the fixture's host, offscreen
     // pair shown side by side in the simulator's one view). Opt-in by that argument; in any other build, or without it,
     // these variables are not set (and in a build without the fixture they would be inert).
-    if (g_game && !strcmp(g_test, "skyrimvr"))
+    // -immersive (with -xrizer, or with -test xrizer_xros_guest): the pairs xrizer's OpenVR gets from the game are presented
+    // in the immersive space through Compositor Services (VXImmersive.swift: stereo into a two-view drawable on the
+    // headset; side by side in the simulator's one view, with injected optics) and the provider's frames are paced by
+    // the compositor's timing. It replaces the fixture's offscreen/inspection variables: the path is chosen from the
+    // drawable the compositor gives. Needs the build with XROS_XRIZER_FIXTURE=1 (simulator or device; VISIONOS_PORT.md).
+    int immersive = 0;
+    for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "-immersive")) immersive = 1;
+    if (immersive && ((g_game && !strcmp(g_test, "skyrimvr")) || !strcmp(g_test, "xrizer_xros_guest"))) {
+        int xrizer = !strcmp(g_test, "xrizer_xros_guest");
+        for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "-xrizer")) xrizer = 1;
+        if (xrizer) {
+            setenv("VXRT_XRIZER_XROS_IMMERSIVE", "1", 0);
+            setenv("VXRT_XRIZER_XROS_FIXTURE", "1", 0);
+        }
+    }
+    if (!immersive && g_game && !strcmp(g_test, "skyrimvr"))
         for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "-xrizer")) {
             setenv("VXRT_XRIZER_XROS_FIXTURE", "1", 0);
             setenv("VXRT_XRIZER_XROS_OFFSCREEN", "1", 0);
