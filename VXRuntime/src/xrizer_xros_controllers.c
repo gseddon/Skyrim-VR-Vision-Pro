@@ -7,6 +7,7 @@
 #include <time.h>
 #include <openxr/openxr.h>
 #include "input_host.h"
+#include "haptic_host.h"
 #include "xrizer_xros_controllers.h"
 
 void vx_log(const char *, ...);
@@ -161,7 +162,7 @@ static void script_at(int64_t elapsed_ms, vx_xros_controller_hand out[2]) {
 }
 static void script_init_locked(void) {
     if (script_state) return;
-    vx_log("xrizer xros controllers: input host version 3; haptics: the provider has no haptic host boundary, xrApplyHapticFeedback refuses (not wired)");
+    vx_log("xrizer xros controllers: input host version 3; haptics forwarded through haptic host version 1 (amplitude and duration; frequency best effort)");
     const char *s = getenv("VXRT_XROS_TEST_HANDS");
     if (!s || !*s) { script_state = 1; return; }
     if (parse_script(s)) {
@@ -196,5 +197,31 @@ XrResult vx_xros_controllers_sample(void *context, KlNativeInputSample3 *out) {
     }
     *out = current;
     pthread_mutex_unlock(&lock);
+    return XR_SUCCESS;
+}
+
+static vx_xros_haptic_sink haptic_sink;
+static unsigned haptic_forwarded;
+void vx_xros_haptics_set_sink(vx_xros_haptic_sink sink) { pthread_mutex_lock(&lock); haptic_sink = sink; pthread_mutex_unlock(&lock); }
+XrResult vx_xros_haptics_apply(void *context, uint32_t hand, const KlNativeHapticVibration *v) {
+    (void)context;
+    if (!v || hand > 1) return XR_ERROR_VALIDATION_FAILURE;
+    pthread_mutex_lock(&lock);
+    vx_xros_haptic_sink sink = haptic_sink; unsigned n = ++haptic_forwarded;
+    pthread_mutex_unlock(&lock);
+    /* XR_MIN_HAPTIC_DURATION (-1) is the shortest pulse: 20 ms here. Frequency is best effort: the sink uses amplitude and duration. */
+    double seconds = v->duration < 0 ? 0.02 : (double)v->duration / 1e9;
+    if (n <= 50 || n % 100 == 0)
+        vx_log("xrizer xros haptics: forwarded #%u %s hand amplitude %.2f duration %.0f ms frequency %.0f Hz (%s)", n, hand ? "right" : "left",
+               v->amplitude, seconds * 1000, v->frequency, sink ? "to the controller" : "no actuator: not felt");
+    if (sink) sink((int)hand, v->amplitude, seconds, v->frequency, 0);
+    return XR_SUCCESS;
+}
+XrResult vx_xros_haptics_stop(void *context, uint32_t hand) {
+    (void)context;
+    if (hand > 1) return XR_ERROR_VALIDATION_FAILURE;
+    pthread_mutex_lock(&lock); vx_xros_haptic_sink sink = haptic_sink; pthread_mutex_unlock(&lock);
+    vx_log("xrizer xros haptics: forwarded stop %s hand (%s)", hand ? "right" : "left", sink ? "to the controller" : "no actuator");
+    if (sink) sink((int)hand, 0, 0, 0, 1);
     return XR_SUCCESS;
 }

@@ -9,7 +9,10 @@
 #include <unistd.h>
 #include <openxr/openxr.h>
 #include "input_host.h"
+#include "haptic_host.h"
 #include "xrizer_xros_controllers.h"
+static int sink_calls, sink_hand = -1, sink_stop; static float sink_amp; static double sink_seconds;
+static void sink(int hand, float amp, double seconds, float freq, int stop) { (void)freq; ++sink_calls; sink_hand = hand; sink_amp = amp; sink_seconds = seconds; sink_stop = stop; }
 void vx_log(const char *f, ...) { va_list a; va_start(a, f); fputs("  log: ", stdout); vprintf(f, a); putchar('\n'); va_end(a); }
 static vx_xros_controller_hand rest(int right) {
     vx_xros_controller_hand h; memset(&h, 0, sizeof h);
@@ -65,6 +68,14 @@ int main(int argc, char **argv) {
     assert(vx_xros_controllers_sample(NULL, &s) == XR_SUCCESS && isnan(s.hand[1].controls.trigger) && isnan(s.hand[1].controls.stick_x) && isnan(s.hand[1].controls.stick_y));
     h[1].aim[3] = 2.f; vx_xros_controllers_publish(h, at + 200);
     assert(vx_xros_controllers_sample(NULL, &s) == XR_SUCCESS && !s.hand[1].controls.connected && !s.hand[1].profile);
+    /* haptics: logged without a sink, delivered with one; the minimum duration is a short pulse; a bad hand is refused */
+    KlNativeHapticVibration hv = { 50000000, 160.f, 0.5f };
+    assert(vx_xros_haptics_apply(NULL, 1, &hv) == XR_SUCCESS && sink_calls == 0);
+    vx_xros_haptics_set_sink(sink);
+    assert(vx_xros_haptics_apply(NULL, 1, &hv) == XR_SUCCESS && sink_calls == 1 && sink_hand == 1 && sink_amp == 0.5f && fabs(sink_seconds - 0.05) < 1e-9 && !sink_stop);
+    hv.duration = XR_MIN_HAPTIC_DURATION; assert(vx_xros_haptics_apply(NULL, 0, &hv) == XR_SUCCESS && sink_hand == 0 && sink_seconds > 0 && sink_seconds < 0.1);
+    assert(vx_xros_haptics_stop(NULL, 0) == XR_SUCCESS && sink_stop == 1 && sink_calls == 3);
+    assert(vx_xros_haptics_apply(NULL, 2, &hv) == XR_ERROR_VALIDATION_FAILURE && vx_xros_haptics_apply(NULL, 0, NULL) == XR_ERROR_VALIDATION_FAILURE && sink_calls == 3);
     puts("controllers ok");
     return 0;
 }

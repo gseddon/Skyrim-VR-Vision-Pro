@@ -31,6 +31,7 @@ struct VXSpatialObservation {
     let inputCaptureAfter: UInt64
     let inputEventTime: TimeInterval
     let canonical: VXSpatialCanonicalSnapshot
+    let controller: GCController
 }
 
 // ARKit's world query is documented not thread safe. Reconfiguring the shared
@@ -69,6 +70,9 @@ actor VXNativeXRTracking {
             }
             observers.append(token)
         }
+#if XRIZER_XROS_FIXTURE
+        vx_xros_haptics_set_sink(vxHapticSink)
+#endif
         await refresh()
     }
 
@@ -171,7 +175,7 @@ actor VXNativeXRTracking {
             output.append(VXSpatialObservation(connectionGeneration: generation, accessoryID: predicted.accessory.id, chirality: hand,
                 anchorTime: predicted.timestamp, predictedTime: presentation, trackingState: predicted.trackingState,
                 originFromGrip: grip, originFromAim: aim, inputCaptureBefore: before, inputCaptureAfter: after,
-                inputEventTime: input.lastEventTimestamp, canonical: canonical))
+                inputEventTime: input.lastEventTimestamp, canonical: canonical, controller: controller))
         }
         let candidates = output.map { observation in
             VXSpatialCandidate(id: observation.accessoryID, hand: observation.chirality == .left ? 0 : 1,
@@ -221,6 +225,9 @@ actor VXNativeXRTracking {
             h.stick_pressed = value(c.controls.stickPress) ? 1 : 0
             hands[c.hand] = h
         }
+        var drivers: [Int: GCController] = [:]
+        for o in observations where (0..<2).contains(o.canonical.hand) { drivers[o.canonical.hand] = o.controller }
+        VXHapticRouter.shared.setControllers(drivers)
         let ns = presentation * 1e9
         guard ns.isFinite, ns > 0, ns < Double(Int64.max) else { return }
         vx_xros_controllers_publish(hands, Int64(ns))

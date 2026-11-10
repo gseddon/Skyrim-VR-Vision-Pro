@@ -8,6 +8,7 @@
 #include "session_host.h"
 #include "frame_host.h"
 #include "input_host.h"
+#include "haptic_host.h"
 #include "metal_host_bridge.h"
 #ifdef __cplusplus
 extern "C" {
@@ -35,9 +36,12 @@ typedef struct vx_xros_xrizer_platform {
     XrResult (*request_exit)(void *);
     XrResult (*sample_input)(void *, KlNativeInputSample *);
     /* Optional (NULL keeps the version-1 disconnected-only input host): controller kind, poses and controls, input
-     * host version 3. Same context. Registered instead of sample_input; the provider has no haptic output boundary,
-     * so xrApplyHapticFeedback stays refused (logged at registration). */
+     * host version 3. Same context. Registered instead of sample_input;
+     * so xrApplyHapticFeedback stays refused unless haptic_apply/haptic_stop are given. */
     XrResult (*sample_input3)(void *, KlNativeInputSample3 *);
+    /* Optional haptic output (haptic_host.h), same context; both or neither. Without them the provider refuses haptics. */
+    XrResult (*haptic_apply)(void *, uint32_t hand, const KlNativeHapticVibration *);
+    XrResult (*haptic_stop)(void *, uint32_t hand);
 } vx_xros_xrizer_platform;
 /* Explicitly invoked opt-in; no default host is configured. The queue must
  * belong to the device. At most one host can be registered per process. */

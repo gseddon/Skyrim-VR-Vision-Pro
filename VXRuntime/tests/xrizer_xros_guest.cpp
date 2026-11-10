@@ -66,6 +66,7 @@ extern "C" void mainCRTStartup(){
     check(rs.rAxis[1].x>.99f && (rs.ulButtonPressed&(1ull<<vr::k_EButton_A)),24);   /* right trigger, A */
     check(ls.rAxis[0].x>.49f && ls.rAxis[0].x<.51f && ls.rAxis[0].y<-.24f && ls.rAxis[0].y>-.26f,25);   /* left stick */
     check(!(ls.ulButtonPressed&(1ull<<vr::k_EButton_A)) && ls.rAxis[1].x<.01f,26);
+    system->TriggerHapticPulse(right,0,3000);system->TriggerHapticPulse(left,0,1500);   /* the host logs what it receives per hand */
    }
   }
   for(unsigned eye=0;eye<2;eye++){
