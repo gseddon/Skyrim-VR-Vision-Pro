@@ -261,6 +261,16 @@ def capture(args):
                    VXRT_AOT_STRICT='1', VXRT_NO_WINE='1', VXRT_STEAM_BRIDGE='0', VXRT_MESSAGEBOX='auto',
                    VXRT_NO_ACTIVATE='1', VXRT_MUTE='1', VERANTYX_AUDIO='0', TMPDIR=str(temp),
                    VXRT_LOG_TIME='1', VXRT_TRACE_CALLS=str(trace_calls))
+        # D3D11/D3D12 shader library cache (VXRuntime/src/d3d12.m, d3d11_draw.m). The harness strips VXRT_* from the caller's
+        # environment, so it is passed here: one folder shared by every run (not the per-run out/ or TMPDIR, which are
+        # deleted), in the checkout's git-ignored build/private. Holds translated game shaders: private, never committed.
+        # VXRT_SHADER_CACHE in the caller's environment overrides it ('0': off). `rm -rf build/private/shadercache` clears
+        # it; it also trims itself to VXRT_SHADER_CACHE_MAX_MB (1024) least-recently-used.
+        cache = os.environ.get('VXRT_SHADER_CACHE') or str(REPO / 'build' / 'private' / 'shadercache')
+        if cache != '0':
+            Path(cache).mkdir(parents=True, exist_ok=True, mode=0o700)
+        env['VXRT_SHADER_CACHE'] = cache
+        result.setdefault('diagnostic', {})['shader_cache'] = cache
         if getattr(args, 'audio', False):
             env['VXRT_MUTE'] = '0'; env['VERANTYX_AUDIO'] = '1'
             result.setdefault('diagnostic', {})['audio'] = 'unmuted: XAudio2/WASAPI output to the Mac default output device'

@@ -23,7 +23,7 @@ static void gpu11_release_mtl_object(void *object);
 // Compile options for every Direct3D 11 shader library: Metal's safe math, as d3d12.m and gpu_ir_metal.m use, so NaN,
 // infinity and signed zero behave as D3D's IEEE rules say (isnan, min/max with NaN, x/0). Default fast math may
 // assume they never occur. One retained object shared by all compiles. VXRT_D3D11_FAST_MATH=1 restores Metal's default.
-// (There is no on-disk shader library cache in this file, so no cache key carries the options.)
+// The shader library cache key includes this math mode (see d3d11_library_options), so fast and safe libraries never alias.
 static MTLCompileOptions *d3d11_compile_options(void) {
     static MTLCompileOptions *options;
     static dispatch_once_t once;
@@ -35,6 +35,44 @@ static MTLCompileOptions *d3d11_compile_options(void) {
         else options.fastMathEnabled = NO;
     });
     return options;
+}
+// The options a library is really made with: d3d11_compile_options with the language version fixed to Metal 3.1, which
+// is what the offline compiler of the shader cache (d3d12.m, vx_library_cache_load) builds with, so a library made from
+// source and one loaded from the cache are the same program. The cache key includes the math mode of these options.
+static MTLCompileOptions *d3d11_library_options(void) {
+    static MTLCompileOptions *options;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ options = [d3d11_compile_options() copy]; options.languageVersion = MTLLanguageVersion3_1; });
+    return options;
+}
+// Shader libraries come from the shader cache (d3d12.m; VXRT_SHADER_CACHE) when this source was compiled before and
+// the compile took long, else from Metal's compiler, which keeps its own cache in the user's cache folder (but rotates it
+// at about 330 MB, shared by every program). The source is the translator's output, so its hash covers the DXBC and the
+// translator's version; the key adds the options (language version, math mode).
+extern id vx_library_cache_load(id<MTLDevice> dev, NSString *source, MTLCompileOptions *options, uint64_t *key);
+extern void vx_library_cache_store(NSString *source, MTLCompileOptions *options, uint64_t key, uint64_t took_ns);
+static void d3d11_library_async(id<MTLDevice> dev, NSString *source, int sync, void (^done)(id<MTLLibrary>, NSError *)) {
+    MTLCompileOptions *options = d3d11_library_options();
+    uint64_t key = 0;
+    id<MTLLibrary> cached = vx_library_cache_load(dev, source, options, &key);
+    if (cached) { done(cached, nil); return; }
+    uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    void (^finished)(id<MTLLibrary>, NSError *) = ^(id<MTLLibrary> lib, NSError *err) {
+        if (lib && key) vx_library_cache_store(source, options, key, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - t0);
+        done(lib, err);
+    };
+    if (sync) {
+        NSError *err = nil;
+        id<MTLLibrary> lib = [dev newLibraryWithSource:source options:options error:&err];
+        finished(lib, err);
+    } else [dev newLibraryWithSource:source options:options completionHandler:finished];
+}
+static id<MTLLibrary> d3d11_library(id<MTLDevice> dev, NSString *source, NSError **error) {
+    __block id<MTLLibrary> result = nil;
+    __block NSError *failure = nil;
+    d3d11_library_async(dev, source, 1, ^(id<MTLLibrary> lib, NSError *err) { result = lib; failure = err; });
+    if (error) *error = failure;
+    return result;
 }
 
 static d3d_object *self_of(void *this) { return (d3d_object *)this; }
@@ -80,7 +118,7 @@ static id<MTLFunction> dual_source_function(d3d_device *dev, d3d_shader *s) {
         if (at) {
             NSString *source = [NSString stringWithFormat:@"%.*s o1 [[color(0), index(1)]];%s", (int)(at - msl), msl, at + strlen(" o1 [[color(1)]];")];
             NSError *err = nil;
-            id<MTLLibrary> lib = [(__bridge id<MTLDevice>)dev->mtl newLibraryWithSource:source options:d3d11_compile_options() error:&err];
+            id<MTLLibrary> lib = d3d11_library((__bridge id<MTLDevice>)dev->mtl, source, &err);
             id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"vx_main"] : nil;
             if (fn) s->dual = (void *)CFBridgingRetain(fn);
             else vx_log("Direct3D: dual-source variant of shader %08x did not compile: %s", s->hash, err.localizedDescription.UTF8String);
@@ -190,10 +228,7 @@ static HRESULT create_shader(d3d_device *dev, const void *code, size_t size, int
         pthread_mutex_unlock(&g_compile_lock);
         d3d_release(&s->base);
     };
-    if (sync) {
-        NSError *err = nil;
-        done([(__bridge id<MTLDevice>)dev->mtl newLibraryWithSource:source options:d3d11_compile_options() error:&err], err);
-    } else [(__bridge id<MTLDevice>)dev->mtl newLibraryWithSource:source options:d3d11_compile_options() completionHandler:done];
+    d3d11_library_async((__bridge id<MTLDevice>)dev->mtl, source, sync, done);
     *out = s;
     return S_OK;
 }
@@ -1073,7 +1108,7 @@ static id<MTLFunction> shader_variant(d3d_device *dev, d3d_shader *s, const char
     if (!s->variant_tried && msl) {
         s->variant_tried = 1;
         NSError *err = nil;
-        id<MTLLibrary> lib = [(__bridge id<MTLDevice>)dev->mtl newLibraryWithSource:@(msl) options:d3d11_compile_options() error:&err];
+        id<MTLLibrary> lib = d3d11_library((__bridge id<MTLDevice>)dev->mtl, @(msl), &err);
         id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"vx_main"] : nil;
         if (fn) s->variant = (void *)CFBridgingRetain(fn);
         else vx_log("Direct3D: %s of shader %08x did not compile: %s", what, s->hash, err.localizedDescription.UTF8String);
@@ -2365,7 +2400,7 @@ static id<MTLComputePipelineState> vs_kernel_pipeline(d3d_context *c, d3d_draw_s
         }
     }
     NSError *err = nil;
-    id<MTLLibrary> lib = source.length ? [(__bridge id<MTLDevice>)c->base.dev->mtl newLibraryWithSource:source options:d3d11_compile_options() error:&err] : nil;
+    id<MTLLibrary> lib = source.length ? d3d11_library((__bridge id<MTLDevice>)c->base.dev->mtl, source, &err) : nil;
     id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"vx_main"] : nil;
     id<MTLComputePipelineState> pso = nil;
     if (!fn) {
