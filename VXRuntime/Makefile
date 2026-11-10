@@ -843,11 +843,11 @@ build/vxrt-d3d11-replay: tools/d3d11_replay.m tools/d3d11_replay_stubs.c $(REPLA
 
 # The offline shader manifest tool (tools/shader_manifest.m; run by ../tools/shader_manifest_build): the translator and the
 # runtime's own shader cache writer, so the sources and keys it makes are the ones a game run makes.
-build/vxrt-shader-manifest: tools/shader_manifest.m src/shader_cache.m src/dxbc.c src/dxbc.h src/d3d_common.h src/vx.h
+build/vxrt-shader-manifest: tools/shader_manifest.m src/shader_cache.m src/dither_source.m src/dxbc.c src/dxbc.h src/d3d_common.h src/vx.h
 	@mkdir -p build/shader-manifest/thunks
 	@for f in shader_cache.m dxbc.c; do : > build/shader-manifest/thunks/$$f.inc; done
 	$(CC) -arch arm64 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -mmacosx-version-min=14.0 -Ibuild/shader-manifest -Isrc -fobjc-arc \
-	  -o $@ tools/shader_manifest.m src/shader_cache.m src/dxbc.c -framework Foundation -framework Metal
+	  -o $@ tools/shader_manifest.m src/shader_cache.m src/dither_source.m src/dxbc.c -framework Foundation -framework Metal
 
 # DXIL (Shader Model 6, Direct3D 12): src/dxil.c reads the container and its LLVM bitcode.
 build/dxildump: tools/dxildump.c src/dxil.c src/dxil.h

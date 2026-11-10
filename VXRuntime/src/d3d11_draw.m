@@ -201,7 +201,7 @@ static id<MTLFunction> dual_source_function(d3d_device *dev, d3d_shader *s) {
     pthread_mutex_unlock(&g_variant_lock);
     return (__bridge id<MTLFunction>)s->dual;
 }
-// VXRT_DITHER_8BIT=1: the dithered variant of a pixel shader (shader_cache.m), made once.
+// The dithered variant of a pixel shader (dither_source.m), made once.
 static id<MTLFunction> dither_function(d3d_device *dev, d3d_shader *s) {
     pthread_mutex_lock(&g_variant_lock);
     if (!s->dither_tried) {
@@ -1281,10 +1281,8 @@ static id<MTLRenderPipelineState> pipeline(d3d_context *c, d3d_draw_state *s, id
         if (f) pd.fragmentFunction = f; else dual = 2;
     }
     if (!dual && ps && ncolors > 0 && !(s->blend && s->blend->desc[0])) {
-        // 8-bit unorm targets written without blending: the dithered variant (VXRT_DITHER_8BIT=1)
-        static int dither_on = -1;
-        if (dither_on < 0) { const char *e = getenv("VXRT_DITHER_8BIT"); dither_on = e && *e == '1'; }
-        int ok = dither_on;
+        // 8-bit unorm targets written without blending: the dithered variant (shader_cache.m / dither_source.m)
+        int ok = 1;
         for (int i = 0; i < ncolors && ok; i++) {
             if (!colors[i]) continue;
             const uint32_t *rt = s->blend ? s->blend->desc + 2 + 8 * (s->blend->desc[1] ? i : 0) : NULL;

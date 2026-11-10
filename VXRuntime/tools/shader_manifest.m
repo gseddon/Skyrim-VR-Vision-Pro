@@ -16,6 +16,7 @@ extern MTLCompileOptions *vx_d3d11_library_options(void);
 extern uint64_t vx_shader_cache_key(NSString *source, MTLCompileOptions *options, int *std32, int *min_lod, int *safe);
 extern void vx_library_cache_store(NSString *source, MTLCompileOptions *options, uint64_t key, uint64_t took_ns);
 extern NSString *vx_d3d11_dual_source(const char *msl);
+extern NSString *vx_d3d11_dither_source(const char *msl);
 extern NSString *vx_d3d11_vs_kernel_source(const char *msl_kernel, const char *kinds);
 
 int vx_trace;
@@ -78,6 +79,7 @@ int main(int argc, char **argv) {
                 NSString *source = nil;
                 if (![kind compare:@"base"]) source = @(sh->msl);
                 else if (![kind compare:@"dual-source"]) source = vx_d3d11_dual_source(sh->msl);
+                else if (![kind compare:@"dither"]) source = vx_d3d11_dither_source(sh->msl);
                 else if (![kind compare:@"pass-through"]) source = sh->msl_passthrough ? @(sh->msl_passthrough) : nil;
                 else if (![kind compare:@"vs-kernel"]) source = sh->msl_kernel ? vx_d3d11_vs_kernel_source(sh->msl_kernel, params.UTF8String) : nil;
                 if (!source) { status = "no-such-variant"; failed++; goto report; }
