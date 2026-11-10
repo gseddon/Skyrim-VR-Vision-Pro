@@ -1,17 +1,12 @@
-#!/usr/bin/env python3
-"""IVROverlay_018 in the guest bridge (src/xrizer_guest_bridge.c) must list the methods of openvr 1.0.17's class
-IVROverlay in the header's order (a vtable is its slots), with the parameter counts and float/by-value parameters the
-forwarders declare. Static check of the owned source against the pinned header."""
 import re, sys, os
 here = os.path.dirname(os.path.abspath(__file__))
-hdr = open(os.path.join(here, '../../third_party/xrizer/upstream/openvr/headers/openvr-1.0.17.h'), encoding='utf-8', errors='replace').read()
+HDRS = os.path.join(here, '../../third_party/xrizer/upstream/openvr/headers/')
 src = open(os.path.join(here, '../src/xrizer_guest_bridge.c'), encoding='utf-8').read()
-assert 'IVROverlay_Version = "IVROverlay_018"' in hdr
-start = hdr.index('\tclass IVROverlay\n')
-end = hdr.index('static const char * const IVROverlay_Version', start)
-body = re.sub(r'/\*.*?\*/', '', hdr[start:end], flags=re.S)
-body = re.sub(r'//[^\n]*', '', body)
-decls = [re.sub(r'\s+', ' ', d) for d in re.findall(r'virtual\s+([^;]*?)\s*=\s*0\s*;', body, flags=re.S)]
+# (bridge prefix, interface version string, pinned header, C++ class name, slot count)
+IFACES = [('overlay', 'IVROverlay_018', 'openvr-1.0.17.h', 'IVROverlay', 82),
+          ('rendermodels', 'IVRRenderModels_005', 'openvr-1.0.9.h', 'IVRRenderModels', 18),
+          ('settings', 'IVRSettings_002', 'openvr-1.0.17.h', 'IVRSettings', 12)]
+fail = 0
 def split_args(sig):
     inner = sig[sig.index('(') + 1:sig.rindex(')')]
     depth, cur, out = 0, '', []
@@ -27,38 +22,44 @@ def split_args(sig):
     if cur.strip():
         out.append(cur.strip())
     return out
-header = []
-for d in decls:
-    name = re.search(r'(\w+)\s*\(', d).group(1)
-    header.append((name, split_args(d)))
-m = re.search(r'overlay_names\[(\d+)\]\s*=\s*\{([^}]*)\}', src)
-names = re.findall(r'"(\w+)"', m.group(2))
-fail = 0
-if len(header) != 82 or len(names) != 82 or int(m.group(1)) != 82:
-    print('slot count: header %d, bridge %d' % (len(header), len(names))); fail += 1
-for i, ((hn, args), bn) in enumerate(zip(header, names)):
-    if hn != bn:
-        print('slot %d: header %s, bridge %s' % (i, hn, bn)); fail += 1
-        continue
-    f = re.search(r'static WINAPI \w[\w \*]*? overlay_%d\(guest_object \*self((?:, [^)]*)?)\)' % i, src)
-    if not f:
-        print('slot %d (%s): no forwarder overlay_%d' % (i, hn, i)); fail += 1; continue
-    params = [p for p in f.group(1).split(',') if p.strip()]
-    if len(params) != len(args):
-        print('slot %d (%s): header has %d parameters, forwarder %d' % (i, hn, len(args), len(params))); fail += 1
-        continue
-    for a, p in zip(args, params):
-        isf = bool(re.match(r'(const\s+)?float\s+\w', a))
-        if isf != p.strip().startswith('float '):
-            print('slot %d (%s): float mismatch: %s vs %s' % (i, hn, a, p.strip())); fail += 1
-    byval2 = [a for a in args if re.match(r'HmdVector2_t\s+\w', a)]
-    if byval2 and not any('overlay_vec2' in p for p in params):
-        print('slot %d (%s): HmdVector2_t by value not declared' % (i, hn)); fail += 1
-    byrect = [a for a in args if re.match(r'HmdRect2_t\s+\w', a)]
-    if byrect and not any('overlay_rect2' in p for p in params):
-        print('slot %d (%s): HmdRect2_t by value not declared' % (i, hn)); fail += 1
-    sm = re.search(r'overlay_table\[%d\]\s*=\s*overlay_%d;' % (i, i), src)
-    if not sm:
-        print('slot %d (%s): not installed' % (i, hn)); fail += 1
-print('xrizer_overlay_slots_check: %s' % ('FAILED (%d)' % fail if fail else 'ok (82 slots, IVROverlay_018, openvr 1.0.17 order)'))
+def check(prefix, version, header_file, cls, count):
+    global fail
+    hdr = open(HDRS + header_file, encoding='utf-8', errors='replace').read()
+    vname = re.sub(r'_\d+$', '', version)
+    assert '%s_Version = "%s"' % (vname, version) in hdr, (version, header_file)
+    start = re.search(r'\n\s*class %s\n' % cls, hdr).start()
+    end = hdr.index('static const char * const %s_Version' % vname, start)
+    body = re.sub(r'/\*.*?\*/', '', hdr[start:end], flags=re.S)
+    body = re.sub(r'//[^\n]*', '', body)
+    decls = [re.sub(r'\s+', ' ', d) for d in re.findall(r'virtual\s+([^;]*?)\s*=\s*0\s*;', body, flags=re.S)]
+    header = [(re.search(r'(\w+)\s*\(', d).group(1), split_args(d)) for d in decls]
+    m = re.search(r'%s_names\[(\d+)\]\s*=\s*\{([^}]*)\}' % prefix, src)
+    names = re.findall(r'"(\w+)"', m.group(2))
+    before = fail
+    if len(header) != count or len(names) != count or int(m.group(1)) != count:
+        print('%s slot count: header %d, bridge %d, expected %d' % (version, len(header), len(names), count)); fail += 1
+    for i, ((hn, args), bn) in enumerate(zip(header, names)):
+        if hn != bn:
+            print('%s slot %d: header %s, bridge %s' % (version, i, hn, bn)); fail += 1
+            continue
+        f = re.search(r'static WINAPI \w[\w \*]*? %s_%d\(guest_object \*self((?:, [^)]*)?)\)' % (prefix, i), src)
+        if not f:
+            print('%s slot %d (%s): no forwarder' % (version, i, hn)); fail += 1; continue
+        params = [p for p in f.group(1).split(',') if p.strip()]
+        if len(params) != len(args):
+            print('%s slot %d (%s): header has %d parameters, forwarder %d' % (version, i, hn, len(args), len(params))); fail += 1
+            continue
+        for a, p in zip(args, params):
+            isf = bool(re.match(r'(const\s+)?float\s+\w', a))
+            if isf != p.strip().startswith('float '):
+                print('%s slot %d (%s): float mismatch: %s vs %s' % (version, i, hn, a, p.strip())); fail += 1
+            if re.match(r'HmdVector2_t\s+\w', a) and 'overlay_vec2' not in p:
+                print('%s slot %d (%s): HmdVector2_t by value not declared' % (version, i, hn)); fail += 1
+            if re.match(r'HmdRect2_t\s+\w', a) and 'overlay_rect2' not in p:
+                print('%s slot %d (%s): HmdRect2_t by value not declared' % (version, i, hn)); fail += 1
+        if not re.search(r'%s_table\[%d\]\s*=\s*%s_%d;' % (prefix, i, prefix, i), src):
+            print('%s slot %d (%s): not installed' % (version, i, hn)); fail += 1
+    print('xrizer_overlay_slots_check: %s %s (%d slots, %s %s order)' % (version, 'FAILED' if fail > before else 'ok', count, header_file, cls))
+for spec in IFACES:
+    check(*spec)
 sys.exit(1 if fail else 0)
