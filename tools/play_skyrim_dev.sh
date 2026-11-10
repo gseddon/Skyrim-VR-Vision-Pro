@@ -20,7 +20,8 @@
 #   tools/play_skyrim_dev.sh --key-script S  extra: VXRT_XRIZER_DEV_KEY_SCRIPT (START:KEYS:HOLD,...), for checks
 # Diagnostic development host, not a SteamVR session and not a physical-headset claim.
 # Private inputs (override with the environment variables): SKYRIM_AOT_BASE = directory holding prepared/SkyrimVR.exe,
-# aot-splits4a/ and redist/ (read-only); SKYRIM_AOT_DIR = a module directory to use instead of aot-splits4a; SKYRIM_ASSET_ROOT; STEAMVR_WIN64_DLLS; XRIZER_RUST_ROOT.
+# aot-splits4a/ and redist/ (read-only); SKYRIM_AOT_DIR = a module directory (default aot-fpcr-d5b2320/modules, built 2026-11-10 by
+# tools/skyrim_aot_pipeline.py with the lazy-FPCR stubs; the previous set is $B/aot-splits4a); SKYRIM_ASSET_ROOT; STEAMVR_WIN64_DLLS; XRIZER_RUST_ROOT.
 set -eu
 R=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 B=${SKYRIM_AOT_BASE:-/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/terra-skyrim-aot/build/private/skyrimvr/6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971}
@@ -40,7 +41,8 @@ while [ $# -gt 0 ]; do
 done
 XRIZER_CARGO_PROFILE=; [ "$XRIZER_PROFILE" = release ] && XRIZER_CARGO_PROFILE=--release
 # anything after -- goes to tools/vxrt_native_startup.py as is (e.g. -- --diag-env VXRT_STATS=1)
-for f in "$B/prepared/SkyrimVR.exe" "$B/aot-splits4a" "$B/redist" "$ASSETS" "$VRWEB"; do
+AOT=${SKYRIM_AOT_DIR:-$B/aot-fpcr-d5b2320/modules}
+for f in "$B/prepared/SkyrimVR.exe" "$AOT" "$B/redist" "$ASSETS" "$VRWEB"; do
   [ -e "$f" ] || { echo "missing private input: $f (see SKYRIM_AOT_BASE etc. at the top of $0)" >&2; exit 2; }
 done
 
@@ -55,6 +57,7 @@ case $B in
      fi
      B=$P;;
 esac
+AOT=${SKYRIM_AOT_DIR:-$B/aot-fpcr-d5b2320/modules}   # (again: B may now be the clone)
 
 O=$R/VXRuntime/build/play-host           # dev host runtime
 D=$R/build/xrizer-play-dylib             # xrizer dylib
@@ -115,6 +118,6 @@ EXTRA="--trace-calls $TRACE_CALLS"
 echo "output and evidence: $OUT"
 # shellcheck disable=SC2086
 exec python3 "$R/tools/vxrt_native_startup.py" --exe "$B/prepared/SkyrimVR.exe" --runtime "$RUNTIME" \
-  --aot-dir "${SKYRIM_AOT_DIR:-$B/aot-splits4a}" --asset-root "$ASSETS" --dll-dir "$B/redist" --dll-dir "$VRWEB" --appid 611670 \
+  --aot-dir "$AOT" --asset-root "$ASSETS" --dll-dir "$B/redist" --dll-dir "$VRWEB" --appid 611670 \
   --out "$OUT" --seconds "$SECONDS_LIMIT" --experimental-xrizer --dev-synthetic-stage --xrizer-dylib "$DYLIB" \
   --dev-keyboard 1 --stay-active $EXTRA "$@"

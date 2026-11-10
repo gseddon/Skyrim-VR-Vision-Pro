@@ -7,8 +7,8 @@
   "runtime": {"path": "/Users/gseddon/git/Skyrim-VR-Vision-Pro/VXRuntime/build/terra-stage2/vxrt-arm64",
               "sha256": "6cec0bf88b0110d0b78fa1ffd9adffe6e444d0071ffadd5087e646256c1bdfb0"},
   "compiler": {"path": "/Users/gseddon/git/Skyrim-VR-Vision-Pro/VXRuntime/build/vxrt-aot",
-               "sha256": "881716fdec79e07a342f80bfd67ff5ec68bbf74535f5dcf160500f60daa5ef06",
-               "source_commit": "9708308431dea868f244eab4079d1bb1aa7775bd"},
+               "sha256": "68831c5f2d0f051bfcb09ab04558d0b93a2f7efb60be5c61edcb56a8215c551c",
+               "source_commit": "d5b2320897d3a6538c65710ddc918998f1668e45"},
   "exe": {
     "base": "0x308000000",
     "part_mb": 16,
