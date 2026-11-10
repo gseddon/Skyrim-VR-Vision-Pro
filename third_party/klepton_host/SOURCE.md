@@ -108,3 +108,21 @@ Compared again with `KleptonApp.swift` (BootView `openImmersiveSpace(id: Immersi
   as Klepton's.
 * **Immersion style.** Klepton's `Immersive.id` space is `.mixed` (black backdrop drawn where there is no picture) unless the target wants `.full`; ours is
   `.full`.
+
+## Settings store and start window (2026-11-10, option A+ of `plans/2026-11-10-klepton-frontend.md`)
+
+Read again in the fork at `a7bad301` (SHA-256 of the fork's copies): `KleptonApp.swift` `f3532650d3b0f6bb0abcae483d66096e513d373b1a68cfe42ff4ba0c6a3afb86`,
+`KleptonTuning.swift` `0cb132e4db4dcb772646ff6cb637efda5f4edf7de942e4fe6591bedb90eb9710`, `KleptonChroma.swift`
+`b9ef748a3704906f6d54462a962603d9d13904727504c88917f3a78eeab84d6c`; also `KleptonText.swift`, `KleptonControllerMode.swift`, `Info.plist`.
+Nothing copied verbatim; MIT header and the reference lines are in each new file.
+
+| Piece | Klepton origin | Local form |
+| --- | --- | --- |
+| Render scale stored as `klepton.renderScale`, range 0.5 to 1.0, step 0.05, per-title default `KLRenderScaleDefault`, env alias `KL_OVRP_RENDER_SCALE` | `KleptonTuning.swift` `KleptonRendering` :252, :427-455, :525, :562 | `VXSettings.swift` (default 0.7; `VXRT_RENDER_SCALE` canonical) |
+| Hand visibility as `handMatting` in the Codable blob `klepton.chroma`, default `KLHandMattingDefault`, env `KL_HAND_MATTING`; precedence environment, saved, plist, built-in | `KleptonChroma.swift` :21-122 | `VXSettings.swift` (default hidden when the plist has no key, unlike Klepton's shown; `VXRT_SHOW_HANDS` canonical); scene `.upperLimbVisibility` observed live in `VXApp.swift` |
+| Start automatically (`KL_AUTOBOOT`, `KLAutoBootDefault`) | `KleptonApp.swift` :1142, :1573 | `VXSettings.swift` `vxrt.startAutomatically`, 5 s countdown with Cancel |
+| `KL_OVERLAYS`, `KL_EXIT_ON_BACKGROUND` aliases | `KleptonApp.swift` :158, :196, :219 | `VXApp.swift` (VXRT_* canonical) |
+| Start front (title, Start, Settings, status line, version stamp), settings page (NavigationStack, GroupBoxes, grey callouts, Advanced disclosure, Done), alignment sliders | `KleptonApp.swift` :1132-1300, :1342-1415, :719-840; `KleptonTuning.swift` :106 | `VXStartView.swift` (English only; text-only branding) |
+| Latency choice, predict ms, stage eye height, log export | none (ours) | `VXSettings.swift` keys `vxrt.*` |
+
+Not adopted in this change: play area/recentre, controller recovery prompt, frame-rate picker, localisation (`klT`), foveation.

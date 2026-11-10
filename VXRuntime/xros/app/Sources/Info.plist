@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>VX Runtime</string>
+	<string>$(VXRT_DISPLAY_NAME)</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -26,6 +26,12 @@
 	<string>The headset's pose is the head pose VR applications render from.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Bluetooth connects spatial controllers that are paired with the headset.</string>
+	<key>VXStartWindow</key>
+	<string>$(VXRT_START_WINDOW)</string>
+	<key>KLHandMattingDefault</key>
+	<string>0</string>
+	<key>KLAutoBootDefault</key>
+	<string>0</string>
 	<key>VXDefaultLaunch</key>
 	<string>$(VXRT_DEFAULT_LAUNCH)</string>
 	<key>NSAccessoryTrackingUsageDescription</key>
