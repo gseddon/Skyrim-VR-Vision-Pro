@@ -4,6 +4,20 @@ Date: 10 November 2026. Status: pipeline code written and dry-run only; **nothin
 
 Subject of the evidence below: static analysis of the repository, the Mac pipeline's recorded output, and one `--dry-run` (reads and hashes inputs, writes nothing).
 
+## Goal: start-up only on the simulator (user decision, 2026-11-10)
+
+The simulator test is for **start-up only**. Rendering waits for the headset. A BC texture decoder is **out of scope** by this decision; so is any claim about image correctness, tracking or playability.
+
+Success (all observed in `Documents/host_log.jsonl` and `Documents/vxrt.log` of the simulator run; subject: simulator, actual game, start-up only):
+1. The app launches with the Skyrim frameworks embedded (`embed_aot_frameworks: N frameworks signed`).
+2. The arena reserves at `0x7000000000` (`reserved:1` in the host log).
+3. The AOT registry loads all 7 modules (a `aot: ... framework VXA_...: opened` line per part and an `aot: <name>: ... for the image at 0x70...` line per module; the exe at `0x7000000000`).
+4. Strict AOT reports `entries > 0` and `0 fallbacks to the translator` in the `aot:` summary line (a missing summary is a failure, not zero).
+5. Skyrim reaches D3D11 device creation (`Direct3D` device log lines).
+6. Skyrim reaches xrizer / OpenVR initialization. **This needs the xrizer plumbing below, which is not written.** Until then, 6 reads "reaches `VR_Init` in the translated `openvr_api.dll` and fails there", recorded as that, not as a pass.
+
+Expected and acceptable stop: the first BC texture creation or another simulator Metal limit (no Metal 3, no argument-buffer tier 2, no dynamic vertex strides, linear-texture rule). The BC case is now a logged refusal: `d3d11.m` `make_mtl_texture`, under `VX_XROS_SIM`, logs `Direct3D: BC_REFUSED: DXGI format N is block-compressed ...` once and returns `E_INVALIDARG` (written, not compiled or run). That stop is **recorded as "stopped at BC_REFUSED", never as a rendering pass**. Any other Metal-limit stop is logged as its own finding.
+
 ## Approach
 
 `tools/skyrim_aot_pipeline.py` gets `--target {macos-arm64 (default), xrsimulator, xros}`, `--arena` (default `0x7000000000`), `--arena-mb` (default 1024) and `--dry-run`.
@@ -32,21 +46,11 @@ Total 61.6 MB of the Makefile's 1024 MB arena (962 MB free). The ~370 MB of code
 
 ## Commands for the first xrsimulator build (do not run while the Mac is being measured)
 
-The config pins the runtime `VXRuntime/build/terra-stage2/vxrt-arm64` at a hash that no longer matches the file (the dry-run failed with `SHA-256 mismatch` until I used a copy with the current hash). The runtime is not used by module generation. Re-pin deliberately, in a private copy first:
+The runtime pin in the config was stale and has been replaced (see "Runtime pin"); the final command list is at the end of this file and supersedes the sketch here.
 
 ```sh
-M=/Users/gseddon/git/Skyrim-VR-Vision-Pro            # main checkout (private inputs live there)
-SHA=6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971
-RT=$(shasum -a 256 $M/VXRuntime/build/terra-stage2/vxrt-arm64 | cut -d' ' -f1)
-sed "s/6cec0bf88b0110d0b78fa1ffd9adffe6e444d0071ffadd5087e646256c1bdfb0/$RT/" tools/skyrim_aot_skyrimvr.json \
-  > $M/build/private/skyrim-aot-skyrimvr-xros.json     # git-ignored copy; commit a re-pin only after review
-OUT=$M/build/worktrees/terra-skyrim-aot/build/private/skyrimvr/$SHA/aot-xrsimulator1
-CACHE=$M/build/private/skyrim-aot-cache-xrsimulator
-
-python3 tools/skyrim_aot_pipeline.py --config $M/build/private/skyrim-aot-skyrimvr-xros.json \
-  --target xrsimulator --dry-run --out $OUT                                   # prints the plan, writes nothing
-python3 tools/skyrim_aot_pipeline.py --config $M/build/private/skyrim-aot-skyrimvr-xros.json \
-  --target xrsimulator --build --out $OUT --cache $CACHE
+python3 tools/skyrim_aot_pipeline.py --config tools/skyrim_aot_skyrimvr.json --target xrsimulator --dry-run --out $OUT
+python3 tools/skyrim_aot_pipeline.py --config tools/skyrim_aot_skyrimvr.json --target xrsimulator --build --out $OUT --cache $CACHE
 ```
 
 (Pass `--cache` explicitly: the default is under the current checkout's own `build/private`, which for a worktree is deleted with it.) Success looks like `status: built` in `$OUT/result.json` and `$OUT/game_fw/VXA_skyrimvr_exe_<hash>_p0.framework` ... `_p10`, plus six DLL frameworks, about 17 in all *(estimate: the Mac set has 11 exe parts + 6 DLL dylibs from the same compiler and `part_mb: 16`; the code is the same ARM64 but rebased, so the count should match)*.
@@ -63,21 +67,52 @@ make -C VXRuntime XROS_SDK=xrsimulator XROS_CODE_SIGNING=NO xros-app      # embe
 
 ## What remains after the modules
 
-- [ ] Run the first xrsimulator build above; record the dry-run and build `result.json`, the framework list, `bases.txt`, sizes, and compile/link time.
-- [ ] Re-pin or replace the stale runtime hash in `tools/skyrim_aot_skyrimvr.json` (reviewed change).
+- [x] Re-pin the stale runtime in `tools/skyrim_aot_skyrimvr.json` (done 2026-11-10, see "Runtime pin"). Not yet used by a build.
+- [ ] Run the first xrsimulator build (commands at the end of this file); record the dry-run and build `result.json`, the framework list, `bases.txt`, sizes, and compile/link time.
 - [ ] Owned test first: `make -C VXRuntime XROS_SDK=xrsimulator xros-aot-tests` run of `arena_hello`/`fwarena_suite` on the simulator, to confirm the simulator honours the arena at `0x7000000000` (proven on the headset in `VISIONOS_PORT.md`; on the simulator the notes only record `0xf00000000`; unverified).
-- [ ] `-game skyrimvr` in `VXRuntime/xros/app/Sources/main.m` `game_start` (today only `cyberpunk`; `main.m:263`): exe `SkyrimVR.exe` (the prepared one, sha `8daf0519...`: module names carry a hash of the file, so the container needs byte-identical content), cwd the game folder, no Steam variables, `VXRT_OVERLAY`, `VXRT_DLL_PATH` for the redist DLLs (msvcp140, d3dx9_42, X3DAudio1_7).
-- [ ] Configurable root: `runtime_thread` fixes `root = <Documents>/root` (main.m ~line 313); take it, and the save/overlay location, from launch arguments, an environment variable or Info.plist (AVP Play Prerequisite 3).
-- [ ] xrizer outside fixture mode: the real xrizer path in the app is behind `XRIZER_XROS_FIXTURE` (`VXImmersive.swift`; Makefile lines ~60 to 62, 304) and the fixture build refuses anything but `XROS_SDK=xrsimulator` with `XROS_CODE_SIGNING=NO` and links only the fixture guest. Needs a normal (non-fixture) app configuration that links `libxrizer.a` / `libklepton.a` and loads the Skyrim modules.
+- [x] (drafted, uncompiled, unrun) `-game skyrimvr` in `main.m` `game_start` -> `skyrimvr_start`: only with that argument; `VXRT_SKYRIM_DIR` (default `<root>/SkyrimVR`), `VXRT_SKYRIM_EXE` (default `<dir>/SkyrimVR.exe`; must be the prepared exe, sha `8daf0519...`, because module names carry a hash of the file), cwd the game folder, Steam variables cleared, `VXRT_NO_WINE=1`, `VXRT_OVERLAY=<dir>:<root>/overlay_skyrimvr`, `VXRT_DLL_PATH=bundle/redist` when present (msvcp140, d3dx9_42, X3DAudio1_7 must be in the game folder or there).
+- [x] (drafted, uncompiled, unrun) Configurable root: `VXRT_GAME_ROOT` overrides `<Documents>/root` for every game; unset = unchanged. Info.plist/launch-argument forms are left for AVP Play Prerequisite 3.
+- [ ] Review the draft with a compile (the first build): `main.m` and `d3d11.m` have never been compiled.
+- [ ] xrizer outside fixture mode (**not started; larger than a minimal change, so only described**). The path is compile-time `XRIZER_XROS_FIXTURE` / `VXRT_XRIZER_XROS_FIXTURE` in four places: `loader.c` (~24-28 includes, ~1663-1688 registers xrizer's OpenVR exports as `openvr_api.dll` only for the fixture, after `vx_xros_fixture_wait_ready()`), `native_vr_present.m` (4 `#ifdef` blocks), `VXImmersive.swift` (7 `#if`, lines 27-335) and the Makefile (fixture flags: bundle id, `-force_load` of `libvxrt.a`, `libaot.a`, `libklepton.a`, `libxrizer.a`, only for `XROS_SDK=xrsimulator` and `XROS_CODE_SIGNING=NO`, with `XROS_AOT_OUTPUT_ROOT` scratch). Needed: (a) a runtime opt-in (an env/launch flag, e.g. `VXRT_XRIZER_XROS=1`) instead of the compile-time fixture switch in `loader.c`, still failing closed when compositor geometry is unavailable; (b) the fixture-only audit exports stay fixture-only; (c) the Swift side feeds the real compositor surface/pose for a non-fixture game; (d) a Makefile variable that adds the xrizer/klepton static libs and `-licucore -lz` to the normal app without the fixture bundle and without replacing `xros-aot-tests`' bundle, so `libaot.a` plus `game_fw` both link. Decide whether the fixture and the game share one app build before writing it.
+- [ ] BC texture decoder: **removed from scope** (user decision 2026-11-10). The simulator refuses BC textures explicitly (`BC_REFUSED`); the headset has native BC.
 - [ ] GCKeyboard to input host v3: `xros_ui.m` already turns GCKeyboard keys into WM_KEYDOWN/WM_CHAR; Skyrim VR reads controllers through OpenVR, so route keyboard/pad state into the input host v3 as scripted controller input for the simulator (the Mac used `VXRT_XINPUT_SCRIPT`; it needs a simulator-side equivalent to get past "Press Any Button").
 - [ ] Copy game data into the simulator container (`xcrun simctl get_app_container <udid> <bundle id> data`, `Documents/root/...`): `Data/`, `.ini` files, media. Never from the Steam install in place; use a private copy, keep it out of git.
-- [ ] Strict-AOT run in the simulator: zero fallback and real AOT entries counters present (a missing counter is a failure, not zero), world in both eyes. Label it simulator, not headset.
+- [ ] Start-up-only simulator run to the success list above: zero fallback and AOT entry counters present (a missing counter is a failure, not zero). Label it simulator, actual game, start-up only; no world/eye claim (rendering waits for the headset).
 
 ## Open risks
 
-- **Simulator Metal limits (known from `VISIONOS_PORT.md`, lines 60 to 80)**: the simulator GPU reports no Metal 3, no BC textures, no argument-buffer tier 2; D3D11 stopped on "linear textures need private buffers" and the d3d12 PSO on "no dynamic vertex strides". Skyrim uses BC-compressed textures through D3D11, so the renderer may stop or look wrong in the simulator even with correct modules. That would block "the world in both eyes" there and force the device. Unverified for Skyrim.
+- **Simulator Metal limits (known from `VISIONOS_PORT.md`, lines 60 to 80)**: the simulator GPU reports no Metal 3, no BC textures, no argument-buffer tier 2; D3D11 stopped on "linear textures need private buffers" and the d3d12 PSO on "no dynamic vertex strides". With the scope now start-up only, hitting one of these is an expected stop, recorded as such, not a failure of the start-up goal once criteria 1 to 5 are met. Skyrim's first BC texture is refused explicitly (`BC_REFUSED`). Which limit comes first is unknown (unverified).
 - **Framework count and size**: ~17 frameworks, the biggest ~35 MB; the scale test in `VISIONOS_PORT.md` (two parts, 147 + 145 MB, `dlopen` 15.6 ms) suggests this is well inside limits, on the headset. Simulator and App Store/TestFlight/AVP Play install limits unmeasured. The device build must also fit the paid-team provisioning.
 - **Signing**: `embed_aot_frameworks.sh` signs each with the app's identity (ad hoc with `XROS_CODE_SIGNING=NO`); the device needs the team identity and the Info.plist `CFBundleSupportedPlatforms` of `XROS` (the pipeline writes it for `--target xros`; nothing for `xros` was built or installed).
 - **Arena reservation on the simulator**: reservation happens in the app's first constructor; whether `0x7000000000` is free in a simulator process was not checked.
 - **Device build is a second build**: `--target xros` shares the code path but has a different triple, SDK and cache key; it needs its own run and a device size/signing measurement (AVP Play Prerequisite 2).
-- **Stale pin**: the runtime hash in the committed config is already wrong; any other tool using that config will also refuse.
+- **Pin drift**: the pinned `play-host` runtime is rebuilt by `tools/play_skyrim_dev.sh`; it will go stale again.
+
+## Runtime pin (2026-11-10)
+
+`tools/skyrim_aot_skyrimvr.json` pinned `VXRuntime/build/terra-stage2/vxrt-arm64` at `6cec0bf8...fdb`. The file at that path is now `8516552e...` (rebuilt 2026-11-09 23:16); the last recorded run with that hash was `xrizer-game-98c` (2026-11-09 19:57). The newest run records (`xrizer-game-1600`, 2026-11-10 01:07) used a third binary, `VXRuntime/build/capture-host/vxrt-arm64` (`c9792064...`), and ended with returncode -9 (the harness's timeout kill, not a pass). `tools/play_skyrim_dev.sh`, the command the user runs, builds and runs `VXRuntime/build/play-host/vxrt-arm64`. So the pinned path was not what the game runs with. Re-pinned to the path the play script uses: `VXRuntime/build/play-host/vxrt-arm64`, sha256 `2d94c0135c0bcde822aece3ea536691d2b2b7b760b9cbc6b9a8f2ea129910fc4` (built 2026-11-10 01:21). Note: the play script rebuilds that binary from the current sources, so the pin goes stale again after a runtime change; module generation does not use the runtime, it is checked only so a probe names the binary it ran. There is no `xrizer-game-1110` result directory.
+
+## Commands to run once the machine is free (not run)
+
+```sh
+M=/Users/gseddon/git/Skyrim-VR-Vision-Pro
+SHA=6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971
+OUT=$M/build/worktrees/terra-skyrim-aot/build/private/skyrimvr/$SHA/aot-xrsimulator1
+CACHE=$M/build/private/skyrim-aot-cache-xrsimulator
+cd <this worktree>
+# 1. modules (about a minute, estimate)
+python3 tools/skyrim_aot_pipeline.py --config tools/skyrim_aot_skyrimvr.json --target xrsimulator --dry-run --out $OUT
+python3 tools/skyrim_aot_pipeline.py --config tools/skyrim_aot_skyrimvr.json --target xrsimulator --build --out $OUT --cache $CACHE
+# 2. app (embeds game_fw; ad-hoc signed)
+mkdir -p VXRuntime/build/xrsimulator && ln -sfn $OUT/game_fw VXRuntime/build/xrsimulator/game_fw
+make -C VXRuntime XROS_SDK=xrsimulator xros-lib
+make -C VXRuntime XROS_SDK=xrsimulator XROS_CODE_SIGNING=NO xros-app
+# 3. the game folder in the simulator container (private copy; prepared exe, never the Steam install in place)
+xcrun simctl boot <udid>; xcrun simctl install <udid> VXRuntime/build/xrsimulator/derived/Build/Products/Debug-xrsimulator/VXRuntimeHost.app
+D=$(xcrun simctl get_app_container <udid> marimokodai.VXRuntimeHost data)/Documents/root/SkyrimVR
+mkdir -p "$D"   # then copy: Data/ (or only what start-up reads), *.ini, the six DLLs, prepared/SkyrimVR.exe (sha 8daf0519...)
+# 4. run, start-up only
+SIMCTL_CHILD_VXRT_AOT_STRICT=1 xcrun simctl launch --console-pty <udid> marimokodai.VXRuntimeHost -game skyrimvr
+grep -E 'reserved|aot:.*(opened|image at)|fallbacks to the translator|BC_REFUSED|Direct3D|VR_Init' $D/../../vxrt.log
+```
+The app target, bundle id and simulator app path above come from the Makefile and `project.yml` as read, and the `xros-app` target also runs `xros-aot-tests` (the test programs' modules); both are unverified until run. Until the xrizer plumbing exists, criterion 6 cannot be met.
