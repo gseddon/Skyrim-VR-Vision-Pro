@@ -18,6 +18,8 @@
 #                                            costs ~20% process CPU, measured 2026-11-10)
 #   tools/play_skyrim_dev.sh -- ARGS...      pass ARGS on to tools/vxrt_native_startup.py
 #   tools/play_skyrim_dev.sh --key-script S  extra: VXRT_XRIZER_DEV_KEY_SCRIPT (START:KEYS:HOLD,...), for checks
+# Shader cache: build/private/shadercache (VXRT_SHADER_CACHE overrides, 0 = off). A boot queues the shaders it had to
+# compile; run tools/shadercache_fill.sh after it (parallel, a few minutes) and the next boot loads them.
 # Diagnostic development host, not a SteamVR session and not a physical-headset claim.
 # Private inputs (override with the environment variables): SKYRIM_AOT_BASE = directory holding prepared/SkyrimVR.exe,
 # aot-splits4a/ and redist/ (read-only); SKYRIM_AOT_DIR = a module directory to use instead of aot-splits4a; SKYRIM_ASSET_ROOT; STEAMVR_WIN64_DLLS; XRIZER_RUST_ROOT.

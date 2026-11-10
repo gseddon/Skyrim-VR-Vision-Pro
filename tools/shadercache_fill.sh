@@ -11,12 +11,12 @@ R=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 D=${1:-${VXRT_SHADER_CACHE:-$R/build/private/shadercache}}
 SDK=${2:-macosx}
 [ -d "$D/pending" ] || { echo "nothing pending in $D"; exit 0; }
-n=$(ls "$D/pending" | grep -c '\.metal$' || true)
+n=$(find "$D/pending" -name '*.metal' | wc -l | tr -d ' ')
 [ "$n" -gt 0 ] || { echo "nothing pending in $D"; exit 0; }
 J=$(sysctl -n hw.ncpu)
 echo "== compiling $n shaders from $D/pending for -sdk $SDK, $J at a time"
 export D SDK
-ls "$D/pending"/*.metal | xargs -P "$J" -n 1 sh -c '
+find "$D/pending" -name '*.metal' -print0 | xargs -0 -P "$J" -n 1 sh -c '
   m=$1; b=${m%.metal}; k=$(basename "$b")
   read std32 min_lod safe < "$b.flags" || { echo "no flags: $k" >&2; exit 0; }
   [ -f "$D/$k.metallib" ] && { rm -f "$m" "$b.flags"; exit 0; }
@@ -26,4 +26,4 @@ ls "$D/pending"/*.metal | xargs -P "$J" -n 1 sh -c '
   t="$D/$k.$$.tmp.metallib"
   if xcrun "$@" -w -o "$t" "$m" 2>/dev/null; then mv "$t" "$D/$k.metallib"; rm -f "$m" "$b.flags"
   else rm -f "$t"; echo "failed: $k" >&2; fi' sh
-echo "== cache now: $(ls "$D" | grep -c '\.metallib$' || true) libraries, $(du -sh "$D" | cut -f1); $(ls "$D/pending" | grep -c '\.metal$' || true) still pending"
+echo "== cache now: $(find "$D" -maxdepth 1 -name '*.metallib' | wc -l | tr -d ' ') libraries, $(du -sh "$D" | cut -f1); $(find "$D/pending" -name '*.metal' | wc -l | tr -d ' ') still pending"
