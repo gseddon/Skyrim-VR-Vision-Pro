@@ -11,8 +11,9 @@
 #   tools/play_skyrim_dev.sh --seconds N     time limit (default 3600; max 3600)
 #   tools/play_skyrim_dev.sh --mute          no sound
 #   tools/play_skyrim_dev.sh --hud           Apple's Metal Performance HUD (MTL_HUD_ENABLED=1)
-#   tools/play_skyrim_dev.sh --helgen        press pad A every 4 s from 20 s to 272 s (--xinput-repeat A@20-272/4:0.3):
-#                                            through the logos and title into the Helgen cart intro (probe 1110)
+#   tools/play_skyrim_dev.sh --helgen        to the Helgen cart intro with no keys: pad A every 2 s from 6 s to 140 s
+#                                            (--xinput-repeat A@6-140/2:0.3) and an empty sIntroSequence (--overlay-ini
+#                                            Skyrim.ini:General:sIntroSequence=: a per-run copy in the overlay skips the logo video)
 #   tools/play_skyrim_dev.sh --xrizer-debug  build and use xrizer unoptimised (default: release; debug cost ~0.6 ms a frame)
 #   tools/play_skyrim_dev.sh --trace-calls N log the first N calls per runtime function (default 0: off; tracing
 #                                            costs ~20% process CPU, measured 2026-11-10)
@@ -114,7 +115,7 @@ EXTRA="--trace-calls $TRACE_CALLS"
 [ -n "$KEYSCRIPT" ] && EXTRA="$EXTRA --dev-key-script $KEYSCRIPT"
 [ $MUTE = 1 ] || EXTRA="$EXTRA --audio"
 [ $HUD = 1 ] && EXTRA="$EXTRA --hud"
-[ $HELGEN = 1 ] && EXTRA="$EXTRA --xinput-repeat A@20-272/4:0.3"
+[ $HELGEN = 1 ] && EXTRA="$EXTRA --xinput-repeat A@6-140/2:0.3 --overlay-ini Skyrim.ini:General:sIntroSequence="
 echo "output and evidence: $OUT"
 # shellcheck disable=SC2086
 exec python3 "$R/tools/vxrt_native_startup.py" --exe "$B/prepared/SkyrimVR.exe" --runtime "$RUNTIME" \
