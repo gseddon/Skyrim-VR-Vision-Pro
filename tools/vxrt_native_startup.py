@@ -247,6 +247,17 @@ def capture(args):
                 copied[str(src.relative_to(seed_dir))] = digest(src)
             result.setdefault('diagnostic', {})['prefs_seed'] = dict(source=str(seed_dir), files=copied,
                 scope='authored settings copied into the private root before start; not game files')
+        # --saves-dir DIR: the game's "My Games/Skyrim VR/Saves" in this run's private root becomes a symlink to DIR, so saves
+        # (and a save copied in by hand) outlive the run; the root itself is per-run. DIR is private user data, never committed.
+        saves = getattr(args, 'saves_dir', None)
+        if saves:
+            target = Path(saves).resolve()
+            target.mkdir(parents=True, exist_ok=True)
+            link = root / 'drive_c/users/vxrt/Documents/My Games/Skyrim VR/Saves'
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(target, target_is_directory=True)
+            result.setdefault('diagnostic', {})['saves_dir'] = dict(link=str(link), target=str(target),
+                scope='persistent saves directory linked into the private root; contents are user data, not recorded')
         # --overlay-ini FILE:SECTION:KEY=VALUE: a per-run copy of an ini of the asset tree (FILE is relative to --asset-root)
         # inside this run's overlay with one key set; the original is only read. The game reads the copy through the overlay.
         for spec in getattr(args, 'overlay_ini', None) or []:
@@ -476,6 +487,7 @@ def main():
     ap.add_argument('--dev-keymap', metavar='SPEC|/FILE', help='diagnostic only: VXRT_XRIZER_DEV_KEYMAP override of the dev keyboard map')
     ap.add_argument('--audio-capture', metavar='FILE', help='diagnostic only: VXRT_XAUDIO2_CAPTURE, the XAudio2 mastering mix ("VXCA" header, float32) written to FILE; keep game audio private')
     ap.add_argument('--prefs-seed', metavar='DIR|none', help='a tree copied into the run\'s private root (drive_c/...) before start; default for --experimental-xrizer: tools/prefs_seed/<appid> when present; none: no seed')
+    ap.add_argument('--saves-dir', metavar='DIR', help='link C:\\users\\vxrt\\Documents\\My Games\\Skyrim VR\\Saves of the run\'s private root to DIR (created if missing) so saves persist across runs')
     ap.add_argument('--overlay-ini', action='append', metavar='FILE:SECTION:KEY=VALUE', help='diagnostic only, repeatable: set one ini key in a per-run copy of FILE (from the asset root) inside the run\'s overlay, e.g. Skyrim.ini:General:sIntroSequence= (empty value); the original is not touched')
     ap.add_argument('--dump-eyes', action='store_true', help='diagnostic only: the experimental dev host writes raw RGBA of the published eyes for frames 1, 2, 60, 300 and 600 under <out>/eyes')
     ap.add_argument('--diag-env', action='append', metavar='NAME[=VALUE]', help='diagnostic only, repeatable: one of the renderer tracing knobs (%s)' % ', '.join(sorted(DIAG_ENV)))

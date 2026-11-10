@@ -19,6 +19,7 @@
 #                                            costs ~20% process CPU, measured 2026-11-10)
 #   tools/play_skyrim_dev.sh -- ARGS...      pass ARGS on to tools/vxrt_native_startup.py
 #   tools/play_skyrim_dev.sh --key-script S  extra: VXRT_XRIZER_DEV_KEY_SCRIPT (START:KEYS:HOLD,...), for checks
+# Saves: build/private/saves/611670 (SKYRIM_SAVES_DIR overrides) is linked in as My Games/Skyrim VR/Saves, so saves persist across runs.
 # Shader cache: build/private/shadercache (VXRT_SHADER_CACHE overrides, 0 = off). A boot queues the shaders it had to
 # compile; run tools/shadercache_fill.sh after it (parallel, a few minutes) and the next boot loads them.
 # Diagnostic development host, not a SteamVR session and not a physical-headset claim.
@@ -123,4 +124,4 @@ echo "output and evidence: $OUT"
 exec python3 "$R/tools/vxrt_native_startup.py" --exe "$B/prepared/SkyrimVR.exe" --runtime "$RUNTIME" \
   --aot-dir "$AOT" --asset-root "$ASSETS" --dll-dir "$B/redist" --dll-dir "$VRWEB" --appid 611670 \
   --out "$OUT" --seconds "$SECONDS_LIMIT" --experimental-xrizer --dev-synthetic-stage --xrizer-dylib "$DYLIB" \
-  --dev-keyboard 1 --stay-active $EXTRA "$@"
+  --dev-keyboard 1 --stay-active --saves-dir "${SKYRIM_SAVES_DIR:-$R/build/private/saves/611670}" $EXTRA "$@"
