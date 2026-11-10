@@ -32,6 +32,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
     private var xrizerHeadLogged = false
     private var xrizerFixtureSurface = VXFixtureSurfaceState()
     private var xrizerFixtureStarted = false
+    private var immersiveLogged = false
 #endif
     private static let near: Float = 0.1, far: Float = 10000
 
@@ -168,7 +169,18 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         let nativeDiagnostic = vx_xros_native_enabled() != 0
 #if XRIZER_XROS_FIXTURE
         let fixture = vx_xros_fixture_enabled() != 0
-        let offscreen = fixture && ProcessInfo.processInfo.environment["VXRT_XRIZER_XROS_OFFSCREEN"] == "1"
+        // -xrizer -immersive: the game's pairs are shown in this space. A two-view dedicated drawable (the headset) gets
+        // the stereo path below (each eye of the newest pair warped into its view with the drawable's own view
+        // transform and projection); a one-view drawable (the simulator) the side-by-side inspection layout with
+        // injected optics. Decided from the drawable the compositor gives, not from the build.
+        let immersive = vx_xros_immersive_enabled() != 0
+        let stereoDrawable = drawables[0].views.count == 2 && drawables[0].colorTextures.count == 2 && layerRenderer.configuration.layout == .dedicated
+        let offscreen = fixture && (ProcessInfo.processInfo.environment["VXRT_XRIZER_XROS_OFFSCREEN"] == "1" || (immersive && !stereoDrawable))
+        if immersive && !immersiveLogged {
+            immersiveLogged = true
+            vx_xros_immersive_set_mono(offscreen ? 1 : 0)
+            vxrt_jlog("xrizer_immersive_drawable", "\"views\":\(drawables[0].views.count),\"color_textures\":\(drawables[0].colorTextures.count),\"layout\":\"\(layerRenderer.configuration.layout)\",\"path\":\"\(offscreen ? "mono_inspection_injected_optics" : "stereo_drawable_views")\",\"tracking\":\(tracking)")
+        }
         let monoPresent = offscreen && vx_xros_fixture_present_enabled() != 0
         var monoHave: Int32 = 0
         var monoAcquired = false
@@ -378,7 +390,14 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         lastReport = now
         var buf = [CChar](repeating: 0, count: 768)
         vx_xros_vr_stats(&buf, UInt32(buf.count))
-        let fields = String(cString: buf) + ",\"cleared_eyes\":\(cleared)"
+        var fields = String(cString: buf) + ",\"cleared_eyes\":\(cleared)"
+#if XRIZER_XROS_FIXTURE
+        if vx_xros_immersive_enabled() != 0 {
+            var imm = [CChar](repeating: 0, count: 768)
+            _ = vx_xros_immersive_stats(&imm, UInt32(imm.count))
+            fields += "," + String(cString: imm)
+        }
+#endif
         cleared = 0
         vxrt_jlog("vr", fields)
     }
