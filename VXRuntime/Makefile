@@ -3,6 +3,7 @@ CC      = clang
 CFLAGS  = -arch x86_64 -O1 -g -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=14.0
 SRC     = src/loader.c src/pe.c src/dotnet_metadata.c src/dotnet_resources.c src/dotnet_baml.c src/dotnet_il.c src/dotnet_exec.c src/dotnet_runtime.c src/dotnet_host.c src/kernel32.c src/kernelx.c src/jobs.c src/ntstatus.c src/system.c src/desktop.c src/winsta.c src/scm.c src/services.c src/security.c src/client.c src/steambridge.c src/calltrace.c src/pipes.c src/ucrt.c src/sync.c src/seh.c src/profile.c src/opengl.c src/wininet.m src/winhttp.m src/winhttp_proxy.m src/iphlp.c src/winsock_nsp.c src/midi.c src/directinput.m src/msxml.c src/extras.c src/context.S src/text.c src/files.c src/registry.c \
           src/user32.c src/gdi.c src/control.c src/net.c src/mm.c src/vcruntime.c src/com.c src/cocoa.m src/d3d11.m src/d3d11_draw.m src/d3d11_shared.m src/d3d11_capture.m src/d3d11on12.m src/dxgi.m src/d3d9.m src/dxbc.c src/d3d_format.c src/d3d12.m src/gpu_ir.c src/gpu_ir_msl.c src/gpu_ir_metal.m src/dxil.c src/dxil_msl.c src/dxil_ir.c src/spirv.c src/spirv_ir.c src/vk_msl.c src/vk_format.m src/vk_device.m src/vk_descriptor.m src/vk_pipeline.m src/vk_command.m src/vk_internal.m src/vk_queue.m src/vk_wsi.m src/vk_dispatch.m src/directinput_buffer.c src/directinput_format.c src/input.m src/audio.m src/xaudio2.m src/sysdlls.c src/dbghelp.c src/aes_gcm.c src/dpapi.c src/crypt32.c src/dwrite.m src/osinfo.c src/pointer.c src/regnotify.c src/section.c src/shlpath.c src/wevtapi.c src/ktime.c src/power.c src/sysparams.c src/dwmapi.c src/winmisc.c src/region.c
+SRC    += src/shader_cache.m
 SRC    += src/launchargs.c
 SRC    += src/handlexfer.c
 SRC    += src/version.c
@@ -767,7 +768,7 @@ build/dxbc2msl: tools/dxbc2msl.m src/dxbc.c src/dxbc.h
 
 # The Direct3D 11 replayer (tools/d3d11_replay.m): plays a VXRT_D3D11_CAPTURE stream on this checkout's Direct3D 11
 # (linked in, native ARM64, no program and no translator; the thunk includes are empty here).
-REPLAY_D3D_SRC = src/d3d11.m src/d3d11_draw.m src/d3d11_shared.m src/d3d11_capture.m src/d3d11on12.m src/dxgi.m src/dxbc.c src/d3d_format.c src/gpu_ir.c src/gpu_ir_msl.c src/gpu_ir_metal.m
+REPLAY_D3D_SRC = src/shader_cache.m src/d3d11.m src/d3d11_draw.m src/d3d11_shared.m src/d3d11_capture.m src/d3d11on12.m src/dxgi.m src/dxbc.c src/d3d_format.c src/gpu_ir.c src/gpu_ir_msl.c src/gpu_ir_metal.m
 build/vxrt-d3d11-replay: tools/d3d11_replay.m tools/d3d11_replay_stubs.c $(REPLAY_D3D_SRC) src/d3d11_capture.h src/d3d_common.h src/d3d_tables.h src/dxbc.h src/gpu_ir.h src/gpu_ir_msl.h src/gpu_ir_metal.h src/vx.h src/ui.h
 	@mkdir -p build/d3d11-replay/thunks
 	@for f in $(notdir $(REPLAY_D3D_SRC)); do : > build/d3d11-replay/thunks/$$f.inc; done
@@ -1773,6 +1774,7 @@ runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d1
 	build/dxbcscan tests/shaders/*.dxbc
 	$(VXRT) build/draw.exe
 	python3 tests/d3d11_capture_check.py $(VXRT)
+	python3 tests/shader_cache_check.py $(VXRT)
 	$(VXRT) build/compute.exe
 	$(VXRT) build/d3d12.exe
 	$(VXRT) build/d3d12_engine.exe
