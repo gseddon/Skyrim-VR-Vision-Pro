@@ -71,6 +71,21 @@ struct vx_xros_xrizer_host {
     pthread_mutex_t lock;
     vx_xros_xrizer_mode mode;
     vx_xros_xrizer_platform platform;
+/* The colour space of an eye image the game submitted. Skyrim (and every D3D11 title that submits R8G8B8A8_UNORM as OpenVR Gamma/Auto)
+ * holds gamma-encoded texels in a plain UNORM texture (third_party/xrizer/upstream/src/graphics_backends/metal.rs copies them as stored).
+ * The headset drawable is BGRA8Unorm_sRGB, which encodes whatever the presenter writes: a UNORM image labelled linear was sampled raw
+ * and encoded a second time (byte 1 shown as 13, byte 2 as 22: the dark smoke on the title screen showed 1-code steps as hard
+ * coloured bands). Label 8-bit UNORM sRGB so the presenter samples it through an sRGB view and the drawable shows the stored bytes as they
+ * are. VXRT_XROS_EYE_LINEAR=1 restores the old reading (an 8-bit image that really holds linear light). */
+static vx_native_vr_color_space eye_color_space(MTLPixelFormat f) {
+    if (f == MTLPixelFormatRGBA8Unorm_sRGB || f == MTLPixelFormatBGRA8Unorm_sRGB) return VX_NATIVE_VR_COLOR_SRGB;
+    if (f == MTLPixelFormatRGBA8Unorm || f == MTLPixelFormatBGRA8Unorm) {
+        const char *v = getenv("VXRT_XROS_EYE_LINEAR");
+        return v && *v == '1' ? VX_NATIVE_VR_COLOR_LINEAR : VX_NATIVE_VR_COLOR_SRGB;
+    }
+    return VX_NATIVE_VR_COLOR_LINEAR;
+}
+
     vx_xros_xrizer_static_api api;
     KlNativeMetalHost metal;
     KlNativeImageSyncHost sync;
@@ -329,7 +344,7 @@ static XrResult publish_pair_sync(void *ctx, const KlNativeFramePair *pair) {
             MTLPixelFormat f=copies[i].pixelFormat;
             vx_native_vr_eye eye={.resource=(__bridge void *)copies[i],.width=(uint32_t)copies[i].width,
                 .height=(uint32_t)copies[i].height,.format=(uint32_t)f,.sample_count=1,
-                .color_space=(f==MTLPixelFormatRGBA8Unorm_sRGB || f==MTLPixelFormatBGRA8Unorm_sRGB) ? VX_NATIVE_VR_COLOR_SRGB : VX_NATIVE_VR_COLOR_LINEAR,
+                .color_space=eye_color_space(f),
                 .u_max=1,.v_max=1};
             if (vx_native_vr_submit(h->frames,frame,i,pose.frame_id,pose.pose_id,&eye)) goto failed;
             submitted|=1u<<i;
@@ -443,7 +458,7 @@ static XrResult publish_pair_async(void *ctx, const KlNativeFramePair *pair) {
                 MTLPixelFormat f=copies[i].pixelFormat;
                 vx_native_vr_eye eye={.resource=(__bridge void *)copies[i],.width=(uint32_t)copies[i].width,
                     .height=(uint32_t)copies[i].height,.format=(uint32_t)f,.sample_count=1,
-                    .color_space=(f==MTLPixelFormatRGBA8Unorm_sRGB || f==MTLPixelFormatBGRA8Unorm_sRGB) ? VX_NATIVE_VR_COLOR_SRGB : VX_NATIVE_VR_COLOR_LINEAR,
+                    .color_space=eye_color_space(f),
                     .u_max=1,.v_max=1};
                 if (vx_native_vr_submit(h->frames,frame,i,pose.frame_id,pose.pose_id,&eye)) goto failed;
                 submitted|=1u<<i;
