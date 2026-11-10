@@ -26,6 +26,10 @@ struct VXSenseTune {
         let parts = text.split(separator: ",").compactMap { Float($0) }
         return parts.count == 3 ? SIMD3(parts[0], parts[1], parts[2]) : .zero
     }()
+    static let dropMeters: Float = {
+        guard let v = env["VXRT_SENSE_DROP_M"], let f = Float(v), f.isFinite else { return 0 }
+        return f
+    }()
     static let mirrorLeftX = env["VXRT_SENSE_MIRROR"] != "0"
     static var isIdentity: Bool { pitchDegrees == 0 && position == .zero }
 

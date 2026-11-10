@@ -47,6 +47,10 @@ int vx_xros_native_begin(const float head[16], const float eyes[32], const float
     return vx_xros_pose_is_current(time, g_native_frame.pose.pose_time, g_native_frame.pose.tracking_valid);
 }
 
+/* Why an eye was not drawn from a game pair (per second, in the host log as gap_*): the eye pass returned 0. */
+enum { GAP_NOT_HELD, GAP_UNTRACKED, GAP_BAD_EYE, GAP_TEXTURE, GAP_COLORSPACE, GAP_VIEW, GAP_FRUSTUM, GAP_SHADER, GAP_PIPELINE, GAP_ENCODER, GAP_N };
+static unsigned long long g_gap[GAP_N], g_gap_i[GAP_N];
+#define GAP(k) do { ++g_gap[k]; ++g_gap_i[k]; } while (0)
 #ifdef VXRT_XRIZER_XROS_FIXTURE
 /* What the compositor showed, per compositor frame (the compositor thread only). A pair is FRESH the first time its
  * provider frame id is presented and a REPEAT every later time (the game has not submitted a newer pair, the pose is
@@ -55,6 +59,7 @@ int vx_xros_native_begin(const float head[16], const float eyes[32], const float
  * in the compositor/Mach seconds epoch. */
 static struct { unsigned long long fresh, repeat, stale, none, eyes; uint64_t last_id; double age_sum, age_max, rep_age_max;
                unsigned long long i_fresh, i_repeat, i_stale, i_none; } g_imm;
+
 int vx_xros_fixture_present_begin(double time) {
     g_native_held=0; g_fixture_held=0;
     if(vx_xros_fixture_acquire(&g_native_frame)) { ++g_imm.none; ++g_imm.i_none; return 0; }
@@ -69,15 +74,19 @@ int vx_xros_fixture_present_begin(double time) {
     /* A pair that is too old (a game hitch longer than a second) is counted stale but still shown, reprojected to the head: the last
      * picture is better than the placeholder (the wearer saw the blue and pink screen flicker in between). Only an untracked pair is not drawn. */
     (void)current;
-    return g_native_frame.pose.tracking_valid ? 1 : 0;
+    if (!g_native_frame.pose.tracking_valid) { GAP(GAP_UNTRACKED); return 0; }
+    return 1;
 }
 /* JSON fields for the host log: totals and this interval's counts (the interval restarts here). */
 int vx_xros_immersive_stats(char *buf, uint32_t len) {
     int n=snprintf(buf,len,"\"imm_fresh\":%llu,\"imm_repeat\":%llu,\"imm_stale\":%llu,\"imm_none\":%llu,\"imm_eyes_drawn\":%llu,"
         "\"imm_interval_fresh\":%llu,\"imm_interval_repeat\":%llu,\"imm_interval_stale\":%llu,\"imm_interval_none\":%llu,"
-        "\"imm_age_ms_mean_fresh\":%.2f,\"imm_age_ms_max_fresh\":%.2f,\"imm_age_ms_max_repeat\":%.2f,\"imm_last_frame\":%llu",
+        "\"imm_age_ms_mean_fresh\":%.2f,\"imm_age_ms_max_fresh\":%.2f,\"imm_age_ms_max_repeat\":%.2f,\"imm_last_frame\":%llu,"
+        "\"gap_not_held\":%llu,\"gap_untracked\":%llu,\"gap_texture\":%llu,\"gap_colorspace\":%llu,\"gap_view\":%llu,\"gap_frustum\":%llu,\"gap_shader\":%llu,\"gap_pipeline\":%llu,\"gap_encoder\":%llu",
         g_imm.fresh,g_imm.repeat,g_imm.stale,g_imm.none,g_imm.eyes,g_imm.i_fresh,g_imm.i_repeat,g_imm.i_stale,g_imm.i_none,
-        g_imm.fresh ? g_imm.age_sum/g_imm.fresh*1e3 : 0.0,g_imm.age_max*1e3,g_imm.rep_age_max*1e3,(unsigned long long)g_imm.last_id);
+        g_imm.fresh ? g_imm.age_sum/g_imm.fresh*1e3 : 0.0,g_imm.age_max*1e3,g_imm.rep_age_max*1e3,(unsigned long long)g_imm.last_id,
+        g_gap_i[GAP_NOT_HELD],g_gap_i[GAP_UNTRACKED],g_gap_i[GAP_TEXTURE],g_gap_i[GAP_COLORSPACE],g_gap_i[GAP_VIEW],g_gap_i[GAP_FRUSTUM],g_gap_i[GAP_SHADER],g_gap_i[GAP_PIPELINE],g_gap_i[GAP_ENCODER]);
+    memset(g_gap_i,0,sizeof g_gap_i);
     g_imm.i_fresh=g_imm.i_repeat=g_imm.i_stale=g_imm.i_none=0;
     return n;
 }
@@ -100,7 +109,9 @@ static NSString *const g_native_shader = @
 " return img.sample(smp,mix(p.bounds.xy,p.bounds.zw,uv)); }\n";
 
 int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const float tan[4], void *outp, void *depthp) {
-    if (!g_native_held || !g_native_frame.pose.tracking_valid || eye < 0 || eye > 1) return 0;
+    if (!g_native_held) { GAP(GAP_NOT_HELD); return 0; }
+    if (!g_native_frame.pose.tracking_valid) { GAP(GAP_UNTRACKED); return 0; }
+    if (eye < 0 || eye > 1) { GAP(GAP_BAD_EYE); return 0; }
     id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)cbp;
     id<MTLTexture> out = (__bridge id<MTLTexture>)outp;
     id<MTLTexture> depth = (__bridge id<MTLTexture>)depthp;
@@ -108,14 +119,14 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
     id<MTLTexture> tex = (__bridge id<MTLTexture>)e->resource;
     if (!cb || !out || !depth || !tex || tex.textureType != MTLTextureType2D || out.textureType != MTLTextureType2D ||
         depth.textureType != MTLTextureType2D || tex.sampleCount != 1 || tex.width != e->width || tex.height != e->height ||
-        tex.pixelFormat != e->format || e->sample_count != 1 || (e->color_space != VX_NATIVE_VR_COLOR_LINEAR && e->color_space != VX_NATIVE_VR_COLOR_SRGB)) return 0;
+        tex.pixelFormat != e->format || e->sample_count != 1 || (e->color_space != VX_NATIVE_VR_COLOR_LINEAR && e->color_space != VX_NATIVE_VR_COLOR_SRGB)) { GAP(GAP_TEXTURE); return 0; }
     MTLPixelFormat fmt = tex.pixelFormat, wanted = fmt;
     if (fmt == MTLPixelFormatRGBA8Unorm || fmt == MTLPixelFormatRGBA8Unorm_sRGB)
         wanted = e->color_space == VX_NATIVE_VR_COLOR_SRGB ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm;
     else if (fmt == MTLPixelFormatBGRA8Unorm || fmt == MTLPixelFormatBGRA8Unorm_sRGB)
         wanted = e->color_space == VX_NATIVE_VR_COLOR_SRGB ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm;
-    else if (e->color_space != VX_NATIVE_VR_COLOR_LINEAR) return 0;
-    if (wanted != fmt) { tex = [tex newTextureViewWithPixelFormat:wanted]; if (!tex) return 0; }
+    else if (e->color_space != VX_NATIVE_VR_COLOR_LINEAR) { GAP(GAP_COLORSPACE); return 0; }
+    if (wanted != fmt) { tex = [tex newTextureViewWithPixelFormat:wanted]; if (!tex) { GAP(GAP_VIEW); return 0; } }
     /* Once about every second per eye: what the game's pair contains. A 3x3 grid of single pixels of the source texture is copied to a
      * shared buffer on the GPU, and the completion handler logs the mean colour (device run 6: the user saw nothing in the space while the
      * counters said frames were presented: black pairs, or pairs not on screen?). */
@@ -153,19 +164,19 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
     memcpy(p.src, g_native_frame.pose.frustum[eye], sizeof p.src);
     memcpy(p.dst, tan, sizeof p.dst);
     p.bounds[0]=e->u_min; p.bounds[1]=e->v_min; p.bounds[2]=e->u_max; p.bounds[3]=e->v_max;
-    if (!(p.src[0] < p.src[1] && p.src[2] < p.src[3])) return 0;
+    if (!(p.src[0] < p.src[1] && p.src[2] < p.src[3])) { GAP(GAP_FRUSTUM); return 0; }
     static id<MTLLibrary> lib;
     static id<MTLRenderPipelineState> pipeline;
     static MTLPixelFormat colorFormat, depthFormat;
     if (!lib) { NSError *err = nil; lib = [cb.device newLibraryWithSource:g_native_shader options:nil error:&err]; if (!lib) vx_log("native VR shader: %s", err.localizedDescription.UTF8String); }
-    if (!lib) return 0;
+    if (!lib) { GAP(GAP_SHADER); return 0; }
     if (!pipeline || colorFormat != out.pixelFormat || depthFormat != depth.pixelFormat) {
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
         pd.vertexFunction = [lib newFunctionWithName:@"nv"]; pd.fragmentFunction = [lib newFunctionWithName:@"nf"];
         pd.colorAttachments[0].pixelFormat = out.pixelFormat; pd.depthAttachmentPixelFormat = depth.pixelFormat;
         NSError *err = nil; pipeline = [cb.device newRenderPipelineStateWithDescriptor:pd error:&err];
         colorFormat = out.pixelFormat; depthFormat = depth.pixelFormat;
-        if (!pipeline) { vx_log("native VR pipeline: %s", err.localizedDescription.UTF8String); return 0; }
+        if (!pipeline) { vx_log("native VR pipeline: %s", err.localizedDescription.UTF8String); GAP(GAP_PIPELINE); return 0; }
     }
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = out; pass.colorAttachments[0].loadAction = MTLLoadActionClear;
@@ -173,7 +184,7 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
     pass.depthAttachment.texture = depth; pass.depthAttachment.loadAction = MTLLoadActionClear;
     pass.depthAttachment.clearDepth = 0; pass.depthAttachment.storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass];
-    if (!enc) return 0;
+    if (!enc) { GAP(GAP_ENCODER); return 0; }
     /* DEPTH WRITES. visionOS reprojects the submitted frame with its depth buffer: a colour image over a depth of 0 (reverse-Z: infinitely
      * far everywhere) is composited as "nothing here at any finite distance" and is NOT SHOWN. Klepton measured it on the device
      * (KleptonCompositor.swift, overlay depth: "a fullscreen quad at reverse-Z 0 with writes off is invisible; the same quad at 0.05 (2 m)

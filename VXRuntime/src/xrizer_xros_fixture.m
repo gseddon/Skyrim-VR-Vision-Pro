@@ -184,9 +184,31 @@ static void stage_calibrate_locked(const float q[4],const float p[3]) {
     vx_log("xrizer xros fixture: stage calibrated from the first tracked head: origin %.3f %.3f %.3f (eye height %.2f m assumed), yaw %.1f deg",
            p[0],p[1]-eye,p[2],eye,theta*57.29578f);
 }
+/* The calibrated stage as local_from_stage: x y z, then the quaternion x y z w. 0 when not calibrated yet. */
+int vx_xros_fixture_stage(float out[7]) {
+    pthread_mutex_lock(&lock);int ok=stage_ready;
+    if(ok){out[0]=stage_from_local_pose.position.x;out[1]=stage_from_local_pose.position.y;out[2]=stage_from_local_pose.position.z;
+        out[3]=stage_from_local_pose.orientation.x;out[4]=stage_from_local_pose.orientation.y;out[5]=stage_from_local_pose.orientation.z;out[6]=stage_from_local_pose.orientation.w;}
+    pthread_mutex_unlock(&lock);return ok;
+}
 int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],const float tangents[8],double prediction,const float head[16],int tracked) {
     /* 0.25 s covers one compositor presentation. It rejects a different epoch. */
     if(!width || !height || !eyes || !tangents || !vx_xros_host_time_is_current(prediction,0.25) || prediction>(double)INT64_MAX/1e9)return -1;
+    /* Overscan: the game is told a field of view larger than the drawable's by VXRT_OVERSCAN (default 0.12 = +12% per side, in tangent
+     * space; 0 disables) and a render size larger in proportion, so a head turn during the frame's age (about 80 ms) shows rendered
+     * picture, not black edges (the standard reprojection margin). Stereo drawables only; the simulator's mono inspection keeps its
+     * exact optics. Cost: (1+o)^2 more pixels for the game. */
+    float over_tan[8]; uint32_t over_w=width,over_h=height;
+    {
+        static float overscan=-1;
+        if(overscan<0){const char *e=getenv("VXRT_OVERSCAN");char *end=NULL;float v=e&&*e?strtof(e,&end):0.12f;
+            overscan=(e&&*e&&(!end||*end||v<0||v>0.5f))?0.12f:v;
+            vx_log("xrizer xros fixture: overscan %.2f per side (VXRT_OVERSCAN)",overscan);}
+        float o=(vx_xros_immersive_enabled() && !immersive_mono) ? overscan : 0.f;
+        for(unsigned i=0;i<8;i++)over_tan[i]=tangents[i]*(1.f+o);
+        over_w=(uint32_t)((float)width*(1.f+o)+.5f);over_h=(uint32_t)((float)height*(1.f+o)+.5f);
+        tangents=over_tan;width=over_w;height=over_h;
+    }
     XrTime predicted=(XrTime)(prediction*1e9);
     KlNativeViewGeometry geometry={.version=KL_NATIVE_VIEW_GEOMETRY_VERSION,.struct_size=sizeof(geometry)};
     float orientation[2][4], position[2][3], fov[2][4], head_orientation[4], head_position[3];
