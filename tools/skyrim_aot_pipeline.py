@@ -202,12 +202,29 @@ def compiler_config(config):
     return dict(pin(item), source_commit=commit)
 
 
-def prepare(config):
+def pin_runtime(item, strict):
+    """The runtime only runs in --probe, so only a probe needs it to match its pin. A build records what is there:
+    the play script rebuilds its runtime on every change, so a stale pin must not refuse module generation."""
+    if strict:
+        return pin(item)
+    path = Path(item['path'])
+    if not path.is_absolute():
+        raise ValueError('input paths must be absolute')
+    path = path.resolve(strict=True)
+    if not path.is_file():
+        raise ValueError('input must be a regular file')
+    actual, expected = digest(path), str(item.get('sha256', '')).lower()
+    if actual != expected:
+        print(f'note: runtime {path} is {actual[:12]}..., pinned {expected[:12]}...; recorded, not used by a build', file=sys.stderr)
+    return {'path': str(path), 'sha256': actual, 'pinned_sha256': expected, 'pin_matches': actual == expected}
+
+
+def prepare(config, strict_runtime=True):
     original = pin(config['original'])
     exe = pin(config['prepared'], True)
     if original['path'] == exe['path']:
         raise ValueError('original and prepared must be separate files')
-    runtime = pin(config['runtime'])
+    runtime = pin_runtime(config['runtime'], strict_runtime)
     if ('exe' in config) == ('exe_base' in config):
         raise ValueError('give exactly one of exe_base and exe')
     block = config.get('exe') or {'base': config['exe_base']}
@@ -422,7 +439,7 @@ def run(config, out, build=False, probe=False, cache=None):
     cache = Path(cache).resolve() if cache else CACHE
     if not cache.is_relative_to(root):
         raise ValueError('cache must be inside the checkout')
-    cfg = prepare(config)
+    cfg = prepare(config, strict_runtime=probe)
     if probe and not cfg['owned_gate']:
         raise ValueError('--probe requires an explicit owned_gate command')
     compiler = dict(cfg['compiler'])
@@ -466,7 +483,7 @@ def run(config, out, build=False, probe=False, cache=None):
                 raise ValueError('owned gate failed')
         if probe:
             # A gate is arbitrary caller-supplied code: recheck every pinned input.
-            prepare(config)
+            prepare(config, strict_runtime=True)
             if source_identity() != ctx['source'] or digest(compiler['path']) != compiler['sha256']:
                 raise ValueError('source or compiler changed before probe')
             cmd = [sys.executable, str(REPO/'tools/vxrt_native_startup.py'), '--exe', cfg['prepared']['path'], '--runtime', cfg['runtime']['path'], '--aot-dir', str(module_set), '--asset-root', cfg['asset_root'], '--out', str(out/'startup'), '--seconds', str(config.get('seconds', 20))]

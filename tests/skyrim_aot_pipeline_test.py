@@ -297,4 +297,20 @@ class PipelineTest(unittest.TestCase):
         self.assertIn('unknown', category['causality'])
 
 
+
+class RuntimePin(unittest.TestCase):
+    def test_stale_runtime_pin_is_recorded_for_builds_and_refused_for_probes(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / 'vxrt-arm64'; f.write_bytes(b'rebuilt runtime')
+            item = {'path': str(f), 'sha256': '0' * 64}
+            got = p.pin_runtime(item, strict=False)
+            self.assertEqual(got['sha256'], p.digest(f))
+            self.assertFalse(got['pin_matches'])
+            with self.assertRaises(ValueError):
+                p.pin_runtime(item, strict=True)
+            item['sha256'] = p.digest(f)
+            self.assertTrue(p.pin_runtime(item, strict=False)['pin_matches'])
+            self.assertEqual(p.pin_runtime(item, strict=True)['sha256'], item['sha256'])
+
+
 if __name__ == '__main__': unittest.main()
