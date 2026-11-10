@@ -58,6 +58,20 @@ XROS_XRIZER_GAME ?= 0
 ifeq ($(XROS_XRIZER_GAME),1)
 XROS_XRIZER_FIXTURE := 1
 endif
+# The headset shader set of Skyrim VR: <key>.metallib files built offline from the user's own install and a manifest of DXBC
+# hashes (tools/shader_manifest_build; "Shaders from a manifest" in VISIONOS_PORT.md), embedded by xros-app as
+# bundle/shadercache. Default for the Skyrim app (XROS_XRIZER_GAME=1): `make xros-shader-set` builds it (once per manifest).
+# XROS_SHADER_SET=<dir> on the command line overrides it with a set you built another way (e.g. from a Mac game boot's
+# pending/ with tools/shadercache_fill.sh <dir> xros); XROS_SHADER_SET= (empty) embeds nothing.
+XROS_SHADER_MANIFEST ?= $(abspath ../build/private/skyrim-shader-manifest.tsv)
+XROS_SHADER_GAME ?= $(or $(SKYRIM_ASSET_ROOT),$(HOME)/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SkyrimVR)
+XROS_SHADER_DIR ?= $(abspath ../build/private/shadercache-$(XROS_SDK)-manifest)
+ifeq ($(origin XROS_SHADER_SET),undefined)
+ifeq ($(XROS_XRIZER_GAME),1)
+XROS_SHADER_SET := $(XROS_SHADER_DIR)
+XROS_SHADER_SET_PREREQ := xros-shader-set
+endif
+endif
 # Explicit simulator-only experimental fixture; normal builds retain their defaults.
 XROS_XRIZER_FIXTURE ?= 0
 XROS_DIR = build/$(XROS_SDK)$(if $(filter 1,$(XROS_XRIZER_FIXTURE)),-xrizer-fixture)
@@ -335,7 +349,22 @@ endif
 endif
 # The app (xros/app, xcodegen): signed for the headset with the team's automatic profile.
 XROS_FIXTURE_BUNDLE_ID ?= gseddon.dev.vxrt.VXRuntimeHost.$(if $(filter 1,$(XROS_XRIZER_GAME)),XrizerGame,XrizerOffscreen)
-XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
+XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) $(if $(XROS_SHADER_SET),'VXRT_SHADER_SET=$(abspath $(XROS_SHADER_SET))') SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
+.PHONY: xros-shader-set
+xros-app: $(XROS_SHADER_SET_PREREQ)
+# xros-shader-set: the whole shader set for $(XROS_SDK) into $(XROS_SHADER_DIR), from XROS_SHADER_MANIFEST and the install
+# XROS_SHADER_GAME (read only). Private (derived from the game): never committed. Rebuilt when the manifest is newer.
+xros-shader-set: build/vxrt-shader-manifest
+	@test -f "$(XROS_SHADER_MANIFEST)" || { printf '%s\n' \
+	  'xros-shader-set: no shader manifest at $(XROS_SHADER_MANIFEST) (a list of DXBC hashes, private).' \
+	  'Make one with a Mac run of the game on an empty shader cache:  VXRT_SHADER_MANIFEST=$(XROS_SHADER_MANIFEST) tools/play_skyrim_dev.sh' \
+	  'or by replaying a capture with an empty cache:  VXRT_SHADER_CACHE=<empty dir> VXRT_SHADER_MANIFEST=$(XROS_SHADER_MANIFEST) build/vxrt-d3d11-replay <capture>   (VISIONOS_PORT.md, "Shaders from a manifest").' \
+	  'Or set XROS_SHADER_MANIFEST=<file>, or XROS_SHADER_SET=<dir of .metallib files> to use a set built another way.' >&2; exit 2; }
+	@test -d "$(XROS_SHADER_GAME)/Data" || { echo 'xros-shader-set: no Skyrim VR install at $(XROS_SHADER_GAME) (set XROS_SHADER_GAME or SKYRIM_ASSET_ROOT)' >&2; exit 2; }
+	@if [ "$(XROS_SHADER_DIR)/.complete" -nt "$(XROS_SHADER_MANIFEST)" ]; then echo "xros-shader-set: $(XROS_SHADER_DIR) is up to date"; else \
+	  ../tools/shader_manifest_build --game "$(XROS_SHADER_GAME)" --manifest "$(XROS_SHADER_MANIFEST)" --out "$(XROS_SHADER_DIR)" --sdk $(XROS_SDK) \
+	  && touch "$(XROS_SHADER_DIR)/.complete" \
+	  || { echo 'xros-shader-set: incomplete (see $(XROS_SHADER_DIR)/report.tsv)' >&2; exit 1; }; fi
 xros-app: xros-lib xros-aot-tests
 ifeq ($(XROS_XRIZER_FIXTURE),1)
 	@test "$(XROS_SDK)" != xrsimulator -o "$(XROS_CODE_SIGNING)" = NO || { echo 'the simulator xrizer fixture/immersive build requires XROS_CODE_SIGNING=NO' >&2; exit 2; }
