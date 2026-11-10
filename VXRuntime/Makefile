@@ -1,7 +1,7 @@
 # vxrt: the VeRantyx Windows runtime. An x86-64 macOS binary; Rosetta 2 runs it and the Windows program together.
 CC      = clang
 CFLAGS  = -arch x86_64 -O1 -g -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=14.0
-SRC     = src/loader.c src/pe.c src/dotnet_metadata.c src/dotnet_resources.c src/dotnet_baml.c src/dotnet_il.c src/dotnet_exec.c src/dotnet_runtime.c src/dotnet_host.c src/kernel32.c src/kernelx.c src/jobs.c src/ntstatus.c src/system.c src/desktop.c src/winsta.c src/scm.c src/services.c src/security.c src/client.c src/steambridge.c src/calltrace.c src/pipes.c src/ucrt.c src/sync.c src/seh.c src/profile.c src/opengl.c src/wininet.m src/winhttp.m src/winhttp_proxy.m src/iphlp.c src/winsock_nsp.c src/midi.c src/directinput.m src/msxml.c src/extras.c src/context.S src/text.c src/files.c src/registry.c \
+SRC     = src/loader.c src/codehooks.c src/pe.c src/dotnet_metadata.c src/dotnet_resources.c src/dotnet_baml.c src/dotnet_il.c src/dotnet_exec.c src/dotnet_runtime.c src/dotnet_host.c src/kernel32.c src/kernelx.c src/jobs.c src/ntstatus.c src/system.c src/desktop.c src/winsta.c src/scm.c src/services.c src/security.c src/client.c src/steambridge.c src/calltrace.c src/pipes.c src/ucrt.c src/sync.c src/seh.c src/profile.c src/opengl.c src/wininet.m src/winhttp.m src/winhttp_proxy.m src/iphlp.c src/winsock_nsp.c src/midi.c src/directinput.m src/msxml.c src/extras.c src/context.S src/text.c src/files.c src/registry.c \
           src/user32.c src/gdi.c src/control.c src/net.c src/mm.c src/vcruntime.c src/com.c src/cocoa.m src/d3d11.m src/d3d11_draw.m src/d3d11_shared.m src/d3d11_capture.m src/d3d11on12.m src/dxgi.m src/d3d9.m src/dxbc.c src/d3d_format.c src/d3d12.m src/gpu_ir.c src/gpu_ir_msl.c src/gpu_ir_metal.m src/dxil.c src/dxil_msl.c src/dxil_ir.c src/spirv.c src/spirv_ir.c src/vk_msl.c src/vk_format.m src/vk_device.m src/vk_descriptor.m src/vk_pipeline.m src/vk_command.m src/vk_internal.m src/vk_queue.m src/vk_wsi.m src/vk_dispatch.m src/directinput_buffer.c src/directinput_format.c src/input.m src/audio.m src/xaudio2.m src/sysdlls.c src/dbghelp.c src/aes_gcm.c src/dpapi.c src/crypt32.c src/dwrite.m src/osinfo.c src/pointer.c src/regnotify.c src/section.c src/shlpath.c src/wevtapi.c src/ktime.c src/power.c src/sysparams.c src/dwmapi.c src/winmisc.c src/region.c
 SRC    += src/shader_cache.m
 SRC    += src/launchargs.c
@@ -192,6 +192,20 @@ aot-uuid-sequential-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/recomp/aot_
 build/recomp/aot_loaded_imports.exe: tests/aot_loaded_imports.c
 	@mkdir -p build/recomp
 	$(MINGW) -O1 -nostdlib -e mainCRTStartup -o $@ $< -lkernel32
+
+build/skse/skse_fixture_host.exe: tests/skse/skse_fixture_host.c
+	@mkdir -p build/skse
+	$(MINGW) -O1 -nostdlib -e mainCRTStartup -Wl,--image-base=0x308000000 -o $@ $< -lkernel32
+
+build/skse/skse_fixture_ext.dll: tests/skse/skse_fixture_ext.c
+	@mkdir -p build/skse
+	$(MINGW) -O1 -shared -nostdlib -e DllMain -Wl,--image-base=0x306000000 -o $@ $< -lkernel32
+
+# The static script-extender scheme on an owned fixture (research/2026-11-11-skse-vr-on-aot.md): arena bases 0x306/307/308000000.
+skse-fixture-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/skse/skse_fixture_host.exe build/skse/skse_fixture_ext.dll
+	python3 tests/skse_fixture_check.py
+
+.PHONY: skse-fixture-check
 
 aot-loaded-imports-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/recomp/aot_loaded_imports.exe
 	tools/aot_build.sh build/recomp/aot_loaded_imports.exe build/aot-loaded-imports

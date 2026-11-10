@@ -29,6 +29,7 @@
 #include <mach/mach.h>
 #include <mach-o/dyld.h>
 #include <unistd.h>
+#include <strings.h>
 #include <mach/mach_vm.h>
 #include <time.h>
 
@@ -121,6 +122,26 @@ static void load(image *im, const char *path) {
             b += block;
         }
     } else if (delta) die("%s: VXRT_AOT_BASE given and the image has no relocations", path);
+    // VXRT_AOT_PATCHES=<file>: the code a script extender wrote into this image (VXRuntime/src/codehooks.c, VXRT_CODE_CAPTURE:
+    // "P <image name> <rva> <hex>" lines) is applied to the copy the code is found in, after relocation. The module is still
+    // named by the file's own hash: the runtime maps the unpatched file, the extender writes the same bytes again at start-up,
+    // and VXRT_CODE_VERIFY compares them.
+    if (getenv("VXRT_AOT_PATCHES")) {
+        FILE *pf = fopen(getenv("VXRT_AOT_PATCHES"), "r");
+        if (!pf) die("cannot read VXRT_AOT_PATCHES %s", getenv("VXRT_AOT_PATCHES"));
+        size_t cap = 1 << 20; char *line = malloc(cap); unsigned long napplied = 0, nbytes = 0;
+        while (fgets(line, (int)cap, pf)) {
+            char kind, name[128]; unsigned rva; int used = 0;
+            if (sscanf(line, "%c %127s %x %n", &kind, name, &rva, &used) != 3 || kind != 'P' || !used) continue;
+            if (strcasecmp(name, im->name)) continue;
+            size_t n = strcspn(line + used, "\r\n") / 2;
+            if ((uint64_t)rva + n > im->size) die("patch at %#x+%zu is outside %s", rva, n, im->name);
+            for (size_t i = 0; i < n; i++) { unsigned v; if (sscanf(line + used + 2 * i, "%2x", &v) != 1) die("bad hex in patch at %#x", rva); im->mem[rva + i] = (uint8_t)v; }
+            napplied++; nbytes += (unsigned long)n;
+        }
+        fclose(pf); free(line);
+        fprintf(stderr, "vxrt-aot: %s: %lu patches (%lu bytes) from %s\n", im->name, napplied, nbytes, getenv("VXRT_AOT_PATCHES"));
+    }
 }
 static int exec_rva(const image *im, uint64_t rva) {
     for (int i = 0; i < im->nsec; i++)

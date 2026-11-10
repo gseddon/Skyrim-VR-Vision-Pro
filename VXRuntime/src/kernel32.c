@@ -1051,6 +1051,11 @@ static kern_return_t xr_alloc(mach_vm_address_t *out, mach_vm_size_t len) {
 }
 static WINAPI void *VirtualAlloc(void *addr, size_t size, DWORD type, DWORD protect) {
     if (!size) { vx_set_last_error(87); return NULL; }
+    if ((type & MEM_COMMIT) && (protect & 0xf0) && !(addr && find_reservation((uintptr_t)addr))) {   // (VXRT_EXEC_REGION, codehooks.c)
+        void *vx_exec_region_alloc(size_t);
+        void *p = vx_exec_region_alloc(size);
+        if (p) return p;
+    }
     VX_NO_STOP_LOCK(&g_vm_lock);
     reservation *r = addr ? find_reservation((uintptr_t)addr) : NULL;
     if (r && (type & (MEM_RESET | MEM_RESET_UNDO)) && !(type & (MEM_RESERVE | MEM_COMMIT))) {
@@ -1410,6 +1415,16 @@ static DWORD mach_protect(vm_prot_t p) {
 static size_t virtual_query(const void *addr, MEMORY_BASIC_INFORMATION *mbi, size_t len);
 // (the vCPU's low memory: its addresses as the program has them)
 static WINAPI size_t VirtualQuery(const void *addr, MEMORY_BASIC_INFORMATION *mbi, size_t len) {
+    {   // (VXRT_EXEC_REGION, codehooks.c: what is left of the region reads as free space, which the extender's search for room
+        //  near the program finds; its VirtualAlloc there is then served from the region)
+        size_t vx_exec_region_free(const void *addr, uint8_t **base);
+        uint8_t *fb; size_t fn = vx_exec_region_free(addr, &fb);
+        if (fn && len >= sizeof *mbi) {
+            memset(mbi, 0, sizeof *mbi);
+            mbi->base = fb; mbi->alloc_base = fb; mbi->region = fn; mbi->state = MEM_FREE; mbi->protect = 0x01;
+            return sizeof *mbi;
+        }
+    }
     size_t r = virtual_query(addr, mbi, len);
     if (r && in_low((uintptr_t)mbi->base)) {
         mbi->base = (uint8_t *)mbi->base - vx_low_base;
