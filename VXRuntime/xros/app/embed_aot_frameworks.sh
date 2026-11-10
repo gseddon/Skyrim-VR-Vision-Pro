@@ -17,3 +17,11 @@ for f in "$src"/VXA_*.framework "$VXRT_LIBDIR"/game_fw/VXA_*.framework; do
     n=$((n + 1))
 done
 echo "embed_aot_frameworks: $n frameworks signed with ${EXPANDED_CODE_SIGN_IDENTITY_NAME:-$id}"
+# A visionOS shader set (XROS_SHADER_SET -> VXRT_SHADER_SET: a folder of <key>.metallib): into the app's
+# bundle/shadercache, the read-only cache of the Skyrim start-up (main.m skyrimvr_start). Nothing set: nothing to do.
+if [ -n "${VXRT_SHADER_SET:-}" ] && [ -d "$VXRT_SHADER_SET" ]; then
+    sdst="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/bundle/shadercache"
+    rm -rf "$sdst"; mkdir -p "$sdst"
+    ditto "$VXRT_SHADER_SET" "$sdst"
+    echo "embed_aot_frameworks: shader set $(ls "$sdst" | wc -l | tr -d ' ') files from $VXRT_SHADER_SET"
+fi
