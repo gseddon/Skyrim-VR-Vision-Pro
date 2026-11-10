@@ -19,6 +19,8 @@ xcrun --sdk macosx clang -arch arm64 -isysroot "$sdk" -std=c11 -Wall -Wextra -We
 "$build/metal-mock"
 xcrun --sdk macosx clang -arch arm64 -isysroot "$sdk" -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-omit-frame-pointer -DKL_NATIVE_TEST_METAL_PARTIAL -I"$component/include" "$component/src/core.c" "$component/src/pose_math.c" "$component/tests/metal_mock.c" -o "$build/metal-mock-ubsan"
 "$build/metal-mock-ubsan"
+xcrun --sdk macosx clang -arch arm64 -isysroot "$sdk" -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-omit-frame-pointer -DKL_NATIVE_TEST_METAL_PARTIAL -I"$component/include" "$component/src/core.c" "$component/src/pose_math.c" "$component/tests/vismask.c" -o "$build/vismask-ubsan"
+"$build/vismask-ubsan"
 xcrun --sdk macosx clang -arch arm64 -isysroot "$sdk" -std=c11 -Wall -Wextra -Werror -fsanitize=undefined -fno-omit-frame-pointer -I"$component/include" "$component/src/core.c" "$component/src/pose_math.c" "$component/tests/boot.c" -o "$build/boot-macos-ubsan"
 "$build/boot-macos-ubsan"
 if [ "${KLEPTON_SANITIZERS:-0}" = 1 ]; then
