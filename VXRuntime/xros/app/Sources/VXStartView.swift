@@ -53,6 +53,12 @@ struct VXStartView: View {
     var body: some View {
         Group { if showSettings { VXSettingsPage(done: { showSettings = false }) } else { front } }
             .task { await autoStart() }
+            // After Start, once the immersive space is open, this window is closed (it used to stay, reading "Running", in front of the game),
+            // and again whenever the space is confirmed open after a pause or a reopen, or if the system brought this scene back.
+            .onReceive(NotificationCenter.default.publisher(for: .vxSpaceOpened)) { _ in
+                if launcher.started { dismissWindow(id: "start"); vxrt_jlog("start_window_dismissed", nil) }
+            }
+            .onAppear { if launcher.started && VXLifecycle.spaceOpen { dismissWindow(id: "start") } }
     }
 
     private func startNow() { launcher.start { openWindow(id: "display") } }

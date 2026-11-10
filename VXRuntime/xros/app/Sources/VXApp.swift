@@ -90,7 +90,9 @@ final class VXImmersiveController: ObservableObject {
             Task { await self?.reopen() }
         }
     }
-    func setNeedsResume(_ v: Bool) { DispatchQueue.main.async { if self.needsResume != v { self.needsResume = v; vxrt_jlog("resume_ui", "\"shown\":\(v)") } } }
+    // Every confirmed-open of the space (launch, reopen, Resume tap) also tells the start window to go away: it must not sit in front of the game.
+    func setNeedsResume(_ v: Bool) { if !v { DispatchQueue.main.async { NotificationCenter.default.post(name: .vxSpaceOpened, object: nil) } }
+        DispatchQueue.main.async { if self.needsResume != v { self.needsResume = v; vxrt_jlog("resume_ui", "\"shown\":\(v)") } } }
     // Called by every display view instance as it appears; only the first one starts the launch open.
     @MainActor func attach(instance: Int, open: @escaping () async -> OpenImmersiveSpaceAction.Result, afterOpened: @escaping () -> Void) {
         attachCount += 1
@@ -276,7 +278,7 @@ struct VXLayerConfiguration: CompositorLayerConfiguration {
     }
 }
 
-extension Notification.Name { static let vxReopenImmersive = Notification.Name("vxReopenImmersive") }
+extension Notification.Name { static let vxSpaceOpened = Notification.Name("vxSpaceOpened"); static let vxReopenImmersive = Notification.Name("vxReopenImmersive") }
 
 struct VXRootControllerView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController { vxrt_make_root_controller() }
