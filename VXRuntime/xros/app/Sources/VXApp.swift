@@ -82,10 +82,23 @@ struct VXRootControllerView: UIViewControllerRepresentable {
 struct VXDisplayView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @State private var opened = false
+    private static var hideFlatWindow: Bool {
+#if XRIZER_XROS_FIXTURE
+        return vx_xros_immersive_enabled() != 0 && ProcessInfo.processInfo.environment["VXRT_SHOW_WINDOW"] != "1"
+#else
+        return false
+#endif
+    }
 
     var body: some View {
         VXRootControllerView()
-            .frame(width: 1280, height: 720)
+            // xrizer immersive: the game's pairs are in the immersive space, and the runtime's flat display of the game's window
+            // (one eye, the desktop back buffer: what device run 5 showed) must not sit in front of them. The view stays in the
+            // hierarchy, small and invisible, because the game's swap chain presents into it (a detached layer could stall the
+            // game's present). VXRT_SHOW_WINDOW=1 brings it back.
+            .frame(width: Self.hideFlatWindow ? 160 : 1280, height: Self.hideFlatWindow ? 90 : 720)
+            .opacity(Self.hideFlatWindow ? 0.02 : 1)
+            .allowsHitTesting(!Self.hideFlatWindow)
             .onAppear { vxrt_jlog("display_view", nil) }
             .task {
                 guard !opened, vxrt_present_vr() != 0 else { return }

@@ -159,6 +159,31 @@ int vx_xros_fixture_start(void *device,void *queue) {
 fail:
     pthread_mutex_lock(&lock);failed=1;pthread_cond_broadcast(&ready_cond);pthread_mutex_unlock(&lock);return -1;
 }
+/* The STAGE reference space (xrizer's standing tracking space, which Skyrim VR uses) needs a floor. ARKit's origin is not the floor
+ * and differs per launch (device runs: head at y = -1.31, then +0.73), so the stage is calibrated once, from the first tracked head
+ * sample: its origin is the head's position dropped by an assumed eye height (VXRT_STAGE_EYE_HEIGHT, default 1.6 m) and its -Z is the
+ * head's horizontal forward. Without a valid stage xrizer locates nothing in STAGE (HMD "tracking 201 valid 0", end_frame "views not
+ * presentable"; device runs 3 to 5). The Mac dev host declares its synthetic local origin the floor (VXRT_XRIZER_DEV_STAGE=1).
+ * A development calibration, not a measured floor: standing height differences show up as a height offset. */
+static int stage_ready;
+static XrPosef stage_from_local_pose;   /* local_from_stage */
+static void stage_calibrate_locked(const float q[4],const float p[3]) {
+    float eye=1.6f;
+    const char *e=getenv("VXRT_STAGE_EYE_HEIGHT");
+    if(e && *e){char *end;float v=strtof(e,&end);if(!*end && v>0.3f && v<2.5f)eye=v;}
+    /* forward = q * (0,0,-1) */
+    float ux=q[0],uy=q[1],uz=q[2],w=q[3];
+    float vx=0,vy=0,vz=-1;
+    float cx=uy*vz-uz*vy,cy=uz*vx-ux*vz,cz=ux*vy-uy*vx;                 /* u x v */
+    float dx=uy*cz-uz*cy,dy=uz*cx-ux*cz,dz=ux*cy-uy*cx;                 /* u x (u x v) */
+    float fx=vx+2*(w*cx+dx),fz=vz+2*(w*cz+dz);
+    float theta=(fx*fx+fz*fz)>1e-6f ? atan2f(-fx,-fz) : 0.f;
+    stage_from_local_pose.orientation=(XrQuaternionf){0,sinf(theta*.5f),0,cosf(theta*.5f)};
+    stage_from_local_pose.position=(XrVector3f){p[0],p[1]-eye,p[2]};
+    stage_ready=1;
+    vx_log("xrizer xros fixture: stage calibrated from the first tracked head: origin %.3f %.3f %.3f (eye height %.2f m assumed), yaw %.1f deg",
+           p[0],p[1]-eye,p[2],eye,theta*57.29578f);
+}
 int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],const float tangents[8],double prediction,const float head[16],int tracked) {
     /* 0.25 s covers one compositor presentation. It rejects a different epoch. */
     if(!width || !height || !eyes || !tangents || !vx_xros_host_time_is_current(prediction,0.25) || prediction>(double)INT64_MAX/1e9)return -1;
@@ -185,6 +210,7 @@ int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],co
         if(vx_xros_xrizer_event(host,(KlNativeSessionEvent){KL_NATIVE_SESSION_READY,event_time_locked()})) { pthread_mutex_unlock(&lock);return -1; }
         ready=1;pthread_cond_broadcast(&ready_cond);
     }
+    if(!stage_ready && tracked && (head_flags&3)==3)stage_calibrate_locked(head_orientation,head_position);
     XrTime previous=last_prediction;last_prediction=predicted;
     if(!previous) { pthread_mutex_unlock(&lock);return 0; }
     uint64_t id=++frame_id;
@@ -194,6 +220,7 @@ int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],co
         .local_from_head={.orientation={head_orientation[0],head_orientation[1],head_orientation[2],head_orientation[3]},
             .position={head_position[0],head_position[1],head_position[2]}}};
     memcpy(sample.head_from_eye,geometry.head_from_eye,sizeof sample.head_from_eye);memcpy(sample.fov,geometry.fov,sizeof sample.fov);
+    if(stage_ready){sample.stage_valid=XR_TRUE;sample.local_from_stage=stage_from_local_pose;}
     int result=vx_xros_xrizer_offer(host,&sample);
     if(!result)offered_ids[id % 1024]=id;
     if(!result && id==1) vx_log("xrizer xros fixture: head flags=%llu pos=%.4f %.4f %.4f tracked=%d",
