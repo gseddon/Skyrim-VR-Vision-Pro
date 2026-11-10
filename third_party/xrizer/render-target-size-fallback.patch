@@ -1,0 +1,57 @@
+diff --git a/src/system.rs b/src/system.rs
+--- a/src/system.rs
++++ b/src/system.rs
+@@ -211,21 +211,43 @@
+ 
+ impl vr::IVRSystem026_Interface for System {
+     fn GetRecommendedRenderTargetSize(&self, width: *mut u32, height: *mut u32) {
+-        let views = self
+-            .openxr
+-            .instance
+-            .enumerate_view_configuration_views(
+-                self.openxr.system_id,
+-                xr::ViewConfigurationType::PRIMARY_STEREO,
+-            )
+-            .unwrap();
++        // Local fix (2026-11-10): the provider answers XR_ERROR_FORM_FACTOR_UNAVAILABLE when its compositor surface is gone (the
++        // system ended the immersive space); the unwrap() turned that into a process abort mid-game (device run 6). Return the last
++        // known size and say so.
++        static LAST_SIZE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++        let (w, h) = match self.openxr.instance.enumerate_view_configuration_views(
++            self.openxr.system_id,
++            xr::ViewConfigurationType::PRIMARY_STEREO,
++        ) {
++            Ok(views) if !views.is_empty() => {
++                let size = (
++                    views[0].recommended_image_rect_width,
++                    views[0].recommended_image_rect_height,
++                );
++                LAST_SIZE.store(
++                    ((size.0 as u64) << 32) | size.1 as u64,
++                    std::sync::atomic::Ordering::Relaxed,
++                );
++                size
++            }
++            other => {
++                let last = LAST_SIZE.load(std::sync::atomic::Ordering::Relaxed);
++                warn!(
++                    "GetRecommendedRenderTargetSize: view configuration unavailable ({:?}); returning the last known size {}x{}",
++                    other.map(|v| v.len()),
++                    last >> 32,
++                    last & 0xffff_ffff
++                );
++                ((last >> 32) as u32, (last & 0xffff_ffff) as u32)
++            }
++        };
+ 
+         if !width.is_null() {
+-            unsafe { *width = views[0].recommended_image_rect_width };
++            unsafe { *width = w };
+         }
+ 
+         if !height.is_null() {
+-            unsafe { *height = views[0].recommended_image_rect_height };
++            unsafe { *height = h };
+         }
+     }
+     fn GetProjectionMatrix(&self, eye: vr::EVREye, near_z: f32, far_z: f32) -> vr::HmdMatrix44_t {

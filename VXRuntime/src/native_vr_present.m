@@ -113,6 +113,33 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
         wanted = e->color_space == VX_NATIVE_VR_COLOR_SRGB ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm;
     else if (e->color_space != VX_NATIVE_VR_COLOR_LINEAR) return 0;
     if (wanted != fmt) { tex = [tex newTextureViewWithPixelFormat:wanted]; if (!tex) return 0; }
+    /* Once about every second per eye: what the game's pair contains. A 3x3 grid of single pixels of the source texture is copied to a
+     * shared buffer on the GPU, and the completion handler logs the mean colour (device run 6: the user saw nothing in the space while the
+     * counters said frames were presented: black pairs, or pairs not on screen?). */
+    {
+        static unsigned long long counter[2];
+        static id<MTLBuffer> probe[2];
+        if ((counter[eye]++ % 90) == 1 && tex.width >= 3 && tex.height >= 3 && (tex.pixelFormat == MTLPixelFormatRGBA8Unorm || tex.pixelFormat == MTLPixelFormatBGRA8Unorm ||
+            tex.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB || tex.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB)) {
+            if (!probe[eye]) probe[eye] = [cb.device newBufferWithLength:9 * 4 options:MTLResourceStorageModeShared];
+            id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+            for (unsigned i = 0; i < 9; i++) {
+                NSUInteger x = (tex.width - 1) * (1 + i % 3) / 4, y = (tex.height - 1) * (1 + i / 3) / 4;
+                [blit copyFromTexture:tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x, y, 0) sourceSize:MTLSizeMake(1, 1, 1)
+                             toBuffer:probe[eye] destinationOffset:i * 4 destinationBytesPerRow:4 destinationBytesPerImage:4];
+            }
+            [blit endEncoding];
+            id<MTLBuffer> buf = probe[eye]; int e2 = eye; BOOL bgra = tex.pixelFormat == MTLPixelFormatBGRA8Unorm || tex.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB;
+            NSUInteger w = tex.width, h = tex.height;
+            [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+                (void)done;
+                const uint8_t *b = buf.contents; unsigned sum[3] = {0,0,0}, mx = 0;
+                for (unsigned i = 0; i < 9; i++) { unsigned r = b[i*4 + (bgra ? 2 : 0)], g = b[i*4 + 1], bl = b[i*4 + (bgra ? 0 : 2)];
+                    sum[0] += r; sum[1] += g; sum[2] += bl; if (r > mx) mx = r; if (g > mx) mx = g; if (bl > mx) mx = bl; }
+                vx_log("native VR pair probe: eye %d %lux%lu mean rgb %u %u %u of 255, brightest sample channel %u (9 points)", e2, (unsigned long)w, (unsigned long)h, sum[0]/9, sum[1]/9, sum[2]/9, mx);
+            }];
+        }
+    }
     native_params p = {0};
     float source[16]; mul4(g_native_frame.pose.origin_from_head, g_native_frame.pose.head_from_eye[eye], source);
     // view is current eye-from-origin. Its transposed rotation is origin-from-current-eye.

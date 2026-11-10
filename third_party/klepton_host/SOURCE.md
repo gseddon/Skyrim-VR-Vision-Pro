@@ -84,3 +84,27 @@ Not ported: the anchor walk-back/hold (`displayAnchor`), `waitForInflightFrame`,
 The 385 GB `Guard` region in the crash report is the system's own: `va_range` (mach_vm_range_create) returned 46 for all four candidates and
 `va_guard_1gb` could not map (`alloc_kr` 3), so our `va_range_make` claimed none of it; `va_range_extended` only accounts the 63 GB
 `0x7040000000-0x8000000000` app range for `VirtualAlloc`. The 52 GB shared region at `0x2ea000000` is the dyld shared cache.
+
+## Run 7 reconciliation with the fork (2026-11-10)
+
+Compared again with `KleptonApp.swift` (BootView `openImmersiveSpace(id: Immersive.id)`, `dismissWindow()` once `.opened`) and `KleptonCompositor.swift`
+(`csFrames`, `attach(layer:)`, `afterOutputEnded`) at `a7bad301`:
+
+* **Paused layer.** Klepton's `csFrames` handles `.paused` by `waitUntilRunning()` and carrying on (plus an audio rebuild). Ours declared the xrizer
+  surface lost on the first pause, one-way, which xrizer answers with a panic. Ported: a pause is waited out and logged (`vr_pause`, `vr_resume`).
+* **Invalidated layer.** Klepton breaks out of `csFrames` and `afterOutputEnded` waits (10 s) for a replacement layer on the same running compositor
+  (`attach(layer:)` hands the new `LayerRenderer` to the loop's owner) while the guest keeps running. Ported in shape: on `.invalidated` the loop ends, the
+  space is reopened (`VXLifecycle.layerInvalidated`, five tries), and the new `CompositorLayer` closure builds a renderer that reuses the running ARKit
+  sessions, the Sense adapter and the xrizer provider (`VXImmersiveRenderer.previous`). Klepton keeps one compositor object; ours makes a new renderer and
+  copies its state, because the Swift renderer owns per-layer queues and the fixture start flags.
+* **Per-frame presentation.** Klepton composes every display frame from the newest complete guest stage and reprojects when there is no new one; ours does
+  the same (`present_begin`: fresh, repeat, stale, none). Added `presentation_interval_ms` and `frame_total_ms_max` to the per-second `vr` event to see
+  the system's cadence (device run 6: 39 compositor frames/s while loaded).
+* **Start window.** Klepton calls `dismissWindow()` once the space is open. Not ported: our window hosts the game's DXGI swap chain (the runtime's flat
+  display), which would be detached, and the reopen handler lives in that view. It stays, 160x90 at 2% opacity.
+* **Info.plist.** Adding the `UISceneSessionRoleImmersiveSpaceApplication` entry with `UISceneInitialImmersionStyle` (as Klepton's plist has) made the
+  simulator app die at launch ("given a scene with role UISceneSessionRoleImmersiveSpaceApplication but no scenes declared in your app body match this
+  role"); our `ImmersiveSpace` is opened from the window, so the entry was reverted and `UISceneConfigurations` stays empty. The default role is the window role,
+  as Klepton's.
+* **Immersion style.** Klepton's `Immersive.id` space is `.mixed` (black backdrop drawn where there is no picture) unless the target wants `.full`; ours is
+  `.full`.

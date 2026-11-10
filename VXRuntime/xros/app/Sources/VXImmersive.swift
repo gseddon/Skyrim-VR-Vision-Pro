@@ -14,11 +14,16 @@ import Darwin
 final class VXImmersiveRenderer: @unchecked Sendable {
     private let layerRenderer: LayerRenderer
     private let queue: MTLCommandQueue
-    private let arSession = ARKitSession()
-    private let worldTracking = WorldTrackingProvider()
-    private let trackingGate = VXTrackingGate()
-    private let nativeInput = VXNativeInput()
+    // The previous renderer when the compositor layer was invalidated and the immersive space reopened: ARKit (the head session, the
+    // Sense accessory session) and the xrizer provider carry on; only the layer, its queue and its loop are new.
+    nonisolated(unsafe) private static var previous: VXImmersiveRenderer?
+    private let arSession: ARKitSession
+    private let worldTracking: WorldTrackingProvider
+    private let trackingGate: VXTrackingGate
+    private let nativeInput: VXNativeInput
     private var tracking = false
+    private var presentationIntervalSum = 0.0, presentationIntervalCount = 0, lastPresentationTime = 0.0
+    private var fixtureMsMax = 0.0
     private var lastReport = CACurrentMediaTime()
     private var cleared = 0
     // per-second frame diagnostics (the device kills an immersive app that stops presenting; run 2 died with no trace)
@@ -47,7 +52,17 @@ final class VXImmersiveRenderer: @unchecked Sendable {
             vxrt_jlog("vr_error", "\"what\":\"no command queue\"")
             return
         }
-        let r = VXImmersiveRenderer(layerRenderer, q)
+        let prior = previous
+        let r = VXImmersiveRenderer(layerRenderer, q, previous: prior)
+        previous = r
+        if prior != nil {
+            vxrt_jlog("vr_rebind", "\"what\":\"new compositor layer on the running session\",\"tracking\":\(r.tracking),\"fixture_started\":\(r.fixtureStartedForLog)")
+            let thread = Thread { r.loop() }
+            thread.name = "VX compositor"
+            thread.qualityOfService = .userInteractive
+            thread.start()
+            return
+        }
         // The compositor loop first and on its own thread, as Klepton does (KleptonCompositor.renderLoop: waitUntilRunning,
         // then ARKit beside it): nothing about ARKit, its permission prompts or a session re-run may hold the frames back.
         // (Device run 1: the loop waited for the accessory session; the loader gave up after 30 s.)
@@ -113,10 +128,33 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         }
     }
 
-    private init(_ layerRenderer: LayerRenderer, _ queue: MTLCommandQueue) {
+    private init(_ layerRenderer: LayerRenderer, _ queue: MTLCommandQueue, previous: VXImmersiveRenderer?) {
         self.layerRenderer = layerRenderer
         self.queue = queue
         queue.label = "VX compositor"
+        arSession = previous?.arSession ?? ARKitSession()
+        worldTracking = previous?.worldTracking ?? WorldTrackingProvider()
+        trackingGate = previous?.trackingGate ?? VXTrackingGate()
+        nativeInput = previous?.nativeInput ?? VXNativeInput()
+        if let p = previous {
+            tracking = p.tracking
+            nativeXRTracking = p.nativeXRTracking
+            spatialClockCalibrated = p.spatialClockCalibrated
+#if XRIZER_XROS_FIXTURE
+            xrizerFixtureAttempted = p.xrizerFixtureAttempted
+            xrizerFixtureStarted = p.xrizerFixtureStarted
+            xrizerFixtureSurface = p.xrizerFixtureSurface
+            xrizerHeadLogged = true
+            immersiveLogged = true
+#endif
+        }
+    }
+    var fixtureStartedForLog: Bool {
+#if XRIZER_XROS_FIXTURE
+        return xrizerFixtureStarted
+#else
+        return false
+#endif
     }
 
 #if XRIZER_XROS_FIXTURE
@@ -162,20 +200,25 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         while true {
             switch layerRenderer.state {
             case .invalidated:
+                // The system ended the compositor layer (not our decision). Reopen the immersive space with a new layer and
+                // keep the provider, ARKit and the game running; only when the reopen budget is spent does the surface count as lost.
+                let reopening = VXLifecycle.layerInvalidated()
+                vxrt_jlog("vr_end", "\"why\":\"layer invalidated\",\"reopening\":\(reopening),\"frames\":\(Self.frameCount)")
+                if !reopening {
 #if XRIZER_XROS_FIXTURE
-                if xrizerFixtureSurface.invalidated() { loseFixtureSurface() }
+                    if xrizerFixtureSurface.invalidated() { loseFixtureSurface() }
 #endif
-                VXLifecycle.outputEnded = true
-                vxrt_jlog("vr_end", "\"why\":\"layer invalidated\"")
-                if let adapter = nativeXRTracking { Task { await adapter.stop() } }
+                    VXLifecycle.outputEnded = true
+                    if let adapter = nativeXRTracking { Task { await adapter.stop() } }
+                }
                 return
             case .paused:
-#if XRIZER_XROS_FIXTURE
-                // CompositorServices may initially be paused before its first
-                // drawable; only an already started fixture can lose a surface.
-                if xrizerFixtureSurface.paused() { loseFixtureSurface() }
-#endif
+                // Klepton's csFrames: a paused layer (a system alert such as the motion-input prompt, the crown's peek) is waited out
+                // and the loop carries on. It is NOT a lost surface: the old code stopped the xrizer provider for good on the first
+                // pause, which xrizer answers with a panic once the game asks for a size. Only an invalidated layer ends this loop.
+                vxrt_jlog("vr_pause", "\"frames\":\(Self.frameCount)")
                 layerRenderer.waitUntilRunning()
+                vxrt_jlog("vr_resume", "\"frames\":\(Self.frameCount)")
                 continue
             default:
                 autoreleasepool { frame() }
@@ -201,6 +244,10 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         let submitStart = CACurrentMediaTime()
         frame.startSubmission()
         let presentation = Self.seconds(timing.presentationTime)
+        if lastPresentationTime > 0 { presentationIntervalSum += presentation - lastPresentationTime; presentationIntervalCount += 1 }
+        lastPresentationTime = presentation
+        let fixtureStart = CACurrentMediaTime()
+        defer { let ms = (CACurrentMediaTime() - fixtureStart) * 1000; if ms > fixtureMsMax { fixtureMsMax = ms } }
         if spatialClockCalibrated, let adapter = nativeXRTracking, presentation - lastSpatialSample >= Self.spatialSampleInterval {
             lastSpatialSample = presentation
             Task { await adapter.collect(at: presentation) }
@@ -469,6 +516,8 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         }
 #endif
         cleared = 0
+        fields += ",\"presentation_interval_ms\":\(String(format: "%.2f", presentationIntervalCount > 0 ? presentationIntervalSum / Double(presentationIntervalCount) * 1000 : 0)),\"frame_total_ms_max\":\(String(format: "%.2f", fixtureMsMax))"
+        presentationIntervalSum = 0; presentationIntervalCount = 0; fixtureMsMax = 0
         fields += ",\"frames\":\(framesSecond),\"anchor_present\":\(anchorPresent),\"anchor_tracked\":\(anchorTracked),\"anchor_missing\":\(anchorMissing),\"submit_ms_mean\":\(String(format: "%.2f", framesSecond > 0 ? submitMsSum / Double(framesSecond) : 0)),\"submit_ms_max\":\(String(format: "%.2f", submitMsMax)),\"input_wait_ms_max\":\(String(format: "%.2f", inputWaitMsMax))"
         framesSecond = 0; anchorPresent = 0; anchorTracked = 0; anchorMissing = 0; submitMsSum = 0; submitMsMax = 0; inputWaitMsMax = 0
         vxrt_jlog("vr", fields)
