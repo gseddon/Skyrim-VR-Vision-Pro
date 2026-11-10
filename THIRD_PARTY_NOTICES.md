@@ -88,6 +88,14 @@ the accessory-tracking session start for the xrizer immersive build, Info.plist 
 system overlays, and process exit on backgrounding (`VXRuntime/xros/app/Sources/VXNativeXRTracking.swift`, `Info.plist`,
 `VXApp.swift`). Files, line references and what was deliberately not adopted: `third_party/klepton_host/SOURCE.md`.
 
+### Klepton settings and start window (2026-11-10)
+
+Same fork and revision. Reimplemented, not copied, with the Klepton file named in each file's header: the settings store and its key
+names, precedence and Info.plist default names (`klepton.renderScale`, `klepton.chroma`, `KLRenderScaleDefault`, `KLHandMattingDefault`,
+`KLAutoBootDefault`; `KleptonTuning.swift`, `KleptonChroma.swift`) in `VXRuntime/xros/app/Sources/VXSettings.swift`, and the start
+window and settings page layout and wording (`KleptonApp.swift` BootView/PlayerSettingsView/settingsPage, `KleptonTuning.swift` TuningView)
+in `VXRuntime/xros/app/Sources/VXStartView.swift`. Details: `third_party/klepton_host/SOURCE.md`.
+
 ## WMA v2 decoder derived from FFmpeg (LGPL-2.1-or-later)
 
 `VXRuntime/src/wmadec/` decodes xWMA (WMA v2, format tag 0x161) audio for
@@ -700,3 +708,9 @@ necessary.  Here is a sample; alter the names:
 
 That's all there is to it!
 ```
+
+## App icon (2026-11-10)
+
+`VXRuntime/xros/app/IconSource/skyrim-icon.jpeg` is a user-supplied picture (the Skyrim dragon emblem), committed with the user's
+approval as the source of the app icon; it is third-party artwork and is not covered by this repository's licenses. The generated
+icon layers are in `VXRuntime/xros/app/Icon/`. Origin: `VXRuntime/xros/app/IconSource/README.md`.

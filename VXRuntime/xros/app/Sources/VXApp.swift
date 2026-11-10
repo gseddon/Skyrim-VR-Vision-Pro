@@ -9,9 +9,17 @@ import UIKit
 @main
 struct VXRuntimeApp: App {
     @Environment(\.scenePhase) private var phase
+    // Hand visibility is a setting (VXSettings, default hidden; VXRT_SHOW_HANDS / KL_HAND_MATTING still win): observed, so the toggle applies live.
+    @ObservedObject private var settings = VXSettings.shared
+    // The start window gates the program (VXLaunchGate): the display window, whose view starts it, is opened by Start.
+    static let gated = VXLaunchGate.enabled(info: Bundle.main.infoDictionary ?? [:], environment: ProcessInfo.processInfo.environment,
+                                            defaultLaunch: vxrt_default_launch() != 0)
     init() {
-        vxrt_jlog("app_init", nil)
-        vxrt_boot_fallback()
+#if XRIZER_XROS_FIXTURE
+        VXSettings.latencyHook = { vx_xros_set_pairs_in_flight(Int32($0.pairsInFlight)) }
+#endif
+        vxrt_jlog("app_init", "\"start_window\":\(Self.gated)")
+        if !Self.gated { vxrt_boot_fallback() }
         // Main-thread heartbeat every 0.5 s: the last one before a system kill says when the app stopped being alive, and
         // the frame counter says whether the compositor loop was still presenting.
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
@@ -20,6 +28,12 @@ struct VXRuntimeApp: App {
         }   // (main.m: the program starts without the window if no window has appeared within a few seconds)
     }
     var body: some Scene {
+        // The start window (VXStartView.swift): shown at launch in a gated build, suppressed otherwise.
+        WindowGroup(id: "start") { VXStartView() }
+            .defaultSize(width: 900, height: 640)
+            .defaultLaunchBehavior(Self.gated ? .automatic : .suppressed)
+            .restorationBehavior(.disabled)
+
         WindowGroup(id: "display") {
             VXDisplayView()
         }
@@ -32,6 +46,8 @@ struct VXRuntimeApp: App {
         // placement): no glass backing for the (hidden) display window.
         .windowStyle(.plain)
         .defaultWindowPlacement { _, _ in WindowPlacement(.utilityPanel) }
+        .defaultLaunchBehavior(Self.gated ? .suppressed : .automatic)
+        .restorationBehavior(Self.gated ? .disabled : .automatic)
 
         ImmersiveSpace(id: "vr") {
             CompositorLayer(configuration: VXLayerConfiguration()) { layerRenderer in
@@ -41,11 +57,11 @@ struct VXRuntimeApp: App {
         .immersionStyle(selection: .constant(.full), in: .full)
         // Klepton's scene conventions (visionos/Sources/KleptonApp.swift, Immersive.systemOverlays): the Home indicator and
         // hand-gesture affordance do not sit on top of the game's picture. A request, not a guarantee. VXRT_OVERLAYS=1 undoes it.
-        .persistentSystemOverlays(ProcessInfo.processInfo.environment["VXRT_OVERLAYS"] == "1" ? .automatic : .hidden)
+        .persistentSystemOverlays((ProcessInfo.processInfo.environment["VXRT_OVERLAYS"] ?? ProcessInfo.processInfo.environment["KL_OVERLAYS"]) == "1" ? .automatic : .hidden)
         // The wearer's real hands and arms are not shown "punched through" the game's picture (the user's choice, 2026-11-10): the same
         // scene modifier Klepton uses (KleptonApp.swift .upperLimbVisibility). VXRT_SHOW_HANDS=1 shows them; a Klepton frontend setting later
         // (default: hidden).
-        .upperLimbVisibility(ProcessInfo.processInfo.environment["VXRT_SHOW_HANDS"] == "1" ? .visible : .hidden)
+        .upperLimbVisibility(settings.showHands ? .visible : .hidden)
     }
 }
 
@@ -81,7 +97,7 @@ enum VXLifecycle {
     static func scenePhaseChanged(to phase: ScenePhase) {
 #if XRIZER_XROS_FIXTURE
         guard vx_xros_immersive_enabled() != 0,
-              ProcessInfo.processInfo.environment["VXRT_EXIT_ON_BACKGROUND"] != "0" else { return }
+              (ProcessInfo.processInfo.environment["VXRT_EXIT_ON_BACKGROUND"] ?? ProcessInfo.processInfo.environment["KL_EXIT_ON_BACKGROUND"]) != "0" else { return }
         if (phase == .inactive && outputEnded) || phase == .background {
             vxrt_jlog("lifecycle_exit", "\"phase\":\"\(phase)\",\"output_ended\":\(outputEnded)")
             fflush(nil)

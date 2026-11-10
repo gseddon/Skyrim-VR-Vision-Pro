@@ -156,7 +156,11 @@ static XrResult haptic_stop(void *ctx, uint32_t hand) {
 /* VXRT_PAIRS_IN_FLIGHT (default 1, 0 = no gate): the game's next frame starts (its pose is taken) only once fewer than this many of its pairs
  * are still in flight. With a GPU-bound game the CPU otherwise runs a frame or two ahead, and the pose it took is that many frame times
  * old when the GPU draws it. The mailbox then hands over the NEWEST compositor sample. */
+/* The start window's latency choice changes the limit while the game runs (vx_xros_set_pairs_in_flight; -1 = the environment's value). */
+static volatile int g_pairs_override=-1;
+void vx_xros_set_pairs_in_flight(int n) { g_pairs_override = n<0 ? -1 : (n>4 ? 4 : n); }
 static unsigned pairs_in_flight_limit(void) {
+    int o=g_pairs_override; if (o>=0) return (unsigned)o;
     static int v=-1;
     if (v<0) { const char *e=getenv("VXRT_PAIRS_IN_FLIGHT"); v = e && *e ? atoi(e) : 1; if (v<0||v>4) v=1; }
     return (unsigned)v;
