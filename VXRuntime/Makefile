@@ -20,7 +20,7 @@ SRC    += src/mfplat.c
 SRC    += src/imagehlp.c src/spellcheck.c src/ime.c src/clipboard.m
 SRC    += src/npu_interp.m src/warp_core.m
 SRC    += src/upscale_core.m
-SRC    += src/native_vr.c src/native_openvr.m src/native_vr_present.m
+SRC    += src/native_vr.c src/native_openvr.m src/native_vr_present.m src/dither_source.m
 # xWMA (WMA v2) decoding for XAudio2: derived from FFmpeg, LGPL-2.1-or-later (src/wmadec/SOURCE.md)
 SRC    += src/wmadec/wmadec.c
 WMADEC_HDR = src/wmadec/wmadec.h src/wmadec/wmadec_internal.h src/wmadec/wmadata.h src/wmadec/aac_scalefactor.h
@@ -233,8 +233,13 @@ build/native_vr_present_test: tests/native_vr_present.m src/native_vr_present.m 
 	@mkdir -p build
 	clang -arch arm64 -O1 -Wall -Wextra -Werror -Isrc -fobjc-arc -o $@ tests/native_vr_present.m src/native_vr_present.m src/native_vr.c -framework Foundation -framework Metal -pthread
 
-native-vr-gpu-check: build/native_vr_present_test
+native-vr-gpu-check: build/native_vr_present_test build/dither_source_test
 	build/native_vr_present_test
+	build/dither_source_test
+
+build/dither_source_test: tests/dither_source.m src/dither_source.m
+	@mkdir -p build
+	clang -arch arm64 -O1 -Wall -Wextra -Isrc -fobjc-arc -o $@ tests/dither_source.m src/dither_source.m -framework Foundation -framework Metal
 
 # The app's settings store (xros/app/Sources/VXSettings.swift): persistence, precedence, the VXRT_* mapping, the launch gate.
 xros-settings-check: tests/xros_settings_test.swift xros/app/Sources/VXSettings.swift
@@ -844,7 +849,7 @@ build/dxbc2msl: tools/dxbc2msl.m src/dxbc.c src/dxbc.h
 
 # The Direct3D 11 replayer (tools/d3d11_replay.m): plays a VXRT_D3D11_CAPTURE stream on this checkout's Direct3D 11
 # (linked in, native ARM64, no program and no translator; the thunk includes are empty here).
-REPLAY_D3D_SRC = src/shader_cache.m src/d3d11.m src/d3d11_draw.m src/d3d11_shared.m src/d3d11_capture.m src/d3d11on12.m src/dxgi.m src/dxbc.c src/d3d_format.c src/gpu_ir.c src/gpu_ir_msl.c src/gpu_ir_metal.m
+REPLAY_D3D_SRC = src/shader_cache.m src/dither_source.m src/d3d11.m src/d3d11_draw.m src/d3d11_shared.m src/d3d11_capture.m src/d3d11on12.m src/dxgi.m src/dxbc.c src/d3d_format.c src/gpu_ir.c src/gpu_ir_msl.c src/gpu_ir_metal.m
 build/vxrt-d3d11-replay: tools/d3d11_replay.m tools/d3d11_replay_stubs.c $(REPLAY_D3D_SRC) src/d3d11_capture.h src/d3d_common.h src/d3d_tables.h src/dxbc.h src/gpu_ir.h src/gpu_ir_msl.h src/gpu_ir_metal.h src/vx.h src/ui.h
 	@mkdir -p build/d3d11-replay/thunks
 	@for f in $(notdir $(REPLAY_D3D_SRC)); do : > build/d3d11-replay/thunks/$$f.inc; done
@@ -854,11 +859,11 @@ build/vxrt-d3d11-replay: tools/d3d11_replay.m tools/d3d11_replay_stubs.c $(REPLA
 
 # The offline shader manifest tool (tools/shader_manifest.m; run by ../tools/shader_manifest_build): the translator and the
 # runtime's own shader cache writer, so the sources and keys it makes are the ones a game run makes.
-build/vxrt-shader-manifest: tools/shader_manifest.m src/shader_cache.m src/dxbc.c src/dxbc.h src/d3d_common.h src/vx.h
+build/vxrt-shader-manifest: tools/shader_manifest.m src/shader_cache.m src/dither_source.m src/dxbc.c src/dxbc.h src/d3d_common.h src/vx.h
 	@mkdir -p build/shader-manifest/thunks
 	@for f in shader_cache.m dxbc.c; do : > build/shader-manifest/thunks/$$f.inc; done
 	$(CC) -arch arm64 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -mmacosx-version-min=14.0 -Ibuild/shader-manifest -Isrc -fobjc-arc \
-	  -o $@ tools/shader_manifest.m src/shader_cache.m src/dxbc.c -framework Foundation -framework Metal
+	  -o $@ tools/shader_manifest.m src/shader_cache.m src/dither_source.m src/dxbc.c -framework Foundation -framework Metal
 
 # DXIL (Shader Model 6, Direct3D 12): src/dxil.c reads the container and its LLVM bitcode.
 build/dxildump: tools/dxildump.c src/dxil.c src/dxil.h
