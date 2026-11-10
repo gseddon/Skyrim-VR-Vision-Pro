@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-DIAG_ENV = {'VXRT_STATS', 'VXRT_TRACE_PASSES', 'VXRT_PASS_DUMP', 'VXRT_TRACE_DRAWS', 'VXRT_TRACE_TEXTURES', 'VXRT_TRACE_MAPS', 'VXRT_DUMP_SHADERS', 'VXRT_DRAW_SNAPSHOT', 'VXRT_TRACE_AUDIO', 'VXRT_XRIZER_DEV_DUMP_EVERY', 'VXRT_TRACE_CLEAR_STACK', 'VXRT_DIAG_RTTI_ARRAY', 'VXRT_DIAG_RTTI_ARRAY_WORDS', 'VXRT_TRACE_DRAW_STACK'}
+DIAG_ENV = {'VXRT_STATS', 'VXRT_TRACE_PASSES', 'VXRT_PASS_DUMP', 'VXRT_TRACE_DRAWS', 'VXRT_TRACE_TEXTURES', 'VXRT_TRACE_MAPS', 'VXRT_DUMP_SHADERS', 'VXRT_DRAW_SNAPSHOT', 'VXRT_TRACE_AUDIO', 'VXRT_XRIZER_DEV_DUMP_EVERY', 'VXRT_TRACE_CLEAR_STACK', 'VXRT_DIAG_RTTI_ARRAY', 'VXRT_DIAG_RTTI_ARRAY_WORDS', 'VXRT_TRACE_DRAW_STACK', 'VXRT_TRACE_INI'}
 import re
 import signal
 import struct
@@ -155,6 +155,8 @@ def capture(args):
     if out == REPO or not out.is_relative_to(REPO) or out.exists():
         raise ValueError('output must be a new directory inside this checkout')
     limit = 300 if getattr(args, 'experimental_xrizer', False) else 60   # longer observation only on the labelled dev host
+    if getattr(args, 'experimental_xrizer', False) and getattr(args, 'dev_keyboard', None) == '1':
+        limit = 3600                                      # an interactive dev-keyboard session someone is playing
     if not 0 < args.seconds <= limit:
         raise ValueError(f'seconds must be in (0, {limit}]')
     callback_limit = getattr(args, 'callback_depth_limit', None)
@@ -220,6 +222,23 @@ def capture(args):
         root, overlay, temp = out/'root', out/'overlay', out/'temp'
         for path in (root, overlay, temp):
             path.mkdir()
+        # Seeded settings: a repository-owned tree of authored files (no game files) copied into this run's private
+        # root (C:\\ is root/drive_c), e.g. the settings a game otherwise asks for on its first launch. Default for
+        # --experimental-xrizer dev runs when tools/prefs_seed/<appid> exists; --prefs-seed none turns it off.
+        seed = getattr(args, 'prefs_seed', None)
+        if seed is None and getattr(args, 'experimental_xrizer', False) and getattr(args, 'appid', None):
+            default = REPO / 'tools/prefs_seed' / str(args.appid)
+            seed = str(default) if default.is_dir() else None
+        if seed and seed != 'none':
+            seed_dir = Path(seed).resolve(strict=True)
+            copied = {}
+            for src in sorted(p for p in seed_dir.rglob('*') if p.is_file() and p.name != 'README.md'):
+                dst = root / src.relative_to(seed_dir)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(src.read_bytes())
+                copied[str(src.relative_to(seed_dir))] = digest(src)
+            result.setdefault('diagnostic', {})['prefs_seed'] = dict(source=str(seed_dir), files=copied,
+                scope='authored settings copied into the private root before start; not game files')
         env = {k: v for k, v in os.environ.items() if not k.startswith(('VXRT_', 'VERANTYX_'))}
         if getattr(args, 'experimental_xrizer', False):
             env = {k: v for k, v in env.items() if not k.startswith('XDG_')}
@@ -260,6 +279,19 @@ def capture(args):
             result['diagnostic']['experimental_xrizer'] = 'development host; injected head and synthetic stationary controllers'
             result['diagnostic']['dev_synthetic_controllers'] = dict(profile=args.dev_synthetic_controllers,
                 scope='two connected, stationary, untracked synthetic controllers (no buttons pressed) from the dev host through the provider and xrizer; diagnostic, not physical input or tracking')
+        if getattr(args, 'dev_keyboard', None) or getattr(args, 'dev_key_script', None) or getattr(args, 'dev_keymap', None):
+            if not getattr(args, 'experimental_xrizer', False):
+                raise ValueError('--dev-keyboard/--dev-key-script/--dev-keymap require --experimental-xrizer')
+            mode = getattr(args, 'dev_keyboard', None) or 'script'
+            env['VXRT_XRIZER_DEV_KEYBOARD'] = mode
+            if getattr(args, 'dev_key_script', None): env['VXRT_XRIZER_DEV_KEY_SCRIPT'] = args.dev_key_script
+            if getattr(args, 'dev_keymap', None): env['VXRT_XRIZER_DEV_KEYMAP'] = args.dev_keymap
+            result.setdefault('diagnostic', {})['experimental_xrizer'] = 'development host; injected head and synthetic keyboard-driven controllers'
+            result['diagnostic']['dev_keyboard'] = dict(mode=mode, script=env.get('VXRT_XRIZER_DEV_KEY_SCRIPT'), keymap=env.get('VXRT_XRIZER_DEV_KEYMAP'),
+                scope='Mac keyboard / scripted keys driving two synthetic untracked controllers (Oculus Touch unless --dev-synthetic-controllers) and the synthetic head; diagnostic, not physical input or tracking')
+        if getattr(args, 'audio_capture', None):
+            env['VXRT_XAUDIO2_CAPTURE'] = os.path.abspath(args.audio_capture)
+            result.setdefault('diagnostic', {})['audio_capture'] = env['VXRT_XAUDIO2_CAPTURE']
         if getattr(args, 'dump_eyes', False):
             if not getattr(args, 'experimental_xrizer', False):
                 raise ValueError('--dump-eyes requires --experimental-xrizer')
@@ -384,6 +416,11 @@ def main():
     ap.add_argument('--trace-null-target', action='store_true', help='diagnostic only: capture a null AOT target snapshot')
     ap.add_argument('--dev-synthetic-stage', action='store_true', help='diagnostic only: the experimental dev host declares its synthetic local origin to be the floor, so Standing tracking space is valid; no physical floor is claimed')
     ap.add_argument('--dev-synthetic-controllers', nargs='?', const='touch', choices=('touch', 'index', 'vive'), help='diagnostic only: the experimental dev host reports two connected, stationary synthetic controllers of this kind (default touch) through the provider and xrizer; not physical input')
+    ap.add_argument('--dev-keyboard', nargs='?', const='1', choices=('1', 'script'), help='diagnostic only: VXRT_XRIZER_DEV_KEYBOARD; 1 opens the dev host\'s mirror window whose keys drive synthetic controllers (see VXRuntime/src/xrizer_dev_host.m), script uses --dev-key-script only')
+    ap.add_argument('--dev-key-script', metavar='START:KEYS:HOLD[,...]', help='diagnostic only: VXRT_XRIZER_DEV_KEY_SCRIPT (seconds since the dev host started, or fN frames); implies --dev-keyboard script')
+    ap.add_argument('--dev-keymap', metavar='SPEC|/FILE', help='diagnostic only: VXRT_XRIZER_DEV_KEYMAP override of the dev keyboard map')
+    ap.add_argument('--audio-capture', metavar='FILE', help='diagnostic only: VXRT_XAUDIO2_CAPTURE, the XAudio2 mastering mix ("VXCA" header, float32) written to FILE; keep game audio private')
+    ap.add_argument('--prefs-seed', metavar='DIR|none', help='a tree copied into the run\'s private root (drive_c/...) before start; default for --experimental-xrizer: tools/prefs_seed/<appid> when present; none: no seed')
     ap.add_argument('--dump-eyes', action='store_true', help='diagnostic only: the experimental dev host writes raw RGBA of the published eyes for frames 1, 2, 60, 300 and 600 under <out>/eyes')
     ap.add_argument('--diag-env', action='append', metavar='NAME[=VALUE]', help='diagnostic only, repeatable: one of the renderer tracing knobs (%s)' % ', '.join(sorted(DIAG_ENV)))
     ap.add_argument('--xinput-script', default=None, metavar='SPEC', help='diagnostic only: VXRT_XINPUT_SCRIPT, a scripted virtual gamepad START_S:BUTTONS:HOLD_S[,...] (e.g. 40:A:0.3) with times from process start')
