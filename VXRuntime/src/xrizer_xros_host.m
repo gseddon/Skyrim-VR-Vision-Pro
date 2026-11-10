@@ -13,6 +13,57 @@ void vx_xros_timing_submit(uint64_t id);   /* native_vr_present.m */
 #include "image_sync_host.h"
 #include "pose_math.h"
 #include "xrizer_eye_ring.h"
+#include <TargetConditionals.h>
+#if !TARGET_OS_SIMULATOR && __has_include(<MetalFX/MetalFX.h>)
+#import <MetalFX/MetalFX.h>
+#define VX_HAVE_MFX 1
+#endif
+void vx_log(const char *fmt, ...);
+
+/* VXRT_UPSCALE=metalfx|bilinear (default bilinear = the presenter's sampler scales the game's eye). With metalfx every fresh eye is
+ * upscaled once per pair by MTLFXSpatialScaler into a slot texture of the drawable's per-eye size x VXRT_UPSCALE_OUT (default 1.0);
+ * the 100 Hz compositor then samples that texture. The target size is set by the fixture (drawable size incl. overscan, before
+ * VXRT_RENDER_SCALE). Colour: UNORM formats hold gamma-coded values, so MetalFX "perceptual" mode (same as the presenter's raw
+ * sample); _sRGB formats sample as linear, so "linear" mode. Output has the input's pixel format. */
+static uint32_t g_up_target_w, g_up_target_h;
+void vx_xros_host_set_upscale_target(uint32_t w, uint32_t h) { g_up_target_w=w; g_up_target_h=h; }
+static int upscale_requested(void) {
+    static int v=-1;
+    if (v<0) { const char *e=getenv("VXRT_UPSCALE"); v = e && !strcmp(e,"metalfx");
+        if (e && *e && strcmp(e,"metalfx") && strcmp(e,"bilinear")) vx_log("upscale: VXRT_UPSCALE=%s is not a mode (metalfx|bilinear): bilinear",e); }
+    return v;
+}
+static float upscale_out_factor(void) {
+    static float f=-1;
+    if (f<0) { const char *e=getenv("VXRT_UPSCALE_OUT"); char *end=NULL; float v=e&&*e?strtof(e,&end):1.f; f=(e&&*e&&(!end||*end||v<0.5f||v>2.f))?1.f:v; }
+    return f;
+}
+static double g_up_ms_sum, g_up_ms_max; static unsigned long long g_up_n, g_up_total;
+/* the scaler's GPU ms per pair this interval (mean, max, pairs); the counters reset */
+void vx_xros_host_upscale_stats(double *mean_ms, double *max_ms, unsigned long long *n) {
+    *mean_ms = g_up_n ? g_up_ms_sum/(double)g_up_n : 0; *max_ms = g_up_ms_max; *n = g_up_n; g_up_ms_sum = g_up_ms_max = 0; g_up_n = 0;
+}
+#ifdef VX_HAVE_MFX
+static id<MTLFXSpatialScaler> g_scaler; static NSUInteger g_sc_iw,g_sc_ih,g_sc_ow,g_sc_oh; static MTLPixelFormat g_sc_fmt; static int g_sc_fails;
+/* Encodes eye src -> dst (the slot's upscale target). 0 on success. The scaler is made again when sizes/format change. */
+static int upscale_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst) {
+    if (g_sc_fails>3) return -1;
+    if (!g_scaler || g_sc_iw!=src.width || g_sc_ih!=src.height || g_sc_ow!=dst.width || g_sc_oh!=dst.height || g_sc_fmt!=src.pixelFormat) {
+        int srgb = src.pixelFormat==MTLPixelFormatRGBA8Unorm_sRGB || src.pixelFormat==MTLPixelFormatBGRA8Unorm_sRGB;
+        MTLFXSpatialScalerDescriptor *d=[MTLFXSpatialScalerDescriptor new];
+        d.colorTextureFormat=src.pixelFormat; d.outputTextureFormat=dst.pixelFormat;
+        d.inputWidth=src.width; d.inputHeight=src.height; d.outputWidth=dst.width; d.outputHeight=dst.height;
+        d.colorProcessingMode = srgb ? MTLFXSpatialScalerColorProcessingModeLinear : MTLFXSpatialScalerColorProcessingModePerceptual;
+        g_scaler=[d newSpatialScalerWithDevice:cb.device]; g_sc_iw=src.width; g_sc_ih=src.height; g_sc_ow=dst.width; g_sc_oh=dst.height; g_sc_fmt=src.pixelFormat;
+        vx_log("upscale: MetalFX spatial scaler %s: %lux%lu -> %lux%lu format %lu mode %s",g_scaler?"made":"FAILED",(unsigned long)src.width,(unsigned long)src.height,
+               (unsigned long)dst.width,(unsigned long)dst.height,(unsigned long)src.pixelFormat,srgb?"linear":"perceptual");
+        if (!g_scaler) { ++g_sc_fails; return -1; }
+    }
+    g_scaler.colorTexture=src; g_scaler.outputTexture=dst; g_scaler.inputContentWidth=src.width; g_scaler.inputContentHeight=src.height;
+    [g_scaler encodeToCommandBuffer:cb];
+    return 0;
+}
+#endif
 
 #define EVENT_CAPACITY 16
 struct vx_xros_xrizer_host {
@@ -220,6 +271,14 @@ static XrResult publish_pair_async(void *ctx, const KlNativeFramePair *pair) {
             w[i]=(uint32_t)e->rect.extent.width; ht[i]=(uint32_t)e->rect.extent.height; fmt[i]=(uint32_t)src.pixelFormat;
         }
         vx_eye_slot *slot=NULL;
+#ifdef VX_HAVE_MFX
+        int up = upscale_requested() && g_up_target_w && g_up_target_h && (g_up_target_w!=w[0]||g_up_target_h!=ht[0]||g_up_target_w!=w[1]||g_up_target_h!=ht[1]) &&
+             [MTLFXSpatialScalerDescriptor supportsDevice:(__bridge id<MTLDevice>)h->device];
+        if (up) { h->ring->up_w=(uint32_t)((float)g_up_target_w*upscale_out_factor()+.5f); h->ring->up_h=(uint32_t)((float)g_up_target_h*upscale_out_factor()+.5f); }
+        else h->ring->up_w=h->ring->up_h=0;
+        { static int logged; if (!logged) { logged=1; vx_log("upscale: %s (VXRT_UPSCALE=%s), game eye %ux%u format %u, target %ux%u (out factor %.2f)",up?"MetalFX spatial":"bilinear in the presenter",
+              getenv("VXRT_UPSCALE")?:"unset",w[0],ht[0],fmt[0],h->ring->up_w,h->ring->up_h,upscale_out_factor()); } }
+#endif
         if (vx_eye_ring_reserve(h->ring,w,ht,fmt,&slot)) { result=XR_ERROR_OUT_OF_MEMORY; goto done; }   /* may block at the in-flight bound */
         id<MTLCommandBuffer> cb=[(__bridge id<MTLCommandQueue>)h->queue commandBuffer];
         id<MTLBlitCommandEncoder> blit=[cb blitCommandEncoder];
@@ -245,19 +304,38 @@ static XrResult publish_pair_async(void *ctx, const KlNativeFramePair *pair) {
         /* The ticket is consumed once the copy is going to the GPU; a stale ticket leaves the copy uncommitted. */
         if (vx_xros_mailbox_finish(h->mailbox,pair->sample.ticket)) { vx_eye_ring_abort(h->ring,slot); goto done; }
         id<MTLTexture> t0=(__bridge id<MTLTexture>)slot->tex[0], t1=(__bridge id<MTLTexture>)slot->tex[1];
+        id<MTLTexture> p0=t0, p1=t1;   /* what the compositor samples: the upscaled eyes when upscaling */
+        __block int copy_ok=1;
+        id<MTLCommandBuffer> ucb=nil;
+#ifdef VX_HAVE_MFX
+        if (slot->up[0] && slot->up[1]) {
+            /* The copy buffer is committed on its own; the scaler runs in a second buffer on the same (provider) queue, so its GPU time is measured
+             * alone. The slot stays busy until that second buffer's handler ran. */
+            [cb addCompletedHandler:^(id<MTLCommandBuffer> f){ if (f.status!=MTLCommandBufferStatusCompleted || f.error) copy_ok=0; }];
+            [cb enqueue];
+            ucb=[(__bridge id<MTLCommandQueue>)h->queue commandBuffer];
+            if (!ucb) { vx_eye_ring_abort(h->ring,slot); goto done; }
+            [ucb enqueue];   /* queue order: copy buffer, then scaler buffer */
+            [cb commit];
+            p0=(__bridge id<MTLTexture>)slot->up[0]; p1=(__bridge id<MTLTexture>)slot->up[1];
+            if (upscale_encode(ucb,t0,p0) || upscale_encode(ucb,t1,p1)) copy_ok=0;
+        }
+#endif
         /* The swapchain images' own writes (the guest-to-provider copies) complete before this copy on the same queue;
          * their buffers are checked when this copy completes, because the provider no longer waited for them. */
         id<MTLCommandBuffer> w0=(__bridge id<MTLCommandBuffer>)kl_apple_metal_image_pending_writes(&h->metal,pair->eye[0].image_lease);
         id<MTLCommandBuffer> w1=(__bridge id<MTLCommandBuffer>)kl_apple_metal_image_pending_writes(&h->metal,pair->eye[1].image_lease);
-        vx_eye_ring_commit(h->ring,cb,slot,^(int ok,double gpu_s) {
-            (void)gpu_s;
+        vx_eye_ring_commit(h->ring,ucb?ucb:cb,slot,^(int ok,double gpu_s) {
+            if (ucb && ok) { if (!copy_ok) ok=0; else { double ms=gpu_s*1e3; g_up_ms_sum+=ms; if (ms>g_up_ms_max) g_up_ms_max=ms; ++g_up_n; ++g_up_total;
+                if (g_up_total==1 || g_up_total%300==0) vx_log("upscale: %llu pairs, last scaler GPU %.2f ms (both eyes)",g_up_total,ms); } }
+            else (void)gpu_s;
             if (ok && (!vx_eye_ring_writes_ok(w0) || !vx_eye_ring_writes_ok(w1))) ok=0;
             pthread_mutex_lock(&h->lock);
             if (!ok || h->retiring || h->retired || h->epoch!=epoch || pose.frame_id<=h->last_published) {
                 if (ok) ++h->discarded;
                 pthread_mutex_unlock(&h->lock); return;
             }
-            id<MTLTexture> copies[2]={t0,t1};
+            id<MTLTexture> copies[2]={p0,p1};
             vx_native_vr_handle frame=0; unsigned submitted=0, completed=0;
             if (vx_native_vr_begin(h->frames,&pose,&frame)) { pthread_mutex_unlock(&h->lock); return; }
             for (unsigned i=0;i<2;i++) {
