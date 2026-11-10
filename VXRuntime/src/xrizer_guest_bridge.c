@@ -3,6 +3,7 @@
 #include "xrizer_guest_bridge.h"
 #include <pthread.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 typedef struct { float m[4][4]; } matrix44;
@@ -232,24 +233,78 @@ typedef struct { overlay_vec2 top_left, bottom_right; } overlay_rect2;
 static const char *const overlay_names[82] = {"FindOverlay", "CreateOverlay", "DestroyOverlay", "SetHighQualityOverlay", "GetHighQualityOverlay", "GetOverlayKey", "GetOverlayName", "SetOverlayName", "GetOverlayImageData", "GetOverlayErrorNameFromEnum", "SetOverlayRenderingPid", "GetOverlayRenderingPid", "SetOverlayFlag", "GetOverlayFlag", "SetOverlayColor", "GetOverlayColor", "SetOverlayAlpha", "GetOverlayAlpha", "SetOverlayTexelAspect", "GetOverlayTexelAspect", "SetOverlaySortOrder", "GetOverlaySortOrder", "SetOverlayWidthInMeters", "GetOverlayWidthInMeters", "SetOverlayAutoCurveDistanceRangeInMeters", "GetOverlayAutoCurveDistanceRangeInMeters", "SetOverlayTextureColorSpace", "GetOverlayTextureColorSpace", "SetOverlayTextureBounds", "GetOverlayTextureBounds", "GetOverlayRenderModel", "SetOverlayRenderModel", "GetOverlayTransformType", "SetOverlayTransformAbsolute", "GetOverlayTransformAbsolute", "SetOverlayTransformTrackedDeviceRelative", "GetOverlayTransformTrackedDeviceRelative", "SetOverlayTransformTrackedDeviceComponent", "GetOverlayTransformTrackedDeviceComponent", "GetOverlayTransformOverlayRelative", "SetOverlayTransformOverlayRelative", "ShowOverlay", "HideOverlay", "IsOverlayVisible", "GetTransformForOverlayCoordinates", "PollNextOverlayEvent", "GetOverlayInputMethod", "SetOverlayInputMethod", "GetOverlayMouseScale", "SetOverlayMouseScale", "ComputeOverlayIntersection", "IsHoverTargetOverlay", "GetGamepadFocusOverlay", "SetGamepadFocusOverlay", "SetOverlayNeighbor", "MoveGamepadFocusToNeighbor", "SetOverlayDualAnalogTransform", "GetOverlayDualAnalogTransform", "SetOverlayTexture", "ClearOverlayTexture", "SetOverlayRaw", "SetOverlayFromFile", "GetOverlayTexture", "ReleaseNativeOverlayHandle", "GetOverlayTextureSize", "CreateDashboardOverlay", "IsDashboardVisible", "IsActiveDashboardOverlay", "SetDashboardOverlaySceneProcess", "GetDashboardOverlaySceneProcess", "ShowDashboard", "GetPrimaryDashboardDevice", "ShowKeyboard", "ShowKeyboardForOverlay", "GetKeyboardText", "HideKeyboard", "SetKeyboardTransformAbsolute", "SetKeyboardPositionForOverlay", "SetOverlayIntersectionMask", "GetOverlayFlags", "ShowMessageOverlay", "CloseMessageOverlay"};
 static uint8_t overlay_seen[82];
 // ---- keyboard: xrizer answers ShowKeyboard* with RequestFailed (the game then waits for a text that never comes) and
-// GetKeyboardText is todo!(). Until a real text-entry path exists (visionOS), a keyboard request is answered as if the user
-// accepted the text the game offered (its existing text, or "Dragonborn" when empty): success, then VREvent_KeyboardDone
-// and VREvent_KeyboardClosed through PollNextOverlayEvent (ShowKeyboardForOverlay) or IVRSystem::PollNextEvent (ShowKeyboard).
-static struct { pthread_mutex_t lock; char text[256]; uint64_t user; int next, count, to_system; } overlay_kbd = { PTHREAD_MUTEX_INITIALIZER };
-static void overlay_keyboard_show(const char *existing, uint64_t user, int to_system, const char *what) {
+// GetKeyboardText is todo!(). The bridge answers success at once and delivers the result as the events SteamVR sends:
+// VREvent_KeyboardDone then VREvent_KeyboardClosed (accepted), or KeyboardClosed alone (cancelled), through PollNextOverlayEvent
+// (ShowKeyboardForOverlay) or IVRSystem::PollNextEvent (ShowKeyboard); GetKeyboardText then returns the text.
+// Where the text comes from: a host hook (vx_xrizer_guest_set_keyboard_hook: the visionOS app opens a text field and calls
+// vx_xrizer_guest_keyboard_complete when the wearer is done), or, with no hook or VXRT_KEYBOARD=auto (Mac, simulator), a
+// stand-in that accepts the text the game offered at once (VXRT_KEYBOARD_TEXT overrides it; "Dragonborn" when empty).
+// VXRT_KEYBOARD=test:SECONDS:TEXT is a stand-in that answers after SECONDS (checks the asynchronous path without a window).
+static vx_keyboard_show_fn overlay_kbd_show_hook;
+static vx_keyboard_hide_fn overlay_kbd_hide_hook;
+static void *overlay_kbd_hook_context;
+static struct { pthread_mutex_t lock; char text[256], offered[256]; uint64_t user; uint32_t types[2]; int next, count, to_system, open; } overlay_kbd = { PTHREAD_MUTEX_INITIALIZER };
+void vx_xrizer_guest_set_keyboard_hook(vx_keyboard_show_fn show, vx_keyboard_hide_fn hide, void *context) {
+    overlay_kbd_show_hook = show; overlay_kbd_hide_hook = hide; overlay_kbd_hook_context = context;
+}
+// The wearer finished (accepted: the text; otherwise cancelled and the offered text stays). Any thread.
+void vx_xrizer_guest_keyboard_complete(const char *text, int accepted) {
     pthread_mutex_lock(&overlay_kbd.lock);
-    snprintf(overlay_kbd.text, sizeof overlay_kbd.text, "%s", existing && *existing ? existing : "Dragonborn");
-    overlay_kbd.user = user; overlay_kbd.to_system = to_system; overlay_kbd.next = 0; overlay_kbd.count = 2;
-    vx_log("xrizer_guest_bridge: %s: no on-screen keyboard yet; accepting the offered text '%s' (KeyboardDone, KeyboardClosed queued for %s)",
-           what, overlay_kbd.text, to_system ? "IVRSystem::PollNextEvent" : "PollNextOverlayEvent");
+    if (!overlay_kbd.open) { pthread_mutex_unlock(&overlay_kbd.lock); vx_log("xrizer_guest_bridge: keyboard result with no keyboard open ignored"); return; }
+    overlay_kbd.open = 0; overlay_kbd.next = 0;
+    if (accepted) {
+        snprintf(overlay_kbd.text, sizeof overlay_kbd.text, "%s", text ? text : "");
+        overlay_kbd.types[0] = 1202; overlay_kbd.types[1] = 1200; overlay_kbd.count = 2;   // KeyboardDone, KeyboardClosed
+    } else {
+        snprintf(overlay_kbd.text, sizeof overlay_kbd.text, "%s", overlay_kbd.offered);
+        overlay_kbd.types[0] = 1200; overlay_kbd.count = 1;                                // KeyboardClosed
+    }
+    vx_log("xrizer_guest_bridge: keyboard %s with text '%s' (%d event(s) queued for %s)", accepted ? "accepted" : "cancelled", overlay_kbd.text,
+           overlay_kbd.count, overlay_kbd.to_system ? "IVRSystem::PollNextEvent" : "PollNextOverlayEvent");
     pthread_mutex_unlock(&overlay_kbd.lock);
+}
+static void *overlay_keyboard_test_thread(void *arg) {
+    char *spec = arg;   // "SECONDS:TEXT"
+    unsigned seconds = (unsigned)strtoul(spec, NULL, 10);
+    const char *text = strchr(spec, ':'); text = text ? text + 1 : "";
+    sleep(seconds);
+    vx_xrizer_guest_keyboard_complete(text, 1);
+    free(spec);
+    return NULL;
+}
+static void overlay_keyboard_show(const char *prompt, const char *existing, uint32_t max_chars, int line_mode, uint64_t user, int to_system, const char *what) {
+    const char *mode = getenv("VXRT_KEYBOARD");
+    int use_hook = overlay_kbd_show_hook && !(mode && *mode);
+    pthread_mutex_lock(&overlay_kbd.lock);
+    snprintf(overlay_kbd.offered, sizeof overlay_kbd.offered, "%s", existing ? existing : "");
+    snprintf(overlay_kbd.text, sizeof overlay_kbd.text, "%s", overlay_kbd.offered);
+    overlay_kbd.user = user; overlay_kbd.to_system = to_system; overlay_kbd.next = overlay_kbd.count = 0; overlay_kbd.open = 1;
+    pthread_mutex_unlock(&overlay_kbd.lock);
+    vx_log("xrizer_guest_bridge: %s: prompt '%s' offered text '%s' max %u chars %s: %s", what, prompt ? prompt : "", overlay_kbd.offered, max_chars,
+           line_mode ? "multi-line" : "single line", use_hook ? "host keyboard hook" : "stand-in (no on-screen keyboard)");
+    if (use_hook) { overlay_kbd_show_hook(prompt ? prompt : "", overlay_kbd.offered, max_chars, line_mode == 0, overlay_kbd_hook_context); return; }
+    if (mode && !strncmp(mode, "test:", 5)) {
+        pthread_t t; char *spec = strdup(mode + 5);
+        if (spec && !pthread_create(&t, NULL, overlay_keyboard_test_thread, spec)) { pthread_detach(t); return; }
+        free(spec);
+    }
+    const char *text = getenv("VXRT_KEYBOARD_TEXT");
+    if (!text || !*text) text = overlay_kbd.offered[0] ? overlay_kbd.offered : "Dragonborn";
+    vx_xrizer_guest_keyboard_complete(text, 1);
+}
+static void overlay_keyboard_hide(void) {
+    pthread_mutex_lock(&overlay_kbd.lock);
+    int was_open = overlay_kbd.open;
+    overlay_kbd.open = 0; overlay_kbd.next = overlay_kbd.count = 0;
+    pthread_mutex_unlock(&overlay_kbd.lock);
+    if (was_open && overlay_kbd_hide_hook) overlay_kbd_hide_hook(overlay_kbd_hook_context);
 }
 // Writes the next queued keyboard event in the Windows VREvent_t layout (data at byte 16); returns 0 when none is due.
 static int overlay_keyboard_event(void *event, uint32_t size, int to_system) {
     int got = 0;
     pthread_mutex_lock(&overlay_kbd.lock);
     if (event && size >= 32 && overlay_kbd.next < overlay_kbd.count && overlay_kbd.to_system == to_system) {
-        uint32_t type = overlay_kbd.next == 0 ? 1202 /* VREvent_KeyboardDone */ : 1200 /* VREvent_KeyboardClosed */, device = 0xffffffffu;
+        uint32_t type = overlay_kbd.types[overlay_kbd.next], device = 0xffffffffu;
         memset(event, 0, size < 64 ? size : 64);
         memcpy(event, &type, 4); memcpy((char *)event + 4, &device, 4);
         memcpy((char *)event + 24, &overlay_kbd.user, 8);        // VREvent_Keyboard_t: cNewInput[8] at 16, uUserValue at 24
@@ -629,12 +684,12 @@ static WINAPI uint32_t overlay_71(guest_object *self) { // GetPrimaryDashboardDe
 typedef int32_t (*overlay_native_72_fn)(void *, int32_t, int32_t, void *, uint32_t, void *, uint8_t, uint64_t);
 static WINAPI int32_t overlay_72(guest_object *self, int32_t a0, int32_t a1, void * a2, uint32_t a3, void * a4, uint8_t a5, uint64_t a6) { // ShowKeyboard
     require(self == &overlay); overlay_note(72); overlay_native_72_fn fn = (overlay_native_72_fn)native_table(self)[72]; (void)fn;
-    overlay_keyboard_show((const char *)a4, a6, 1, "IVROverlay_018::ShowKeyboard"); return 0;
+    overlay_keyboard_show((const char *)a2, (const char *)a4, a3, a1, a6, 1, "IVROverlay_018::ShowKeyboard"); return 0;
 }
 typedef int32_t (*overlay_native_73_fn)(void *, uint64_t, int32_t, int32_t, void *, uint32_t, void *, uint8_t, uint64_t);
 static WINAPI int32_t overlay_73(guest_object *self, uint64_t a0, int32_t a1, int32_t a2, void * a3, uint32_t a4, void * a5, uint8_t a6, uint64_t a7) { // ShowKeyboardForOverlay
     require(self == &overlay); overlay_note(73); overlay_native_73_fn fn = (overlay_native_73_fn)native_table(self)[73]; (void)fn;
-    overlay_keyboard_show((const char *)a5, a7, 0, "IVROverlay_018::ShowKeyboardForOverlay"); return 0;
+    overlay_keyboard_show((const char *)a3, (const char *)a5, a4, a2, a7, 0, "IVROverlay_018::ShowKeyboardForOverlay"); return 0;
 }
 typedef uint32_t (*overlay_native_74_fn)(void *, void *, uint32_t);
 static WINAPI uint32_t overlay_74(guest_object *self, void * a0, uint32_t a1) { // GetKeyboardText
@@ -648,7 +703,7 @@ static WINAPI uint32_t overlay_74(guest_object *self, void * a0, uint32_t a1) { 
 typedef void (*overlay_native_75_fn)(void *);
 static WINAPI void overlay_75(guest_object *self) { // HideKeyboard
     require(self == &overlay); overlay_note(75); overlay_native_75_fn fn = (overlay_native_75_fn)native_table(self)[75]; (void)fn;
-    pthread_mutex_lock(&overlay_kbd.lock); overlay_kbd.next = overlay_kbd.count = 0; pthread_mutex_unlock(&overlay_kbd.lock);
+    overlay_keyboard_hide();
 }
 typedef void (*overlay_native_76_fn)(void *, int32_t, void *);
 static WINAPI void overlay_76(guest_object *self, int32_t a0, void * a1) { // SetKeyboardTransformAbsolute
