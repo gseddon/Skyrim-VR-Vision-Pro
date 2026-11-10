@@ -1,4 +1,4 @@
-#!/usr/bin/env python3 -I
+#!/usr/bin/env python3
 """Apply a FOMOD installer's choices automatically into a private loose-file Data tree (APFS clones).
 
   python3 -I tools/fomod_auto.py --src "<extracted mod folder>" --out build/private/mods/<name> \

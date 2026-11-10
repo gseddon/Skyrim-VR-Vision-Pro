@@ -1,4 +1,4 @@
-#!/usr/bin/env python3 -I
+#!/usr/bin/env python3
 """Flatten a chosen subset of the Skyland AIO FOMOD into a loose-file Data tree (private, git-ignored).
 
   python3 -I tools/skyland_flatten.py --src "<extracted Skyland AIO folder>" --out build/private/mods/skyland-aio-1k \
