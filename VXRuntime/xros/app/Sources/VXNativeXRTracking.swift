@@ -5,6 +5,7 @@ import ARKit
 import GameController
 import Foundation
 import Darwin
+import QuartzCore
 import simd
 
 func vxSpatialSide(_ chirality: Accessory.Chirality) -> VXSpatialSide {
@@ -52,6 +53,7 @@ actor VXNativeXRTracking {
     private var refreshing = false
     private var refreshAgain = false
     private var stopped = false
+    private var lastLogged: (connected: Int, loaded: Int)?
     private var latest: [VXSpatialObservation] = []
 
     init(session: ARKitSession, world: WorldTrackingProvider, hands: HandTrackingProvider?, gate: VXTrackingGate) {
@@ -99,6 +101,16 @@ actor VXNativeXRTracking {
             }
             if stopped { break }
             if pass != generation { refreshAgain = true; continue }
+            // One line per change of the paired set (not per notification): with no Sense controller paired the app
+            // carries on, both hands stay disconnected, and a controller that connects later is picked up here.
+            if lastLogged?.connected != connected.count || lastLogged?.loaded != loaded.count {
+                lastLogged = (connected.count, loaded.count)
+                if connected.isEmpty {
+                    vxrt_jlog("xr_controllers", "\"what\":\"no spatial controller connected: both hands stay disconnected until one pairs\",\"connected\":0,\"loaded\":0")
+                } else {
+                    vxrt_jlog("xr_controllers", "\"what\":\"spatial controllers\",\"connected\":\(connected.count),\"loaded\":\(loaded.count),\"names\":\"\(loaded.map { $0.name }.joined(separator: "|"))\"")
+                }
+            }
             var providers: [any DataProvider] = [world]
             if let hands { providers.append(hands) }
             let next = loaded.isEmpty ? nil : AccessoryTrackingProvider(accessories: loaded)
@@ -108,7 +120,10 @@ actor VXNativeXRTracking {
                 try await session.run(providers)
                 if !stopped && pass == generation { devices = current; accessoryProvider = next }
                 else { refreshAgain = true }
-            } catch { /* provider unavailable: leave every observation invalid */ }
+            } catch {
+                /* provider unavailable: leave every observation invalid */
+                vxrt_jlog("xr_controllers", "\"what\":\"session run failed: \(error.localizedDescription)\"")
+            }
             gate.resume()
         } while refreshAgain && !stopped
         refreshing = false
@@ -202,6 +217,20 @@ actor VXNativeXRTracking {
     // One v3 observation: the hands ARKit tracked at `presentation` (Mach seconds, the clock of frame prediction),
     // in the ARKit origin that is the provider's LOCAL space. A hand without a tracked accessory, or without both
     // grip and aim locations, is published disconnected. Tracked bits follow ARKit's position tracking only.
+    // Once a second into host_log.jsonl: what the host publishes for each hand (the console shows the same with -console).
+    private var lastStateLog = 0.0
+    private func logState(_ hands: [vx_xros_controller_hand]) {
+        let now = CACurrentMediaTime()
+        guard now - lastStateLog >= 1 else { return }
+        lastStateLog = now
+        func f(_ v: Float) -> String { v.isFinite ? String(format: "%.3f", v) : "null" }
+        for (i, h) in hands.enumerated() {
+            let g = h.grip
+            let pose = h.connected != 0 ? "\"pos\":[\(f(g.0)),\(f(g.1)),\(f(g.2))],\"pos_tracked\":\(h.grip_position_tracked)," : ""
+            vxrt_jlog("xr_controller_state", "\"hand\":\"\(i == 0 ? "left" : "right")\",\"connected\":\(h.connected),\(pose)\"trigger\":\(f(h.trigger)),\"stick\":[\(f(h.stick_x)),\(f(h.stick_y))],\"primary\":\(h.primary),\"secondary\":\(h.secondary),\"grip_pressed\":\(h.grip_pressed),\"menu\":\(h.menu),\"stick_pressed\":\(h.stick_pressed)")
+        }
+    }
+
     private func publish(_ observations: [VXSpatialObservation], at presentation: TimeInterval) {
         var hands = [vx_xros_controller_hand](repeating: vx_xros_controller_hand(), count: 2)
         for o in observations {
@@ -228,6 +257,7 @@ actor VXNativeXRTracking {
         var drivers: [Int: GCController] = [:]
         for o in observations where (0..<2).contains(o.canonical.hand) { drivers[o.canonical.hand] = o.controller }
         VXHapticRouter.shared.setControllers(drivers)
+        logState(hands)
         let ns = presentation * 1e9
         guard ns.isFinite, ns > 0, ns < Double(Int64.max) else { return }
         vx_xros_controllers_publish(hands, Int64(ns))

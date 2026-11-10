@@ -15,7 +15,10 @@ struct VXRuntimeApp: App {
         WindowGroup(id: "display") {
             VXDisplayView()
         }
-        .onChange(of: phase) { _, p in vxrt_jlog("scene_phase", "\"phase\":\"\(p)\"") }
+        .onChange(of: phase) { _, p in
+            vxrt_jlog("scene_phase", "\"phase\":\"\(p)\"")
+            VXLifecycle.scenePhaseChanged(to: p)
+        }
         .windowResizability(.contentSize)
 
         ImmersiveSpace(id: "vr") {
@@ -24,6 +27,29 @@ struct VXRuntimeApp: App {
             }
         }
         .immersionStyle(selection: .constant(.full), in: .full)
+        // Klepton's scene conventions (visionos/Sources/KleptonApp.swift, Immersive.systemOverlays): the Home indicator and
+        // hand-gesture affordance do not sit on top of the game's picture. A request, not a guarantee. VXRT_OVERLAYS=1 undoes it.
+        .persistentSystemOverlays(ProcessInfo.processInfo.environment["VXRT_OVERLAYS"] == "1" ? .automatic : .hidden)
+    }
+}
+
+// What backgrounding means for the xrizer immersive app: the end of the process (Klepton's Lifecycle.scenePhaseChanged,
+// KleptonApp.swift, adapted). The guest's threads, the ARKit session, the compositor layer and the translated game
+// cannot be resumed, so a crown press (the layer invalidated, then the scene inactive) or the system backgrounding
+// the app exits, and every launch is a first launch. Only for the xrizer immersive build; VXRT_EXIT_ON_BACKGROUND=0
+// keeps the process (a debugging session with the headset off).
+enum VXLifecycle {
+    nonisolated(unsafe) static var outputEnded = false
+    static func scenePhaseChanged(to phase: ScenePhase) {
+#if XRIZER_XROS_FIXTURE
+        guard vx_xros_immersive_enabled() != 0,
+              ProcessInfo.processInfo.environment["VXRT_EXIT_ON_BACKGROUND"] != "0" else { return }
+        if (phase == .inactive && outputEnded) || phase == .background {
+            vxrt_jlog("lifecycle_exit", "\"phase\":\"\(phase)\",\"output_ended\":\(outputEnded)")
+            fflush(nil)
+            exit(0)
+        }
+#endif
     }
 }
 

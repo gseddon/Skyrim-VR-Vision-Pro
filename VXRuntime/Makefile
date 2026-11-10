@@ -304,9 +304,11 @@ build/xros_big.exe: tools/gen_big_test.py
 ifeq ($(XROS_XRIZER_GAME),1)
 # The game's modules are not made here: tools/skyrim_aot_pipeline.py --target xrsimulator makes them, and
 # $(XROS_DIR)/game_fw (a link to its game_fw) is embedded by xros/app/embed_aot_frameworks.sh. This makes only the
-# registry (the arena) and an empty libaot.a, and an empty bundle.
+# registry (the arena) and an empty libaot.a, and an empty bundle. XROS_GAME_FW=<dir> links that game_fw (the pipeline's
+# --target xros output) into $(XROS_DIR)/game_fw, where embed_aot_frameworks.sh embeds it.
 xros-aot-tests: build/vxrt-aot
 	mkdir -p $(XROS_DIR)/bundle/exe
+	$(if $(XROS_GAME_FW),ln -sfn $(abspath $(XROS_GAME_FW)) $(XROS_DIR)/game_fw)
 	@test -d $(XROS_DIR)/game_fw || { echo 'xros-aot-tests: $(XROS_DIR)/game_fw is missing (ln -sfn <pipeline out>/game_fw $(XROS_DIR)/game_fw)' >&2; exit 2; }
 	XROS_SDK=$(XROS_SDK) XROS_TARGET=$(XROS_TARGET) XROS_ARENA=$(XROS_ARENA) XROS_ARENA_MB=$(XROS_ARENA_MB) XROS_AOT_OUTPUT_ROOT=$(abspath $(XROS_DIR)) tools/xros_aot.sh
 else
@@ -334,8 +336,11 @@ xros-aot-tests: build/vxrt-aot $(XROS_TESTS) $(if $(filter-out 0,$(XROS_BIG_FUNC
 endif
 endif
 # The app (xros/app, xcodegen): signed for the headset with the team's automatic profile.
-XROS_FIXTURE_BUNDLE_ID ?= gseddon.dev.vxrt.VXRuntimeHost.$(if $(filter 1,$(XROS_XRIZER_GAME)),XrizerGame,XrizerOffscreen)
-XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
+# XROS_XRIZER_GAME=1 is the Skyrim VR app: its bundle id is final (gseddon.dev.vxrt.SkyrimVR; the game files live in its container).
+XROS_FIXTURE_BUNDLE_ID ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),gseddon.dev.vxrt.SkyrimVR,gseddon.dev.vxrt.VXRuntimeHost.XrizerOffscreen)
+# XROS_XRIZER_GAME=1: the app starts Skyrim VR by itself (Info.plist VXDefaultLaunch; a launch argument -game/-test overrides it).
+XROS_DEFAULT_LAUNCH ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),-game skyrimvr -xrizer -immersive)
+XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) 'VXRT_DEFAULT_LAUNCH=$(XROS_DEFAULT_LAUNCH)' SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
 xros-app: xros-lib xros-aot-tests
 ifeq ($(XROS_XRIZER_FIXTURE),1)
 	@test "$(XROS_SDK)" != xrsimulator -o "$(XROS_CODE_SIGNING)" = NO || { echo 'the simulator xrizer fixture/immersive build requires XROS_CODE_SIGNING=NO' >&2; exit 2; }
