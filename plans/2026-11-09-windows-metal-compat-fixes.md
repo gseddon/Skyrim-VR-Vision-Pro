@@ -27,6 +27,8 @@ How to read the columns:
 Related, not a Metal guarantee but a missing Windows feature: xWMA (WMA v2) decoding in XAudio2, merged `43e882f`.
 Cost: about 0.12 s CPU to decode a 185 s stereo track, done packet by packet as it plays. Off: none (WMA was silent
 before, so there is nothing to fall back to).
+Listening check (user, 2026-11-09): the decoder's output for a Skyrim voice line and 40 s of a music track, played
+on the Mac outside the game, "sounds great". Not yet heard through XAudio2 in a game run.
 
 ## Not yet done (from the audit)
 
