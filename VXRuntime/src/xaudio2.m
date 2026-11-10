@@ -131,6 +131,7 @@ static volatile uint64_t g_xa_submitted, g_xa_callbacks;
 static volatile float g_xa_peak;
 
 // ---- output -----------------------------------------------------------------------------------------------------------
+volatile int vx_pause_audio __attribute__((weak));   // (see audio.m)
 static OSStatus output_callback(void *ctx, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus, UInt32 n, AudioBufferList *io) {
     (void)flags; (void)ts; (void)bus;
     engine *e = ctx;
@@ -142,7 +143,7 @@ static OSStatus output_callback(void *ctx, AudioUnitRenderActionFlags *flags, co
     memset(out + (size_t)take * ch, 0, (size_t)(n - take) * ch * sizeof(float));
     static int muted = -1;                                      // VXRT_MUTE=1: silence (for unattended runs)
     if (muted < 0) muted = getenv("VXRT_MUTE") && atoi(getenv("VXRT_MUTE"));
-    if (muted) memset(out, 0, (size_t)n * ch * sizeof(float));
+    if (muted || vx_pause_audio) memset(out, 0, (size_t)n * ch * sizeof(float));
     __atomic_add_fetch(&e->read, take, __ATOMIC_RELEASE);
     dispatch_semaphore_signal(ROOM(e));
     if (xa_trace()) {

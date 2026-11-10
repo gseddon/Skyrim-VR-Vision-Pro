@@ -84,6 +84,9 @@ final class VXImmersiveRenderer: @unchecked Sendable {
             return
         }
         let prior = previous
+#if XRIZER_XROS_FIXTURE
+        vx_xros_set_paused(0)
+#endif
         VXLifecycle.spaceOpen = true   // a compositor layer exists: the space is open, whoever asked for it
         VXImmersiveController.shared.setNeedsResume(false)
         let r = VXImmersiveRenderer(layerRenderer, q, previous: prior)
@@ -241,6 +244,9 @@ final class VXImmersiveRenderer: @unchecked Sendable {
             case .invalidated:
                 // The system ended the compositor layer (not our decision). Reopen the immersive space with a new layer and
                 // keep the provider, ARKit and the game running; only when the reopen budget is spent does the surface count as lost.
+#if XRIZER_XROS_FIXTURE
+                vx_xros_set_paused(1)   // no layer: the game idles in WaitFrame until the reopened layer's loop produces samples (start() clears it)
+#endif
                 let reopening = VXLifecycle.layerInvalidated()
                 vxrt_jlog("vr_end", "\"why\":\"layer invalidated\",\"reopening\":\(reopening),\"frames\":\(Self.frameCount)")
                 if !reopening {
@@ -256,7 +262,16 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                 // and the loop carries on. It is NOT a lost surface: the old code stopped the xrizer provider for good on the first
                 // pause, which xrizer answers with a panic once the game asks for a size. Only an invalidated layer ends this loop.
                 vxrt_jlog("vr_pause", "\"frames\":\(Self.frameCount)")
+                let pausedAt = CACurrentMediaTime()
+#if XRIZER_XROS_FIXTURE
+                vx_xros_set_paused(1)   // WaitFrame blocks, the audio goes quiet: a backgrounded app must idle (it was SIGKILLed 15 s into a pause)
+                vxrt_jlog("pause_idle_start", "\"frames\":\(Self.frameCount)")
+#endif
                 layerRenderer.waitUntilRunning()
+#if XRIZER_XROS_FIXTURE
+                vx_xros_set_paused(0)
+                vxrt_jlog("pause_idle_end", "\"idle_s\":\(String(format: "%.3f", CACurrentMediaTime() - pausedAt))")
+#endif
                 vxrt_jlog("vr_resume", "\"frames\":\(Self.frameCount)")
                 resumeFramesToLog = 12
                 VXImmersiveController.shared.setNeedsResume(false)   // the layer runs again: the Resume window has done its job
