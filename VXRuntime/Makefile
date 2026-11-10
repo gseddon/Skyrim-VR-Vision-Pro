@@ -81,7 +81,7 @@ build/recomp/suite.exe: tests/recomp/suite.cpp tests/recomp/suite_d3d.c tests/re
 	$(MINGW) -nostdlib -e mainCRTStartup -o $@ build/recomp/suite.obj build/recomp/suite_d3d.o build/recomp/start.obj -Lbuild/recomp -lvcruntime140 -lkernel32 -lucrtbase -ld3d11
 aot-suite aot-text-callback-check: export AOT_COMPARE_ROSETTA = $(abspath $(VXRT_ROSETTA_TARGET))
 aot-suite aot-text-callback-check: export AOT_COMPARE_ARM64 = $(abspath $(VXRT_ARM64_TARGET))
-aot-suite: $(VXRT_ROSETTA_TARGET) $(VXRT_ARM64_TARGET) build/vxrt-aot build/recomp/suite.exe aot-text-callback-check aot-missing-import-check aot-jump-bound-check
+aot-suite: $(VXRT_ROSETTA_TARGET) $(VXRT_ARM64_TARGET) build/vxrt-aot build/recomp/suite.exe aot-text-callback-check aot-missing-import-check aot-jump-bound-check aot-fpcr-check
 	@mkdir -p build/aot
 	build/vxrt-aot gen build/recomp/suite.exe build/recomp/suite_b.s
 	clang -arch arm64 -dynamiclib -o build/aot/$$(build/vxrt-aot name build/recomp/suite.exe) build/recomp/suite_b.s
@@ -89,6 +89,16 @@ aot-suite: $(VXRT_ROSETTA_TARGET) $(VXRT_ARM64_TARGET) build/vxrt-aot build/reco
 	@# the same split into parts of 20 KB (a large image's dylibs, branching to each other through veneers)
 	VXRT_AOT_PART_MB=0.02 tools/aot_build.sh build/recomp/suite.exe build/aotp > /dev/null
 	AOT_DIR=build/aotp AOT_EXPECTED_VERDICT='suite: 0 failures' tools/aot_compare.sh build/recomp/suite.exe
+
+# A module's FPCR/FPSR handling at native calls (RECOMP.md "FPCR"): guest MXCSR modes and flags around an import, lazy and
+# with VXRT_AOT_FPCR_ALWAYS=1.
+build/recomp/aot_fpcr.exe: tests/aot_fpcr.c
+	@mkdir -p build/recomp
+	$(MINGW) -O1 -nostdlib -e mainCRTStartup -o $@ $< -lkernel32 -lucrtbase
+aot-fpcr-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/recomp/aot_fpcr.exe
+	tools/aot_build.sh build/recomp/aot_fpcr.exe build/aot-fpcr
+	python3 tests/aot_fpcr_check.py --runtime $(VXRT_ARM64_TARGET) --exe build/recomp/aot_fpcr.exe --aot-dir build/aot-fpcr
+.PHONY: aot-fpcr-check
 
 build/aot_text_callbacks.exe: tests/aot_text_callbacks.c tests/aot_text_callbacks.S
 	@mkdir -p build
