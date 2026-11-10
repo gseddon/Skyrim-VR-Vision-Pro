@@ -20,7 +20,7 @@ void vx_xros_timing_submit(uint64_t id);   /* native_vr_present.m */
 #endif
 void vx_log(const char *fmt, ...);
 
-/* VXRT_UPSCALE=metalfx|bilinear (default bilinear = the presenter's sampler scales the game's eye). With metalfx every fresh eye is
+/* VXRT_UPSCALE=metalfx|bilinear (default metalfx since 2026-11-10; bilinear = the presenter's sampler scales the game's eye). With metalfx every fresh eye is
  * upscaled once per pair by MTLFXSpatialScaler into a slot texture of the drawable's per-eye size x VXRT_UPSCALE_OUT (default 1.0);
  * the 100 Hz compositor then samples that texture. The target size is set by the fixture (drawable size incl. overscan, before
  * VXRT_RENDER_SCALE). Colour: UNORM formats hold gamma-coded values, so MetalFX "perceptual" mode (same as the presenter's raw
@@ -29,7 +29,7 @@ static uint32_t g_up_target_w, g_up_target_h;
 void vx_xros_host_set_upscale_target(uint32_t w, uint32_t h) { g_up_target_w=w; g_up_target_h=h; }
 static int upscale_requested(void) {
     static int v=-1;
-    if (v<0) { const char *e=getenv("VXRT_UPSCALE"); v = e && !strcmp(e,"metalfx");
+    if (v<0) { const char *e=getenv("VXRT_UPSCALE"); v = (!e || !*e) ? 1 : !strcmp(e,"metalfx");   /* default metalfx (2026-11-10) */
         if (e && *e && strcmp(e,"metalfx") && strcmp(e,"bilinear")) vx_log("upscale: VXRT_UPSCALE=%s is not a mode (metalfx|bilinear): bilinear",e); }
     return v;
 }
@@ -170,7 +170,7 @@ void vx_xros_host_gate_stats(double *mean_ms, double *max_ms, unsigned long long
     *mean_ms = g_gate_n ? g_gate_ms_sum/(double)g_gate_n : 0; *max_ms = g_gate_ms_max; *waits = g_gate_waits; *n = g_gate_n;
     g_gate_ms_sum = g_gate_ms_max = 0; g_gate_n = g_gate_waits = 0;
 }
-/* VXRT_GATE=off|one|smart (unset: from VXRT_PAIRS_IN_FLIGHT, default one). Where "one" is the gate above; "smart" is a predictive release:
+/* VXRT_GATE=off|one|smart (unset: from VXRT_PAIRS_IN_FLIGHT if set, else smart). Where "one" is the gate above; "smart" is a predictive release:
  * wait_frame returns at R = (when the in-flight pair's GPU work should end) - (the game's CPU time, wait_frame to its pair) - bias, so the
  * game's next CPU frame overlaps the GPU's work on this one and its GPU work arrives as the GPU frees up (at most one pair queued).
  * L = GPU service time per pair, C = game CPU time (EMAs); the bias is an integral controller on the measured gap between a pair's arrival
@@ -178,11 +178,15 @@ void vx_xros_host_gate_stats(double *mean_ms, double *max_ms, unsigned long long
  * for one to finish. Every wait is capped at 250 ms. The mailbox hands over the NEWEST compositor sample at release; the compositor's pose
  * horizon follows the measured pair age by itself (VXImmersive.swift report()). Times are CLOCK_UPTIME_RAW seconds, state under the ring lock. */
 enum { GATE_OFF=0, GATE_ONE=1, GATE_SMART=2 };
+static volatile int g_gate_override=-1;   /* the start window's latency choice, live (vx_xros_set_gate_mode; -1 = the environment's value) */
+void vx_xros_set_gate_mode(int m) { g_gate_override = (m>=0 && m<=2) ? m : -1; }
 static int gate_mode(void) {
     static int m=-1;
+    int o=g_gate_override; if (o>=0) return o;
     if (m<0) { const char *e=getenv("VXRT_GATE");
         if (e && !strcmp(e,"off")) m=GATE_OFF; else if (e && !strcmp(e,"one")) m=GATE_ONE; else if (e && !strcmp(e,"smart")) m=GATE_SMART;
-        else m = pairs_in_flight_limit() ? GATE_ONE : GATE_OFF;
+        else if (getenv("VXRT_PAIRS_IN_FLIGHT") && *getenv("VXRT_PAIRS_IN_FLIGHT")) m = pairs_in_flight_limit() ? GATE_ONE : GATE_OFF;
+        else m = GATE_SMART;   /* default smart (2026-11-10: cart ride 35.2 vs 29.1 pairs/s) */
         vx_log("gate: mode %s (VXRT_GATE=%s, VXRT_PAIRS_IN_FLIGHT=%s)", m==GATE_SMART?"smart":m==GATE_ONE?"one":"off", e?e:"unset", getenv("VXRT_PAIRS_IN_FLIGHT")?:"unset"); }
     return m;
 }
