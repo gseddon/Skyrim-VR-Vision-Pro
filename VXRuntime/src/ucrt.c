@@ -338,6 +338,7 @@ static WINAPI int _execute_onexit_table(onexit_table *t) {
     return 0;
 }
 static WINAPI void _cexit(void) { run_atexit(); }
+void d3d11_capture_finish(void);   // (VXRT_D3D11_CAPTURE: d3d11_capture.m closes the capture)
 static void trace_exit(const char *what, int code, void *ret) {
     if (!vx_trace) return;
     const vx_image *m = vx_image_at((uint64_t)(uintptr_t)ret);
@@ -349,8 +350,8 @@ static void report_aot_exit(void) {
     xa_report();
 #endif
 }
-static WINAPI void vx_exit(int code) { trace_exit("exit", code, VX_RETURN_ADDRESS()); run_atexit(); vx_profile_finish(); vx_jobs_process_exit(); report_aot_exit(); _exit(code); }
-static WINAPI void vx__exit(int code) { trace_exit("_exit", code, VX_RETURN_ADDRESS()); vx_profile_finish(); vx_jobs_process_exit(); report_aot_exit(); _exit(code); }
+static WINAPI void vx_exit(int code) { trace_exit("exit", code, VX_RETURN_ADDRESS()); run_atexit(); vx_profile_finish(); d3d11_capture_finish(); vx_jobs_process_exit(); report_aot_exit(); _exit(code); }
+static WINAPI void vx__exit(int code) { trace_exit("_exit", code, VX_RETURN_ADDRESS()); vx_profile_finish(); d3d11_capture_finish(); vx_jobs_process_exit(); report_aot_exit(); _exit(code); }
 static WINAPI void vx_abort(void) {
     const vx_image *m = vx_image_at((uint64_t)(uintptr_t)VX_RETURN_ADDRESS());
     vx_log("the program called abort() from %s+%#llx", m ? m->name : "?", m ? (unsigned long long)((uint8_t *)VX_RETURN_ADDRESS() - m->base) : 0ull);

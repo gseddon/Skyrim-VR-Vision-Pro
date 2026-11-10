@@ -7,6 +7,7 @@
 #include <sys/sysctl.h>
 #include <unistd.h>
 #include "d3d_common.h"
+#include "d3d11_capture.h"
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
 #pragma clang diagnostic ignored "-Wunused-variable"
@@ -572,6 +573,7 @@ static id<MTLTexture> resolve_back_buffer(swapchain *sc, id<MTLCommandBuffer> cm
 static WINAPI HRESULT swapchain_present(void *this, uint32_t sync, uint32_t flags) {
     swapchain *sc = this;
     if (flags & DXGI_PRESENT_TEST) return S_OK;
+    if (d3d11_capture_on) d3d11_capture_present(&sc->buffer->base);   // VXRT_D3D11_CAPTURE (d3d11_capture.m)
     d3d_flush(sc->dev, 0);                          // the frame's work goes first, on the same queue
     snapshot(sc);
     // VXRT_MIRROR_EVERY=n: only every n-th frame goes to the window. A game played in the headset still presents its

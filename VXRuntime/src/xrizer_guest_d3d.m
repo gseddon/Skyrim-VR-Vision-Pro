@@ -1,5 +1,6 @@
 // Registry-validated D3D11 resources to xrizer's native Metal host boundary.
 #include "d3d_common.h"
+#include "d3d11_capture.h"
 #include "xrizer_guest_d3d.h"
 #include "vx.h"
 #include <stdlib.h>
@@ -65,6 +66,7 @@ static int32_t copy_complete(void *ctx, const XrizerMetalCopy *copy) {
         copy->width > dst.width || copy->height > dst.height) return -1;
     // This checked wait orders every tracked source producer before the copy,
     // including when the producer and provider queues are different.
+    if (d3d11_capture_on) d3d11_capture_eye(&t->base, copy->eye, copy->x, copy->y, copy->width, copy->height);   // VXRT_D3D11_CAPTURE
     if (d3d_flush_checked(t->base.dev)) return -1;
     vx_log("xrizer_guest_d3d: producer queue %p provider queue %p checked complete", t->base.dev->queue, b->queue);
     id<MTLCommandBuffer> cb=[(__bridge id<MTLCommandQueue>)b->queue commandBuffer];

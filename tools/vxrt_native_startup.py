@@ -266,6 +266,20 @@ def capture(args):
             (out / 'eyes').mkdir()
             env['VXRT_XRIZER_DEV_DUMP'] = str(out / 'eyes')
             result.setdefault('diagnostic', {})['dump_eyes'] = 'raw RGBA of published eyes, selected frames; development host only'
+        if getattr(args, 'd3d11_capture', None):
+            # VXRT_D3D11_CAPTURE (VXRuntime/src/d3d11_capture.m): the program's Direct3D 11 calls, its shaders and
+            # textures, for tools/d3d11_replay.m. Game-derived data: written outside the repository, never over a file.
+            cap = Path(os.path.abspath(args.d3d11_capture))
+            if cap.is_relative_to(REPO) or cap.exists():
+                raise ValueError('--d3d11-capture: a new file outside the repository (the capture holds the program\'s data)')
+            env['VXRT_D3D11_CAPTURE'] = str(cap)
+            frames = getattr(args, 'd3d11_capture_eye_frames', None)
+            if frames is not None:
+                if frames < 1:
+                    raise ValueError('--d3d11-capture-eye-frames must be at least 1')
+                env['VXRT_D3D11_CAPTURE_EYE_FRAMES'] = str(frames)
+            result.setdefault('diagnostic', {})['d3d11_capture'] = {'file': str(cap), 'eye_frames': frames,
+                'scope': 'Direct3D 11 calls recorded for replay; diagnostic, private game-derived data, not a compatibility claim'}
         if getattr(args, 'wait_dump', None):
             env['VXRT_WAIT_DUMP'] = args.wait_dump
             result.setdefault('diagnostic', {})['wait_dump'] = args.wait_dump
@@ -376,6 +390,8 @@ def main():
     ap.add_argument('--xinput-repeat', default=None, metavar='SPEC', help='diagnostic only: press a scripted-gamepad button repeatedly, BUTTONS@FROM_S-TO_S/EVERY_S[:HOLD_S] (e.g. A@30-120/3), merged with --xinput-script; the same virtual gamepad as --xinput-script')
     ap.add_argument('--stay-active', action='store_true', help='VXRT_STAY_ACTIVE=1: the game window stays the active window when the Mac moves on to another app (a game played in a headset is seldom frontmost; an inactive Skyrim pauses its world)')
     ap.add_argument('--aot-splits', default=None, metavar='FILE', help='diagnostic only: VXRT_AOT_SPLITS file the runtime writes with the x86 instructions whose ordered access crossed 16 bytes (input for vxrt-aot)')
+    ap.add_argument('--d3d11-capture', default=None, metavar='FILE', help='diagnostic only: VXRT_D3D11_CAPTURE, record the Direct3D 11 calls for VXRuntime/build/vxrt-d3d11-replay into FILE (new, outside the repository)')
+    ap.add_argument('--d3d11-capture-eye-frames', type=int, default=None, metavar='N', help='diagnostic only: with --d3d11-capture, stop the capture after the VR frame with id N')
     ap.add_argument('--wait-dump', default=None, help='diagnostic only: VXRT_WAIT_DUMP seconds list, e.g. 30,50: log threads blocked in waits, with their guest return addresses')
     ap.add_argument('--fault-objects', action='store_true', help='diagnostic only: at an unhandled fault, log what each register points at (VXRT_FAULT_OBJECTS=1)')
     ap.add_argument('--trace-files', action='store_true', help='diagnostic only: log guest file opens that fail, with the path (VXRT_TRACE_FILES=1)')
