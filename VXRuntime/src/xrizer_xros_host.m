@@ -166,14 +166,104 @@ void vx_xros_host_gate_stats(double *mean_ms, double *max_ms, unsigned long long
     *mean_ms = g_gate_n ? g_gate_ms_sum/(double)g_gate_n : 0; *max_ms = g_gate_ms_max; *waits = g_gate_waits; *n = g_gate_n;
     g_gate_ms_sum = g_gate_ms_max = 0; g_gate_n = g_gate_waits = 0;
 }
+/* VXRT_GATE=off|one|smart (unset: from VXRT_PAIRS_IN_FLIGHT, default one). Where "one" is the gate above; "smart" is a predictive release:
+ * wait_frame returns at R = (when the in-flight pair's GPU work should end) - (the game's CPU time, wait_frame to its pair) - bias, so the
+ * game's next CPU frame overlaps the GPU's work on this one and its GPU work arrives as the GPU frees up (at most one pair queued).
+ * L = GPU service time per pair, C = game CPU time (EMAs); the bias is an integral controller on the measured gap between a pair's arrival
+ * and the previous pair's completion (target VXRT_GATE_GAP_MS, default -1.5: the GPU is kept just fed). With two pairs in flight it waits
+ * for one to finish. Every wait is capped at 250 ms. The mailbox hands over the NEWEST compositor sample at release; the compositor's pose
+ * horizon follows the measured pair age by itself (VXImmersive.swift report()). Times are CLOCK_UPTIME_RAW seconds, state under the ring lock. */
+enum { GATE_OFF=0, GATE_ONE=1, GATE_SMART=2 };
+static int gate_mode(void) {
+    static int m=-1;
+    if (m<0) { const char *e=getenv("VXRT_GATE");
+        if (e && !strcmp(e,"off")) m=GATE_OFF; else if (e && !strcmp(e,"one")) m=GATE_ONE; else if (e && !strcmp(e,"smart")) m=GATE_SMART;
+        else m = pairs_in_flight_limit() ? GATE_ONE : GATE_OFF;
+        vx_log("gate: mode %s (VXRT_GATE=%s, VXRT_PAIRS_IN_FLIGHT=%s)", m==GATE_SMART?"smart":m==GATE_ONE?"one":"off", e?e:"unset", getenv("VXRT_PAIRS_IN_FLIGHT")?:"unset"); }
+    return m;
+}
+#define SG_FIFO 16
+static struct { double ret, pub_last, done_last, L, C, B; int bound; double pubq[SG_FIFO]; unsigned qh, qn; unsigned long long npub;
+    double cpu_sum, cpu_max, gap_sum, cpu_log_sum, cpu_log_max, gap_log_sum; unsigned long long cpu_n, gap_n, log_n; } g_sg = {.L=0.025,.C=0.015};
+static double sg_now(void) { return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW)/1e9; }
+static double sg_gap_target(void) {
+    static double t=-1e9; if (t<-1e8) { const char *e=getenv("VXRT_GATE_GAP_MS"); t = e&&*e ? atof(e)/1e3 : -0.0015; } return t;
+}
+/* The game's pair reached the provider (before its copy is committed): game CPU time = wait_frame return to here. */
+static void sg_on_publish(vx_eye_ring *r) {
+    double t=sg_now(); pthread_mutex_lock(&r->lock);
+    if (g_sg.ret>0 && t>g_sg.ret) { double c=t-g_sg.ret; g_sg.C = g_sg.C*0.9 + c*0.1;
+        g_sg.cpu_sum+=c; g_sg.cpu_log_sum+=c; if (c>g_sg.cpu_max) g_sg.cpu_max=c; if (c>g_sg.cpu_log_max) g_sg.cpu_log_max=c; ++g_sg.cpu_n; }
+    g_sg.ret=0; g_sg.pub_last=t;
+    if (g_sg.qn<SG_FIFO) g_sg.pubq[(g_sg.qh+g_sg.qn++)%SG_FIFO]=t;
+    unsigned long long n=++g_sg.npub;
+    double cpu_mean=g_sg.cpu_log_sum/300.0*1e3, cpu_max=g_sg.cpu_log_max*1e3, L=g_sg.L*1e3, C=g_sg.C*1e3, B=g_sg.B*1e3,
+           gm=g_sg.log_n? g_sg.gap_log_sum/(double)g_sg.log_n*1e3:0;
+    if (n%300==0) { g_sg.cpu_log_sum=g_sg.cpu_log_max=g_sg.gap_log_sum=0; g_sg.log_n=0; }
+    pthread_mutex_unlock(&r->lock);
+    if (n%300==0) vx_log("gate: mode %s, %llu pairs, game CPU (wait_frame to pair) mean %.1f max %.1f ms, GPU service L %.1f ms, C %.1f ms, bias %.1f ms, gap mean %.1f ms",
+        gate_mode()==GATE_SMART?"smart":gate_mode()==GATE_ONE?"one":"off",n,cpu_mean,cpu_max,L,C,B,gm);
+}
+/* A pair's copy (and upscale) command buffer finished on the GPU; completions are in order. */
+static void sg_on_complete(vx_eye_ring *r) {
+    double t=sg_now(); pthread_mutex_lock(&r->lock);
+    if (g_sg.qn) {
+        double pub=g_sg.pubq[g_sg.qh]; g_sg.qh=(g_sg.qh+1)%SG_FIFO; --g_sg.qn;
+        double start = pub>g_sg.done_last ? pub : g_sg.done_last;
+        if (t>start && t-start<0.3) g_sg.L = g_sg.L*0.9 + (t-start)*0.1;
+        if (g_sg.done_last>0) {
+            double gap=pub-g_sg.done_last; if (gap>0.05) gap=0.05; if (gap<-0.05) gap=-0.05;
+            g_sg.gap_sum+=gap; g_sg.gap_log_sum+=gap; ++g_sg.gap_n; ++g_sg.log_n;
+            double err=gap-sg_gap_target();
+            /* anti-windup: raise the bias (release earlier) only while the gate is what delays the game */
+            if (err<0 || g_sg.bound) { g_sg.B += 0.15*err; if (g_sg.B>0.06) g_sg.B=0.06; if (g_sg.B<-0.04) g_sg.B=-0.04; }
+        }
+    }
+    g_sg.done_last=t; pthread_mutex_unlock(&r->lock);
+}
+static void sg_wait(vx_eye_ring *r) {
+    double t0=sg_now(), limit=t0+0.25;
+    pthread_mutex_lock(&r->lock);
+    for (;;) {
+        double now=sg_now(); unsigned n=r->inflight;
+        if (!n || now>=limit) break;
+        double until=limit;
+        if (n==1) {
+            double start = g_sg.pub_last>g_sg.done_last ? g_sg.pub_last : g_sg.done_last;
+            double rel = start + g_sg.L - g_sg.C - g_sg.B;
+            if (rel<=now) break;
+            if (rel<until) until=rel;
+        }
+        struct timespec ts; clock_gettime(CLOCK_REALTIME,&ts); double d=until-now; ts.tv_sec+=(time_t)d; ts.tv_nsec+=(long)((d-(double)(time_t)d)*1e9);
+        if (ts.tv_nsec>=1000000000L) { ++ts.tv_sec; ts.tv_nsec-=1000000000L; }
+        pthread_cond_timedwait(&r->cv,&r->lock,&ts);
+    }
+    double ms=(sg_now()-t0)*1e3; g_sg.bound = ms>0.2;
+    pthread_mutex_unlock(&r->lock);
+    g_gate_ms_sum+=ms; if (ms>g_gate_ms_max) g_gate_ms_max=ms; ++g_gate_n; if (ms>0.5) ++g_gate_waits;
+}
+/* The interval's game CPU and smart-gate state as JSON fields (no braces), for the 1 Hz "vr" record. */
+int vx_xros_host_gate_json(char *buf, uint32_t len) {
+    pthread_mutex_t *lk=NULL; (void)lk;
+    double cm=g_sg.cpu_n? g_sg.cpu_sum/(double)g_sg.cpu_n*1e3:0, cx=g_sg.cpu_max*1e3, gm=g_sg.gap_n? g_sg.gap_sum/(double)g_sg.gap_n*1e3:0;
+    int n=snprintf(buf,len,"\"gmode\":%d,\"cpu_ms\":%.2f,\"cpu_ms_max\":%.2f,\"gap_ms\":%.2f,\"L_ms\":%.2f,\"C_ms\":%.2f,\"B_ms\":%.2f",
+        gate_mode(),cm,cx,gm,g_sg.L*1e3,g_sg.C*1e3,g_sg.B*1e3);
+    g_sg.cpu_sum=g_sg.cpu_max=g_sg.gap_sum=0; g_sg.cpu_n=g_sg.gap_n=0;   /* racy by design: diagnostics only */
+    return n;
+}
 static XrResult wait_frame(void *ctx, KlNativeFrameSample *sample) {
     vx_xros_xrizer_host *h=ctx;
-    unsigned limit=pairs_in_flight_limit();
-    if (limit && h->ring) {
-        double ms=vx_eye_ring_wait_below(h->ring, limit, 250);
-        g_gate_ms_sum+=ms; if (ms>g_gate_ms_max) g_gate_ms_max=ms; ++g_gate_n; if (ms>0.5) ++g_gate_waits;
+    int mode=gate_mode();
+    if (h->ring) {
+        if (mode==GATE_SMART) sg_wait(h->ring);
+        else if (mode==GATE_ONE) {
+            double ms=vx_eye_ring_wait_below(h->ring, pairs_in_flight_limit(), 250);
+            g_gate_ms_sum+=ms; if (ms>g_gate_ms_max) g_gate_ms_max=ms; ++g_gate_n; if (ms>0.5) ++g_gate_waits;
+        }
     }
-    return vx_xros_mailbox_wait(h->mailbox, 2000, sample);
+    XrResult r=vx_xros_mailbox_wait(h->mailbox, 2000, sample);
+    if (h->ring && r==XR_SUCCESS) { pthread_mutex_lock(&h->ring->lock); g_sg.ret=sg_now(); pthread_mutex_unlock(&h->ring->lock); }
+    return r;
 }
 static XrResult cancel_frame(void *ctx, void *ticket) {
     return vx_xros_mailbox_finish(((vx_xros_xrizer_host *)ctx)->mailbox,ticket) ? XR_ERROR_HANDLE_INVALID : XR_SUCCESS;
@@ -325,7 +415,9 @@ static XrResult publish_pair_async(void *ctx, const KlNativeFramePair *pair) {
          * their buffers are checked when this copy completes, because the provider no longer waited for them. */
         id<MTLCommandBuffer> w0=(__bridge id<MTLCommandBuffer>)kl_apple_metal_image_pending_writes(&h->metal,pair->eye[0].image_lease);
         id<MTLCommandBuffer> w1=(__bridge id<MTLCommandBuffer>)kl_apple_metal_image_pending_writes(&h->metal,pair->eye[1].image_lease);
+        sg_on_publish(h->ring);
         vx_eye_ring_commit(h->ring,ucb?ucb:cb,slot,^(int ok,double gpu_s) {
+            sg_on_complete(h->ring);
             if (ucb && ok) { if (!copy_ok) ok=0; else { double ms=gpu_s*1e3; g_up_ms_sum+=ms; if (ms>g_up_ms_max) g_up_ms_max=ms; ++g_up_n; ++g_up_total;
                 if (g_up_total==1 || g_up_total%300==0) vx_log("upscale: %llu pairs, last scaler GPU %.2f ms (both eyes)",g_up_total,ms); } }
             else (void)gpu_s;
