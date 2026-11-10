@@ -478,8 +478,13 @@ static void dk_open_window(id<MTLDevice> device, unsigned width, unsigned height
     });
 }
 /* Encode the two eyes into the window's next drawable on the frame's command buffer; any failure only disables it. */
-static void dk_mirror(id<MTLDevice> device, id<MTLCommandBuffer> cb, id<MTLTexture> const eyes[2]) {
+static atomic_int dk_drawables_held;   /* drawables taken by the mirror and not yet shown (non-blocking mode) */
+static void dk_mirror(id<MTLDevice> device, id<MTLCommandBuffer> cb, id<MTLTexture> const eyes[2], BOOL best_effort) {
     if (!atomic_load(&dk.mirror)) return;
+    /* Best effort in the non-blocking submit: the window shows at the display's rate, and nextDrawable waits for a free
+     * drawable, which would pace the game's render thread at that rate (60 pairs/s on a 60 Hz display). Skip the
+     * mirror for this pair when two drawables are still waiting to be shown. */
+    if (best_effort && atomic_load(&dk_drawables_held) >= 2) return;
     if (!dk_pipeline) {
         static int failed; if (failed) return;
         NSString *src = @"#include <metal_stdlib>\nusing namespace metal;\n"
@@ -494,10 +499,11 @@ static void dk_mirror(id<MTLDevice> device, id<MTLCommandBuffer> cb, id<MTLTextu
         if (!dk_pipeline) { failed = 1; vx_log("xrizer dev keyboard: mirror disabled: %s", err.localizedDescription.UTF8String); return; }
     }
     id<CAMetalDrawable> drawable = [dk_layer nextDrawable]; if (!drawable) return;
+    if (best_effort) { atomic_fetch_add(&dk_drawables_held, 1); [drawable addPresentedHandler:^(id<MTLDrawable> d) { (void)d; atomic_fetch_sub(&dk_drawables_held, 1); }]; }
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = drawable.texture; pass.colorAttachments[0].loadAction = MTLLoadActionClear;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore; pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
-    id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass]; if (!enc) return;
+    id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass]; if (!enc) { if (best_effort) atomic_fetch_sub(&dk_drawables_held, 1); return; }
     [enc setRenderPipelineState:dk_pipeline];
     double w = (double)drawable.texture.width / 2, hgt = (double)drawable.texture.height;
     for (unsigned i = 0; i < 2; i++) {
@@ -753,7 +759,7 @@ static XrResult publish(void *p,const KlNativeFramePair *pair) {
         }
     }
     [blit endEncoding];
-    if (dk.window) dk_mirror(h.device,cb,copies);
+    if (dk.window) dk_mirror(h.device,cb,copies,slot!=NULL);
     if (slot) {
         /* Non-blocking: the game's ticket is consumed once the copy is committed. Dumps, statistics and the hand-off to
          * native_vr run in the completion handler, from a by-value copy of the pair: nothing borrowed outlives this call.
