@@ -14,6 +14,8 @@ void vx_xros_immersive_set_mono(int mono);
 /* JSON fields (no braces): fresh/repeated/stale/missing presentations, eyes drawn, the age (ms) of the pairs shown
  * (compositor presentation time minus the pose time of the pair); the interval counts restart on each call. */
 int vx_xros_immersive_stats(char *buf, uint32_t len);
+/* Mean age (seconds) of the fresh pairs shown: presentation time minus the pose time the game rendered for. */
+double vx_xros_immersive_age_ema(void);
 int vx_xros_fixture_start(void *device, void *queue);
 /* Drawables supply their actual optical transforms and tangents; prediction is
  * in the verified compositor/Mach seconds epoch. A null head is identity and

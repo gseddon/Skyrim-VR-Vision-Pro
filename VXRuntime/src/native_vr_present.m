@@ -60,6 +60,9 @@ static unsigned long long g_gap[GAP_N], g_gap_i[GAP_N];
 static struct { unsigned long long fresh, repeat, stale, none, eyes; uint64_t last_id; double age_sum, age_max, rep_age_max;
                unsigned long long i_fresh, i_repeat, i_stale, i_none; } g_imm;
 
+static double g_age_ema; static int g_age_ema_set;
+/* Exponential mean (seconds) of the age of fresh pairs: compositor presentation time minus the pair's pose time. */
+double vx_xros_immersive_age_ema(void) { return g_age_ema_set ? g_age_ema : 0; }
 int vx_xros_fixture_present_begin(double time) {
     g_native_held=0; g_fixture_held=0;
     if(vx_xros_fixture_acquire(&g_native_frame)) { ++g_imm.none; ++g_imm.i_none; return 0; }
@@ -69,6 +72,7 @@ int vx_xros_fixture_present_begin(double time) {
     if(!current) { ++g_imm.stale; ++g_imm.i_stale; }
     else if(g_native_frame.pose.frame_id>g_imm.last_id) {
         g_imm.last_id=g_native_frame.pose.frame_id; ++g_imm.fresh; ++g_imm.i_fresh; g_imm.age_sum+=age;
+        if(isfinite(age)){ if(g_age_ema_set) g_age_ema=g_age_ema*0.9+age*0.1; else { g_age_ema=age; g_age_ema_set=1; } }
         if(age>g_imm.age_max)g_imm.age_max=age;
     } else { ++g_imm.repeat; ++g_imm.i_repeat; if(age>g_imm.rep_age_max)g_imm.rep_age_max=age; }
     /* A pair that is too old (a game hitch longer than a second) is counted stale but still shown, reprojected to the head: the last

@@ -262,7 +262,7 @@ actor VXNativeXRTracking {
             h.connected = 1
             h.grip_position_tracked = c.gripPose.positionTracked ? 1 : 0
             h.aim_position_tracked = c.aimPose.positionTracked ? 1 : 0
-            h.grip = VXSenseTune.correctedGrip(grip, hand: c.hand); h.aim = pose(aim)
+            h.grip = VXSenseTune.correctedGrip(grip, hand: c.hand); h.aim = VXSenseTune.correctedGrip(aim, hand: c.hand)
             // Device run 10: Skyrim's rendered controller sat a few centimetres ABOVE the real one (IMG_0029). A world-space drop (VXRT_SENSE_DROP_M, metres,
             // default 0.04) applied to grip and aim in the provider's LOCAL space (ARKit origin, Y up); eyeballed, not measured. Klepton's own offsets are
             // rotation-dependent (a grip-frame offset and a pivot); this is the one-number version until a measurement says otherwise.

@@ -28,6 +28,16 @@ final class VXImmersiveRenderer: @unchecked Sendable {
     private var presentationIntervalSum = 0.0, presentationIntervalCount = 0, lastPresentationTime = 0.0
     private var fixtureMsMax = 0.0
     private var lastHead = matrix_identity_float4x4
+    // Head-pose prediction for the game: the pose handed to the game is the device anchor at (presentation + horizon), the horizon being the measured
+    // delay between that offer and the moment the game's pair is shown (device run 11: pair age about 150 ms at 17 game frames/s, so the picture
+    // was rendered for a head 150 ms in the past and lagged a turn by tens of degrees). VXRT_PREDICT_MS fixes it ('0' off); otherwise it follows
+    // the measured delay (age of the shown pair plus the horizon in force), capped at 140 ms (ARKit's prediction window).
+    private var horizon: Double = {
+        if let e = ProcessInfo.processInfo.environment["VXRT_PREDICT_MS"], let d = Double(e) { return max(0, min(d, 140)) / 1000 }
+        return 0.06
+    }()
+    private static let predictFixed = ProcessInfo.processInfo.environment["VXRT_PREDICT_MS"] != nil
+    private var predNil = 0
     private var lastReport = CACurrentMediaTime()
     private var cleared = 0
     // per-second frame diagnostics (the device kills an immersive app that stops presenting; run 2 died with no trace)
@@ -273,6 +283,14 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         }
         var head = anchor?.originFromAnchorTransform ?? matrix_identity_float4x4
         if anchor != nil { lastHead = head }
+        // the head pose and time the GAME is given (predicted ahead by the measured pipeline delay); the drawable keeps the real anchor
+        var predictedHead = head
+        var predictedTime = presentation
+        if tracking, horizon > 0.001, anchor != nil {
+            if let a = trackingGate.read({ worldTracking.queryDeviceAnchor(atTimestamp: presentation + horizon) }) ?? nil {
+                predictedHead = a.originFromAnchorTransform; predictedTime = presentation + horizon
+            } else { predNil += 1 }
+        }
         let nativeDiagnostic = vx_xros_native_enabled() != 0
 #if XRIZER_XROS_FIXTURE
         let fixture = vx_xros_fixture_enabled() != 0
@@ -399,9 +417,9 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                     let headTracked: Int32 = anchor?.isTracked == true ? 1 : 0
                     let offered = eyes.withUnsafeBufferPointer { e in
                         frustums.withUnsafeBufferPointer { f in
-                            withUnsafePointer(to: &head) { hp in
+                            withUnsafePointer(to: &predictedHead) { hp in
                                 hp.withMemoryRebound(to: Float.self, capacity: 16) { h in
-                                    vx_xros_fixture_offer(UInt32(texture.width), UInt32(texture.height), e.baseAddress, f.baseAddress, presentation, headTracked != 0 ? h : nil, headTracked)
+                                    vx_xros_fixture_offer(UInt32(texture.width), UInt32(texture.height), e.baseAddress, f.baseAddress, predictedTime, headTracked != 0 ? h : nil, headTracked)
                                 }
                             }
                         }
@@ -604,6 +622,10 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         guard now - lastReport >= 1 else { return }
         lastReport = now
         poseAudit(head: lastHead)
+        if !Self.predictFixed, vx_xros_immersive_enabled() != 0 {
+            let age = vx_xros_immersive_age_ema()   // presentation minus the pose time we gave (which already contains the horizon)
+            if age.isFinite { horizon = max(0, min(0.14, horizon + 0.5 * age)) }
+        }
         var buf = [CChar](repeating: 0, count: 768)
         vx_xros_vr_stats(&buf, UInt32(buf.count))
         var fields = String(cString: buf) + ",\"cleared_eyes\":\(cleared)"
@@ -615,6 +637,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         }
 #endif
         cleared = 0
+        fields += ",\"predict_horizon_ms\":\(String(format: "%.1f", horizon * 1000)),\"predict_nil\":\(predNil),\"age_ema_ms\":\(String(format: "%.1f", vx_xros_immersive_age_ema() * 1000))"
         fields += ",\"presentation_interval_ms\":\(String(format: "%.2f", presentationIntervalCount > 0 ? presentationIntervalSum / Double(presentationIntervalCount) * 1000 : 0)),\"frame_total_ms_max\":\(String(format: "%.2f", fixtureMsMax))"
         presentationIntervalSum = 0; presentationIntervalCount = 0; fixtureMsMax = 0
         fields += ",\"frames\":\(framesSecond),\"anchor_present\":\(anchorPresent),\"anchor_tracked\":\(anchorTracked),\"anchor_missing\":\(anchorMissing),\"submit_ms_mean\":\(String(format: "%.2f", framesSecond > 0 ? submitMsSum / Double(framesSecond) : 0)),\"submit_ms_max\":\(String(format: "%.2f", submitMsMax)),\"input_wait_ms_max\":\(String(format: "%.2f", inputWaitMsMax))"
