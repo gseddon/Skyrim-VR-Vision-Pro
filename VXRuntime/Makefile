@@ -226,6 +226,7 @@ native-vr-unit-check: build/native_vr_test build/native_fpcr_test
 	XE_AFP=0 build/native_fpcr_test
 	python3 tests/aot_compare_test.py
 	python3 tests/test_xros_device_run.py
+	python3 -I tests/xrizer_overlay_slots_check.py
 	python3 tests/native_vr_run_test.py
 
 build/native_vr_present_test: tests/native_vr_present.m src/native_vr_present.m src/native_vr.c src/native_vr.h src/native_openvr.h src/xros_vr.h
