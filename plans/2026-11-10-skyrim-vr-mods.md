@@ -2,6 +2,8 @@
 
 Date: 10 November 2026. Status: not started; design only. Evidence, sources and file:line citations are in [the research report](../research/2026-11-10-skyrim-vr-mods.md). Parent plan: [native Darwin AOT](2026-11-08-skyrim-vr-native-darwin-aot.md). Read it and `AGENTS.md` first.
 
+**Update 2026-11-11:** the user's actual mod set (Skyland, SkyUI, HIGGS 1.10.10, PLANCK 0.8.2), the findings from their downloads, the Mac proof of the data layer and the configurability/mod-manager design are in [plans/2026-11-11-skyrim-mods-combined.md](2026-11-11-skyrim-mods-combined.md) and research sections 8 and 9; this plan's SKSE design and decisions D1 to D4 stay in force.
+
 ## Goal
 
 A user who owns Skyrim VR can run the community's modern interaction stack on the standalone Vision Pro app: their data mods, SKSE VR with its foundations, SkyUI VR, then VRIK (body), HIGGS (hands, grabbing, two-handed weapons) and PLANCK (physics reactions, melee collisions). The headset session needs no Mac, no streaming and no SteamVR. A Mac may prepare everything beforehand.
