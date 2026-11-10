@@ -19,13 +19,18 @@
  *   arrows       right stick      turn (look); menus: navigate       Right Shift right stick click  item zoom (inventory)
  *   Space        right trigger    right hand attack; menus: accept   E, Return   right A            activate; menus: accept
  *   F            right B          favorites; menus: tab right        Z, Backspace right grip        shout; menus: cancel
- *   [ ]          head turn left/right (90 deg/s)   Page Up/Down  head pitch   Home  head reset   mouse drag  head turn/pitch
+ *   [ ]          head turn left/right (90 deg/s)   Page Up/Down  head pitch   Home  head and aim reset
+ *   , .  ; /     the hands' aim left/right/up/down relative to the head (90 deg/s)
+ *   mouse drag   head turn/pitch (the hands follow the head)   right-button drag  the hands' aim relative to the head
+ *   (menus are world-locked panels: aim the hands' pointer at an item, then trigger/A)
  * (left.menu, the Oculus left menu button, is accepted but xrizer's legacy mapping does not bind it.)
+ * Skyrim VR's first-launch VR setup is skipped by the harness's seeded SkyrimPrefs.ini (tools/prefs_seed/611670);
+ * without it: any button, A, then right stick right + A picks Right Hand, A, then a teleport playroom.
  *
  * VXRT_XRIZER_DEV_KEYMAP overrides it: entries "key=hand.control" separated by spaces, commas or newlines, replacing
  * the default for that key; "key=none" unbinds it; "clear" drops all defaults first; a value starting with '/' is a
  * file of such entries ('#' comments). hand.control: left|right . trigger|grip|primary|a|x|secondary|b|y|menu|
- * stick_click|stick_up|stick_down|stick_left|stick_right, or head . left|right|up|down|reset. Key names: a-z 0-9
+ * stick_click|stick_up|stick_down|stick_left|stick_right, or head . left|right|up|down|reset|aim_left|aim_right|aim_up|aim_down. Key names: a-z 0-9
  * space return enter tab backspace escape lshift rshift lctrl rctrl lalt ralt up down left right home end pageup
  * pagedown minus equal lbracket rbracket semicolon quote comma period slash backslash grave f1-f12.
  *
@@ -95,7 +100,7 @@ void vx_cocoa_ensure(void);
 enum { DK_LEFT, DK_RIGHT, DK_HEAD };
 enum { DK_NONE, DK_TRIGGER, DK_GRIP, DK_PRIMARY, DK_SECONDARY, DK_MENU, DK_STICK_CLICK, DK_STICK_UP, DK_STICK_DOWN,
        DK_STICK_LEFT, DK_STICK_RIGHT,
-       DK_HEAD_LEFT = 1, DK_HEAD_RIGHT, DK_HEAD_UP, DK_HEAD_DOWN, DK_HEAD_RESET };
+       DK_HEAD_LEFT = 1, DK_HEAD_RIGHT, DK_HEAD_UP, DK_HEAD_DOWN, DK_HEAD_RESET, DK_AIM_LEFT, DK_AIM_RIGHT, DK_AIM_UP, DK_AIM_DOWN };
 typedef struct { uint8_t hand, control; } dk_binding;
 static const struct { const char *name; uint8_t code; } dk_key_names[] = {   /* macOS virtual key codes (kVK_*) */
     {"a",0},{"s",1},{"d",2},{"f",3},{"h",4},{"g",5},{"z",6},{"x",7},{"c",8},{"v",9},{"b",11},{"q",12},{"w",13},{"e",14},
@@ -111,13 +116,13 @@ static const struct { const char *name; uint8_t control; } dk_controls_named[] =
     {"trigger",DK_TRIGGER},{"grip",DK_GRIP},{"primary",DK_PRIMARY},{"a",DK_PRIMARY},{"x",DK_PRIMARY},
     {"secondary",DK_SECONDARY},{"b",DK_SECONDARY},{"y",DK_SECONDARY},{"menu",DK_MENU},{"stick_click",DK_STICK_CLICK},
     {"stick_up",DK_STICK_UP},{"stick_down",DK_STICK_DOWN},{"stick_left",DK_STICK_LEFT},{"stick_right",DK_STICK_RIGHT}};
-static const char *const dk_head_controls[] = {NULL,"left","right","up","down","reset"};
+static const char *const dk_head_controls[] = {NULL,"left","right","up","down","reset","aim_left","aim_right","aim_up","aim_down"};
 static const char dk_default_map[] =
     "w=left.stick_up a=left.stick_left s=left.stick_down d=left.stick_right lshift=left.stick_click q=left.trigger "
     "r=left.grip tab=left.x j=left.y up=right.stick_up down=right.stick_down left=right.stick_left "
     "right=right.stick_right rshift=right.stick_click space=right.trigger e=right.a return=right.a f=right.b "
     "z=right.grip backspace=right.grip lbracket=head.left rbracket=head.right pageup=head.up pagedown=head.down "
-    "home=head.reset";
+    "home=head.reset comma=head.aim_left period=head.aim_right semicolon=head.aim_up slash=head.aim_down";
 typedef struct { int64_t at; uint8_t frames, code, down, done; } dk_event;   /* at: ns since start, or a frame */
 static struct {
     int enabled, window;
@@ -126,6 +131,8 @@ static struct {
     _Atomic uint32_t yaw_bits, pitch_bits;            /* head angles (float bits, radians) */
     _Atomic int mirror;                               /* the window is on screen and its layer is ready */
     _Atomic int drag_dx_milli, drag_dy_milli;         /* unapplied mouse drag, thousandths of a point */
+    _Atomic int aim_dx_milli, aim_dy_milli;           /* unapplied right-button drag (hands' aim) */
+    _Atomic uint32_t aim_yaw_bits, aim_pitch_bits;    /* the hands' aim relative to the head (float bits, radians) */
     dk_event script[256]; unsigned script_count;
     XrTime start, last_head;
     pthread_mutex_t lock;                             /* the sample below */
@@ -242,21 +249,29 @@ static void dk_frame(uint64_t frame, XrTime now) {
     pitch += rate * dt * (float)(dk_held(bits, DK_HEAD, DK_HEAD_UP) - dk_held(bits, DK_HEAD, DK_HEAD_DOWN));
     float per = .25f * (float)M_PI / 180 / 1000;
     yaw -= per * (float)atomic_exchange(&dk.drag_dx_milli, 0); pitch -= per * (float)atomic_exchange(&dk.drag_dy_milli, 0);
-    if (dk_held(bits, DK_HEAD, DK_HEAD_RESET)) yaw = pitch = 0;
+    float ayaw = dk_float(&dk.aim_yaw_bits) - per * (float)atomic_exchange(&dk.aim_dx_milli, 0) +
+                 rate * dt * (float)(dk_held(bits, DK_HEAD, DK_AIM_LEFT) - dk_held(bits, DK_HEAD, DK_AIM_RIGHT));
+    float apitch = dk_float(&dk.aim_pitch_bits) - per * (float)atomic_exchange(&dk.aim_dy_milli, 0) +
+                 rate * dt * (float)(dk_held(bits, DK_HEAD, DK_AIM_UP) - dk_held(bits, DK_HEAD, DK_AIM_DOWN));
+    if (dk_held(bits, DK_HEAD, DK_HEAD_RESET)) yaw = pitch = ayaw = apitch = 0;
+    if (ayaw > 1.4f) ayaw = 1.4f; if (ayaw < -1.4f) ayaw = -1.4f; if (apitch > 1.4f) apitch = 1.4f; if (apitch < -1.4f) apitch = -1.4f;
+    dk_set_float(&dk.aim_yaw_bits, ayaw); dk_set_float(&dk.aim_pitch_bits, apitch);
     yaw = remainderf(yaw, 2 * (float)M_PI);
     if (pitch > 1.4f) pitch = 1.4f; if (pitch < -1.4f) pitch = -1.4f;
     dk_set_float(&dk.yaw_bits, yaw); dk_set_float(&dk.pitch_bits, pitch);
 }
-static XrQuaternionf dk_head_orientation(void) {
-    float y = dk_float(&dk.yaw_bits) / 2, p = dk_float(&dk.pitch_bits) / 2;
+static XrQuaternionf dk_yaw_pitch(float yaw, float pitch) {   /* yaw about +Y, then pitch about +X */
+    float y = yaw / 2, p = pitch / 2;
     return (XrQuaternionf){cosf(y) * sinf(p), sinf(y) * cosf(p), -sinf(y) * sinf(p), cosf(y) * cosf(p)};
 }
+static XrQuaternionf dk_head_orientation(void) { return dk_yaw_pitch(dk_float(&dk.yaw_bits), dk_float(&dk.pitch_bits)); }
 /* The two hands: held still 0.5 m below the 1.6 m head, 0.2 m to each side and 0.35 m (aim 0.4 m) ahead of it,
  * turned with the head's yaw and pointing where it looks; controls from the held keys. */
 static void dk_hands(uint32_t profile, KlNativeInputHand3 out[2]) {
     uint64_t bits[2] = {0, 0}; if (dk.enabled) dk_bits(bits);
     float yaw = dk_float(&dk.yaw_bits), c = cosf(yaw), s = sinf(yaw);
-    XrQuaternionf q = dk_head_orientation();
+    /* where the head looks, turned further by the hands' aim (right-button drag) */
+    XrQuaternionf q = dk_yaw_pitch(yaw + dk_float(&dk.aim_yaw_bits), dk_float(&dk.pitch_bits) + dk_float(&dk.aim_pitch_bits));
     for (unsigned i = 0; i < 2; i++) {
         float x = i ? .2f : -.2f, sx = (float)(dk_held(bits, i, DK_STICK_RIGHT) - dk_held(bits, i, DK_STICK_LEFT)),
               sy = (float)(dk_held(bits, i, DK_STICK_UP) - dk_held(bits, i, DK_STICK_DOWN));
@@ -277,8 +292,9 @@ static void dk_log_sample(uint64_t id, const KlNativeInputHand3 h[2]) {
         snprintf(text[i], sizeof text[i], "trigger %.0f grip %u %s %u %s %u menu %u stick %.2f %.2f click %u", c->trigger, c->grip_pressed,
                  i ? "a" : "x", c->primary_pressed, i ? "b" : "y", c->secondary_pressed, c->menu_pressed, c->stick_x, c->stick_y, c->stick_pressed);
     }
-    vx_log("xrizer dev keyboard: sample %llu left %s | right %s | head yaw %.1f pitch %.1f deg (change %u)", (unsigned long long)id, text[0], text[1],
-           dk_float(&dk.yaw_bits) * 180 / M_PI, dk_float(&dk.pitch_bits) * 180 / M_PI, dk.changes);
+    vx_log("xrizer dev keyboard: sample %llu left %s | right %s | head yaw %.1f pitch %.1f aim %.1f %.1f deg (change %u)", (unsigned long long)id, text[0], text[1],
+           dk_float(&dk.yaw_bits) * 180 / M_PI, dk_float(&dk.pitch_bits) * 180 / M_PI, dk_float(&dk.aim_yaw_bits) * 180 / M_PI,
+           dk_float(&dk.aim_pitch_bits) * 180 / M_PI, dk.changes);
 }
 
 /* The mirror window: the two eyes side by side, the keyboard and the mouse. */
@@ -287,8 +303,6 @@ static void dk_log_sample(uint64_t id, const KlNativeInputHand3 h[2]) {
 @implementation VXDevKeyView
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
-- (BOOL)wantsUpdateLayer { return YES; }
-- (CALayer *)makeBackingLayer { return dk_layer; }
 - (void)keyDown:(NSEvent *)e { if (!(e.modifierFlags & NSEventModifierFlagCommand)) dk_key(e.keyCode, 1); }
 - (void)keyUp:(NSEvent *)e { dk_key(e.keyCode, 0); }
 - (void)flagsChanged:(NSEvent *)e {
@@ -302,6 +316,10 @@ static void dk_log_sample(uint64_t id, const KlNativeInputHand3 h[2]) {
 }
 - (void)mouseDragged:(NSEvent *)e {
     atomic_fetch_add(&dk.drag_dx_milli, (int)(e.deltaX * 1000)); atomic_fetch_add(&dk.drag_dy_milli, (int)(e.deltaY * 1000));
+}
+- (void)rightMouseDown:(NSEvent *)e { [self mouseDown:e]; }
+- (void)rightMouseDragged:(NSEvent *)e {
+    atomic_fetch_add(&dk.aim_dx_milli, (int)(e.deltaX * 1000)); atomic_fetch_add(&dk.aim_dy_milli, (int)(e.deltaY * 1000));
 }
 - (void)windowDidResignKey:(NSNotification *)n { atomic_store(&dk.keys[0], 0); atomic_store(&dk.keys[1], 0); }
 - (void)windowDidChangeOcclusionState:(NSNotification *)n {
@@ -322,7 +340,7 @@ static void dk_open_window(id<MTLDevice> device, unsigned width, unsigned height
                            NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable backing:NSBackingStoreBuffered defer:NO];
             w.releasedWhenClosed = NO;
             w.title = @"VXRuntime dev keyboard: click here, then keys drive the synthetic controllers (diagnostic, not physical input)";
-            VXDevKeyView *v = [[VXDevKeyView alloc] initWithFrame:r]; v.wantsLayer = YES;
+            VXDevKeyView *v = [[VXDevKeyView alloc] initWithFrame:r]; v.layer = dk_layer; v.wantsLayer = YES;   /* layer-hosting */
             w.contentView = v; w.delegate = v; [w makeFirstResponder:v]; [w center];
             [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
             const char *na = getenv("VXRT_NO_ACTIVATE");
@@ -362,6 +380,9 @@ static void dk_mirror(id<MTLDevice> device, id<MTLCommandBuffer> cb, id<MTLTextu
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     }
     [enc endEncoding]; [cb presentDrawable:drawable];
+    static unsigned presented; if (++presented <= 3 || !(presented % 600))
+        vx_log("xrizer dev keyboard: mirror drew eyes %lux%lu into %lux%lu (%u frames)", (unsigned long)eyes[0].width, (unsigned long)eyes[0].height,
+               (unsigned long)drawable.texture.width, (unsigned long)drawable.texture.height, presented);
 }
 
 static VXDevXRHost *host(void *p) { return (__bridge VXDevXRHost *)p; }
