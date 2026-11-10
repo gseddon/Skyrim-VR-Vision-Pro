@@ -2,14 +2,22 @@
 // the immersive space the program's swap chain is shown in (VXImmersive.swift). The space opens by itself at launch
 // unless the app was started with -present flat (the window then is the only picture: a debug fallback).
 import CompositorServices
+import QuartzCore
 import SwiftUI
+import UIKit
 
 @main
 struct VXRuntimeApp: App {
     @Environment(\.scenePhase) private var phase
     init() {
         vxrt_jlog("app_init", nil)
-        vxrt_boot_fallback()   // (main.m: the program starts without the window if no window has appeared within a few seconds)
+        vxrt_boot_fallback()
+        // Main-thread heartbeat every 0.5 s: the last one before a system kill says when the app stopped being alive, and
+        // the frame counter says whether the compositor loop was still presenting.
+        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+            let ago = VXImmersiveRenderer.lastFrameUptime > 0 ? CACurrentMediaTime() - VXImmersiveRenderer.lastFrameUptime : -1
+            vxrt_jlog("heartbeat", "\"frames\":\(VXImmersiveRenderer.frameCount),\"last_frame_ago_s\":\(String(format: "%.3f", ago)),\"app_state\":\(UIApplication.shared.applicationState.rawValue)")
+        }   // (main.m: the program starts without the window if no window has appeared within a few seconds)
     }
     var body: some Scene {
         WindowGroup(id: "display") {
