@@ -245,7 +245,7 @@ playthrough produces it; a header line `# vxrt-shader-manifest 1`, then tab sepa
 | --- | --- |
 | dxbc-sha256 | SHA-256 of the DXBC container |
 | stage | `ps` `vs` `gs` `cs` |
-| kind | `base`, `dual-source`, `pass-through`, `vs-kernel` |
+| kind | `base`, `dither`, `dual-source`, `pass-through`, `vs-kernel` |
 | params | `vs-kernel`: `reg:kind,...` of each input (0 floats, 1 signed, 2 unsigned); empty otherwise |
 | translator | `DXBC_TRANSLATOR_REV` (`src/dxbc.h`): bump when a change to `dxbc.c` changes any generated MSL |
 | cache-key | optional: the cache key the runtime made of the source (compile options included), checked when building |
