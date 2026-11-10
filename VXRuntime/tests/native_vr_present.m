@@ -32,14 +32,14 @@ static void pair(id<MTLTexture> l, id<MTLTexture> r, vx_native_vr_color_space cs
     e.resource=(__bridge void *)r; e.u_max=1; assert(vx_native_vr_submit(queue,h,1,42,17,&e)==0);
     assert(vx_native_vr_complete(queue,h,0)==0 && vx_native_vr_complete(queue,h,1)==0);
 }
-static void draw(id<MTLCommandQueue> cq, int eye, float angle, uint8_t *pixel) {
+static void draw_to(id<MTLCommandQueue> cq, MTLPixelFormat outfmt, int eye, float angle, uint8_t *pixel) {
     float head[16], eyes[32], f[8]={-1,1,-1,1,-1,1,-1,1}, view[16], tan[4]={1,1,1,1};
     identity(head); identity(eyes); identity(eyes+16); identity(view);
     view[0]=cosf(angle); view[2]=-sinf(angle); view[8]=sinf(angle); view[10]=cosf(angle);
     assert(vx_xros_native_begin(head,eyes,f,10.1,1,NULL)==1);
     assert(published.tracking_valid && published.pose_time==10.1);
     id<MTLDevice> dev=cq.device;
-    id<MTLTexture> color=texture(dev,MTLPixelFormatRGBA8Unorm,MTLTextureUsageRenderTarget,MTLStorageModeShared);
+    id<MTLTexture> color=texture(dev,outfmt,MTLTextureUsageRenderTarget,MTLStorageModeShared);
     id<MTLTexture> depth=texture(dev,MTLPixelFormatDepth32Float,MTLTextureUsageRenderTarget,MTLStorageModePrivate);
     id<MTLCommandBuffer> cb=[cq commandBuffer];
     assert(vx_xros_native_draw_eye((__bridge void *)cb,eye,view,tan,(__bridge void *)color,(__bridge void *)depth));
@@ -47,6 +47,7 @@ static void draw(id<MTLCommandQueue> cq, int eye, float angle, uint8_t *pixel) {
     uint8_t data[16*16*4]; [color getBytes:data bytesPerRow:64 fromRegion:MTLRegionMake2D(0,0,16,16) mipmapLevel:0];
     memcpy(pixel, data+(8*16+8)*4, 4);
 }
+static void draw(id<MTLCommandQueue> cq, int eye, float angle, uint8_t *pixel) { draw_to(cq, MTLPixelFormatRGBA8Unorm, eye, angle, pixel); }
 int main(void) { @autoreleasepool {
     id<MTLDevice> dev=MTLCreateSystemDefaultDevice(); assert(dev);
     id<MTLCommandQueue> cq=[dev newCommandQueue]; assert(cq);
@@ -62,5 +63,17 @@ int main(void) { @autoreleasepool {
     draw(cq,1,0,p); assert(p[2]>120 && p[0]<8);
     pair(l,r,VX_NATIVE_VR_COLOR_LINEAR,1); draw(cq,0,(float)M_PI/6,p); assert(p[1]>120 && p[0]<8);
     pair(l,r,VX_NATIVE_VR_COLOR_SRGB,0.5f); draw(cq,0,0,p); assert(p[0]>48 && p[0]<65 && p[1]<8);
+    /* Dark smoke on the Skyrim title screen: gamma-coded bytes 1 and 2 in a plain UNORM image, shown on the headset's sRGB drawable.
+     * Labelled sRGB (what the xros host now does for 8-bit UNORM) the drawable holds the stored bytes; labelled linear they are encoded twice
+     * (1 -> 13, 2 -> 22: the hard coloured bands the user saw). */
+    uint8_t dark[16*16*4]; for (int i=0;i<16*16;i++) { dark[i*4]=1; dark[i*4+1]=2; dark[i*4+2]=2; dark[i*4+3]=255; }
+    [l replaceRegion:MTLRegionMake2D(0,0,16,16) mipmapLevel:0 withBytes:dark bytesPerRow:64];
+    [r replaceRegion:MTLRegionMake2D(0,0,16,16) mipmapLevel:0 withBytes:dark bytesPerRow:64];
+    pair(l,r,VX_NATIVE_VR_COLOR_SRGB,1); draw_to(cq,MTLPixelFormatRGBA8Unorm_sRGB,0,0,p);
+    fprintf(stderr,"dark bytes 1,2,2 via sRGB label on sRGB drawable: %u %u %u\n",p[0],p[1],p[2]);
+    assert(p[0]==1 && p[1]==2 && p[2]==2);
+    pair(l,r,VX_NATIVE_VR_COLOR_LINEAR,1); draw_to(cq,MTLPixelFormatRGBA8Unorm_sRGB,0,0,p);
+    fprintf(stderr,"dark bytes 1,2,2 via linear label on sRGB drawable (double encode): %u %u %u\n",p[0],p[1],p[2]);
+    assert(p[0]>=12 && p[1]>=20);
     vx_native_vr_reset(queue); assert(vx_native_vr_destroy(queue)==0);
 } return 0; }
