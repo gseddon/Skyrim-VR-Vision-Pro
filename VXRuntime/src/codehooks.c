@@ -13,6 +13,7 @@
 //  VXRT_CODE_CAPTURE=<file>      (development, Mac, translator allowed) after the preload list has run: every difference
 //                                in an executable section of the images loaded before it, and the used part of the
 //                                region, is written as text: "P <image> <rva> <hex>" and "R <image> <offset> <hex>".
+//  VXRT_PRELOAD_EXIT=1           exit 0 once the preload list, capture and verify are done: the program never starts.
 //  VXRT_CODE_VERIFY=<file>       the same lines are compared with memory after the preload list has run; any difference
 //                                stops the run (exit 3): the capture the modules were made from does not describe this run.
 //
@@ -21,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
 #include <stdint.h>
 #include <pthread.h>
 #include "vx.h"
@@ -198,4 +200,5 @@ void vx_codehooks_preload(void) {
         vx_log("codehooks: VXRT_CODE_VERIFY: the code in memory is not the capture the modules were made from; stopping");
         exit(3);
     }
+    if (getenv("VXRT_PRELOAD_EXIT") && atoi(getenv("VXRT_PRELOAD_EXIT"))) { vx_log("codehooks: VXRT_PRELOAD_EXIT: stopping before the program's entry point"); fflush(NULL); _exit(0); }   // (a capture run needs no game)
 }
