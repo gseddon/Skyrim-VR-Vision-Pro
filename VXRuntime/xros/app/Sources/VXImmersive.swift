@@ -60,7 +60,14 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                         }
                     } else { try await r.arSession.run([r.worldTracking]) }
                     r.tracking = true
-                    if vx_xros_native_enabled() != 0 {
+                    // Sense controllers (accessory tracking) whenever the immersive space is open: the native diagnostic
+                    // (VXRT_NATIVE_VR) or the xrizer fixture/game (-immersive). The loader refuses both together, so the
+                    // xrizer build never had it before. Hands stay with the native path.
+                    var controllersWanted = vx_xros_native_enabled() != 0
+#if XRIZER_XROS_FIXTURE
+                    if vx_xros_fixture_enabled() != 0 { controllersWanted = true }
+#endif
+                    if controllersWanted {
                         r.spatialClockCalibrated = Self.clockMatchesMach()
                         if r.spatialClockCalibrated {
                             let adapter = VXNativeXRTracking(session: r.arSession, world: r.worldTracking,
@@ -132,6 +139,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
 #if XRIZER_XROS_FIXTURE
                 if xrizerFixtureSurface.invalidated() { loseFixtureSurface() }
 #endif
+                VXLifecycle.outputEnded = true
                 vxrt_jlog("vr_end", "\"why\":\"layer invalidated\"")
                 if let adapter = nativeXRTracking { Task { await adapter.stop() } }
                 return
