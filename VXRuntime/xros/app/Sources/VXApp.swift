@@ -28,6 +28,10 @@ struct VXRuntimeApp: App {
             VXLifecycle.scenePhaseChanged(to: p)
         }
         .windowResizability(.contentSize)
+        // Klepton's window arrangement (KleptonApp.swift: .windowStyle(.plain), "drops the system's glass plate"; utility-panel
+        // placement): no glass backing for the (hidden) display window.
+        .windowStyle(.plain)
+        .defaultWindowPlacement { _, _ in WindowPlacement(.utilityPanel) }
 
         ImmersiveSpace(id: "vr") {
             CompositorLayer(configuration: VXLayerConfiguration()) { layerRenderer in
@@ -121,7 +125,7 @@ struct VXDisplayView: View {
             // hierarchy, small and invisible, because the game's swap chain presents into it (a detached layer could stall the
             // game's present). VXRT_SHOW_WINDOW=1 brings it back.
             .frame(width: Self.hideFlatWindow ? 160 : 1280, height: Self.hideFlatWindow ? 90 : 720)
-            .opacity(Self.hideFlatWindow ? 0.02 : 1)
+            .opacity(Self.hideFlatWindow ? 0 : 1)
             .allowsHitTesting(!Self.hideFlatWindow)
             .onAppear { vxrt_jlog("display_view", nil) }
             // The system ended the compositor layer (VXLifecycle.layerInvalidated): open the immersive space again; the new

@@ -86,7 +86,7 @@ static NSString *const g_native_shader = @
 "#include <metal_stdlib>\nusing namespace metal;\n"
 "struct P { float4 r[3]; float4 src; float4 dst; float4 bounds; };\n"
 "struct V { float4 position [[position]]; float2 uv; };\n"
-"vertex V nv(uint i [[vertex_id]]) { float2 p=float2((i==1)?3:-1,(i==2)?3:-1); return {float4(p,0,1),float2((p.x+1)*.5,(1-p.y)*.5)}; }\n"
+"vertex V nv(uint i [[vertex_id]]) { float2 p=float2((i==1)?3:-1,(i==2)?3:-1); return {float4(p,0.05,1),float2((p.x+1)*.5,(1-p.y)*.5)}; }\n"
 "fragment float4 nf(V v [[stage_in]], texture2d<float> img [[texture(0)]], constant P &p [[buffer(0)]]) {\n"
 " float2 t=float2(mix(-p.dst.x,p.dst.y,v.uv.x),mix(p.dst.z,-p.dst.w,v.uv.y));\n"
 " float3 d=float3(t,-1); float3 s=float3(dot(p.r[0].xyz,d),dot(p.r[1].xyz,d),dot(p.r[2].xyz,d));\n"
@@ -169,7 +169,19 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
     pass.depthAttachment.clearDepth = 0; pass.depthAttachment.storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass];
     if (!enc) return 0;
-    [enc setRenderPipelineState:pipeline]; [enc setFragmentTexture:tex atIndex:0]; [enc setFragmentBytes:&p length:sizeof p atIndex:0];
+    /* DEPTH WRITES. visionOS reprojects the submitted frame with its depth buffer: a colour image over a depth of 0 (reverse-Z: infinitely
+     * far everywhere) is composited as "nothing here at any finite distance" and is NOT SHOWN. Klepton measured it on the device
+     * (KleptonCompositor.swift, overlay depth: "a fullscreen quad at reverse-Z 0 with writes off is invisible; the same quad at 0.05 (2 m)
+     * with writes on appears"). Device runs 1 to 8 drew a correct picture (in-app capture: Skyrim's title screen) that the wearer never saw.
+     * The quad is written at reverse-Z 0.05 (about 2 m for near 0.1). */
+    static id<MTLDepthStencilState> depthWrite;
+    if (!depthWrite) {
+        MTLDepthStencilDescriptor *dd = [MTLDepthStencilDescriptor new];
+        dd.depthCompareFunction = MTLCompareFunctionAlways; dd.depthWriteEnabled = YES;
+        depthWrite = [cb.device newDepthStencilStateWithDescriptor:dd];
+    }
+    [enc setRenderPipelineState:pipeline]; if (depthWrite) [enc setDepthStencilState:depthWrite];
+    [enc setFragmentTexture:tex atIndex:0]; [enc setFragmentBytes:&p length:sizeof p atIndex:0];
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [enc endEncoding];
 #ifdef VXRT_XRIZER_XROS_FIXTURE
     ++g_imm.eyes;

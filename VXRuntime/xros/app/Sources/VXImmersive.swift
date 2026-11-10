@@ -10,6 +10,9 @@ import Metal
 import QuartzCore
 import simd
 import Darwin
+import ImageIO
+import CoreGraphics
+import UniformTypeIdentifiers
 
 final class VXImmersiveRenderer: @unchecked Sendable {
     private let layerRenderer: LayerRenderer
@@ -32,6 +35,14 @@ final class VXImmersiveRenderer: @unchecked Sendable {
     private var anchorPresent = 0, anchorTracked = 0, anchorMissing = 0, framesSecond = 0
     private var submitMsSum = 0.0, submitMsMax = 0.0, inputWaitMsMax = 0.0
     private var placeholderMarker: MTLBuffer?
+    // Self-capture of what the compositor draws (devicectl cannot screenshot a visionOS device): every VXRT_SHOT_EVERY seconds (default 8;
+    // 0 = off) the finished left and right drawable textures are copied to shared buffers on the GPU; the completion handler logs their mean
+    // colour (`output_probe`) and writes a quarter-size PNG to Documents/shots/ (shot_L.png, shot_R.png, overwritten, and a numbered copy).
+    private var shotNext = 0.0, shotCount = 0
+    private static let shotEvery: Double = {
+        if let e = ProcessInfo.processInfo.environment["VXRT_SHOT_EVERY"], let d = Double(e) { return d }
+        return 8
+    }()
     private var nativeXRTracking: VXNativeXRTracking?
     private var spatialClockCalibrated = false
     private var lastSpatialSample = 0.0
@@ -451,6 +462,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                 }
                 if ok == 0 { clear(cb, color, depth) }
             }
+            captureOutput(cb, d)
             d.encodePresent(commandBuffer: cb)
         }
         if native { vx_xros_native_end(cbp) } else { vx_xros_vr_end_frame(cbp) }
@@ -464,6 +476,56 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         report()
     }
 
+    private func captureOutput(_ cb: MTLCommandBuffer, _ d: LayerRenderer.Drawable) {
+        guard Self.shotEvery > 0 else { return }
+        let now = CACurrentMediaTime()
+        guard now >= shotNext, !d.colorTextures.isEmpty else { return }
+        shotNext = now + Self.shotEvery
+        shotCount += 1
+        let n = shotCount
+        for i in 0..<min(2, d.views.count) {
+            let tex = d.colorTextures[min(i, d.colorTextures.count - 1)]
+            guard !tex.isFramebufferOnly, tex.pixelFormat == .bgra8Unorm_srgb || tex.pixelFormat == .bgra8Unorm, tex.textureType == .type2D || tex.textureType == .type2DArray else { continue }
+            let w = tex.width, h = tex.height, bpr = w * 4
+            guard let buf = cb.device.makeBuffer(length: bpr * h, options: .storageModeShared), let blit = cb.makeBlitCommandEncoder() else { continue }
+            blit.copy(from: tex, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0), sourceSize: MTLSize(width: w, height: h, depth: 1),
+                      to: buf, destinationOffset: 0, destinationBytesPerRow: bpr, destinationBytesPerImage: bpr * h)
+            blit.endEncoding()
+            let name = i == 0 ? "L" : "R"
+            cb.addCompletedHandler { _ in
+                // mean colour of a 16 x 16 grid of the bytes as stored (sRGB-encoded for the srgb format: what is shown)
+                var sum = (0, 0, 0), points = 0, mx = 0
+                let p = buf.contents().assumingMemoryBound(to: UInt8.self)
+                for gy in 0..<16 { for gx in 0..<16 {
+                    let o = ((h - 1) * (gy * 2 + 1) / 32) * bpr + ((w - 1) * (gx * 2 + 1) / 32) * 4
+                    sum.0 += Int(p[o + 2]); sum.1 += Int(p[o + 1]); sum.2 += Int(p[o]); points += 1
+                    mx = max(mx, Int(p[o]), Int(p[o + 1]), Int(p[o + 2]))
+                } }
+                vxrt_jlog("output_probe", "\"n\":\(n),\"eye\":\"\(name)\",\"w\":\(w),\"h\":\(h),\"mean_rgb\":[\(sum.0 / points),\(sum.1 / points),\(sum.2 / points)],\"max\":\(mx)")
+                // a quarter-size PNG
+                let sw = w / 4, sh = h / 4
+                guard let provider = CGDataProvider(data: Data(bytes: p, count: bpr * h) as CFData),
+                      let space = CGColorSpace(name: CGColorSpace.sRGB),
+                      let full = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: bpr, space: space,
+                                         bitmapInfo: CGBitmapInfo(rawValue: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue),
+                                         provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent),
+                      let ctx = CGContext(data: nil, width: sw, height: sh, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                                          bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return }
+                ctx.interpolationQuality = .medium
+                ctx.draw(full, in: CGRect(x: 0, y: 0, width: sw, height: sh))
+                guard let small = ctx.makeImage() else { return }
+                let dir = (NSHomeDirectory() as NSString).appendingPathComponent("Documents/shots")
+                try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                for file in ["shot_\(name).png", String(format: "shot_%03d_\(name).png", n % 100)] {
+                    let url = URL(fileURLWithPath: (dir as NSString).appendingPathComponent(file)) as CFURL
+                    if let dest = CGImageDestinationCreateWithURL(url, UTType.png.identifier as CFString, 1, nil) {
+                        CGImageDestinationAddImage(dest, small, nil); CGImageDestinationFinalize(dest)
+                    }
+                }
+            }
+        }
+    }
+
     // (no game frame yet: a mid grey-blue that pulses slowly, so the wearer can tell the app is alive, and a head-locked
     // light square in the middle of each eye. Depth far.)
     private func clear(_ cb: MTLCommandBuffer, _ color: MTLTexture, _ depth: MTLTexture) {
@@ -475,7 +537,9 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         pass.colorAttachments[0].storeAction = .store
         pass.depthAttachment.texture = depth
         pass.depthAttachment.loadAction = .clear
-        pass.depthAttachment.clearDepth = 0
+        // 0.05 (reverse-Z, about 2 m), not 0: a depth of 0 everywhere is "nothing at any finite distance" and the system does not show the
+        // colour (Klepton, measured on device). This was why the placeholder, and every game frame, was never seen.
+        pass.depthAttachment.clearDepth = 0.05
         pass.depthAttachment.storeAction = .store
         cb.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
         // the marker: a 160 x 160 square copied from a buffer (no pipeline needed); the texture is bgra8 (srgb)
