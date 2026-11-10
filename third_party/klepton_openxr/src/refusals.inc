@@ -29,12 +29,3 @@ static XrResult XRAPI_CALL refuse_xrGetInputSourceLocalizedName(XrSession sessio
     (void)buffer;
     return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
 }
-static XrResult XRAPI_CALL refuse_xrApplyHapticFeedback(XrSession session, const XrHapticActionInfo* hapticActionInfo, const XrHapticBaseHeader* hapticFeedback) {
-    (void)hapticActionInfo;
-    (void)hapticFeedback;
-    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
-}
-static XrResult XRAPI_CALL refuse_xrStopHapticFeedback(XrSession session, const XrHapticActionInfo* hapticActionInfo) {
-    (void)hapticActionInfo;
-    return valid_session(session) ? XR_ERROR_FUNCTION_UNSUPPORTED : XR_ERROR_HANDLE_INVALID;
-}

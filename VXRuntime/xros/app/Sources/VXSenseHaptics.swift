@@ -4,9 +4,10 @@
 // visionos/Sources/KleptonControllers.swift lines 1345-1545 (the fork, toolchain 866-e65c433 with no full git pin,
 // has the same engine code near line 1685; upstream used). Full MIT notice: third_party/klepton_openxr/LICENSE.
 //
-// NOT WIRED: the native provider (third_party/klepton_openxr/src/core.c) still refuses xrApplyHapticFeedback and has
-// no haptic host boundary, so nothing calls set(hand:amplitude:controller:) from xrizer's vibration output yet. This
-// is the GameController -> CoreHaptics half only, untested without a controller. Not a claim that haptics work.
+// Wired: xrizer's vibration output -> the provider's haptic host (haptic_host.h) -> vx_xros_haptics_apply/stop
+// (src/xrizer_xros_controllers.c) -> vxHapticSink -> VXHapticRouter -> this engine -> that hand's GCController.
+// Forwarding is tested in the mock and on the simulator (logged, nothing vibrates there). Never run on a Sense
+// controller: whether it is FELT is unverified. Frequency is not used (amplitude and duration only, best effort).
 import Foundation
 import GameController
 import CoreHaptics
@@ -81,4 +82,37 @@ final class VXSenseHaptics: @unchecked Sendable {
         lock.lock(); let all = engines; engines.removeAll(); players.removeAll(); running = [false, false]; lock.unlock()
         for (_, e) in all { e.stop() }
     }
+}
+
+// Which GCController drives which hand (set from the tracking snapshot), and the pulse timing: a request holds the
+// amplitude for its duration, then silences it unless a newer request or a stop came first.
+final class VXHapticRouter: @unchecked Sendable {
+    static let shared = VXHapticRouter()
+    private let lock = NSLock()
+    private let engine = VXSenseHaptics()
+    private var controllers: [Int: GCController] = [:]
+    private var generation = [UInt64](repeating: 0, count: 2)
+
+    func setControllers(_ map: [Int: GCController]) {
+        lock.lock(); let gone = controllers.keys.filter { map[$0] == nil }; controllers = map; lock.unlock()
+        for hand in gone { engine.set(hand: hand, amplitude: 0, controller: nil) }
+    }
+
+    func handle(hand: Int, amplitude: Float, seconds: Double, stop: Bool) {
+        guard (0..<2).contains(hand) else { return }
+        lock.lock(); generation[hand] &+= 1; let mine = generation[hand], controller = controllers[hand]; lock.unlock()
+        guard let controller else { NSLog("[haptics] hand \(hand): no tracked Sense controller, request dropped"); return }
+        if stop || amplitude <= 0 { engine.set(hand: hand, amplitude: 0, controller: controller); return }
+        if !engine.set(hand: hand, amplitude: amplitude, controller: controller) { return }
+        DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + max(seconds, 0.005)) { [weak self] in
+            guard let self else { return }
+            self.lock.lock(); let current = self.generation[hand] == mine, c = self.controllers[hand]; self.lock.unlock()
+            if current { self.engine.set(hand: hand, amplitude: 0, controller: c) }
+        }
+    }
+}
+
+// The C haptic sink (xrizer_xros_controllers.h).
+func vxHapticSink(_ hand: Int32, _ amplitude: Float, _ seconds: Double, _ frequency: Float, _ stop: Int32) {
+    VXHapticRouter.shared.handle(hand: Int(hand), amplitude: amplitude, seconds: seconds, stop: stop != 0)
 }

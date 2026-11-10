@@ -3,5 +3,3 @@
     INSTANCE("xrGetReferenceSpaceBoundsRect", refuse_xrGetReferenceSpaceBoundsRect)
     INSTANCE("xrEnumerateBoundSourcesForAction", refuse_xrEnumerateBoundSourcesForAction)
     INSTANCE("xrGetInputSourceLocalizedName", refuse_xrGetInputSourceLocalizedName)
-    INSTANCE("xrApplyHapticFeedback", refuse_xrApplyHapticFeedback)
-    INSTANCE("xrStopHapticFeedback", refuse_xrStopHapticFeedback)

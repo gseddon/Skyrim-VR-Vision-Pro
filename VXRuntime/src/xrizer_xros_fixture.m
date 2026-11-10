@@ -141,7 +141,7 @@ int vx_xros_fixture_enabled(void) { const char *v=getenv("VXRT_XRIZER_XROS_FIXTU
 int vx_xros_fixture_start(void *device,void *queue) {
     if(!vx_xros_fixture_enabled() || !device || !queue)return -1;
     pthread_mutex_lock(&lock); int used=host || failed; pthread_mutex_unlock(&lock); if(used)return -1;
-    vx_xros_xrizer_platform platform={VX_XROS_XRIZER_API_VERSION,sizeof(platform),NULL,begin,end,request_exit,input,vx_xros_controllers_sample};
+    vx_xros_xrizer_platform platform={VX_XROS_XRIZER_API_VERSION,sizeof(platform),NULL,begin,end,request_exit,input,vx_xros_controllers_sample,vx_xros_haptics_apply,vx_xros_haptics_stop};
     vx_xros_xrizer_host *created=vx_xros_xrizer_create(VX_XROS_XRIZER_INJECTED_TEST,device,queue,&platform);
     if(!created || vx_xrizer_guest_d3d_create(device,queue,vx_xros_xrizer_record_destination,created,&source))goto fail;
     host=created; fixture_device=(__bridge id<MTLDevice>)device; fixture_queue=(__bridge id<MTLCommandQueue>)queue;
