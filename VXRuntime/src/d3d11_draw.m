@@ -46,13 +46,13 @@ static MTLCompileOptions *d3d11_library_options(void) {
     return options;
 }
 // Shader libraries come from the shader cache (d3d12.m; VXRT_SHADER_CACHE) when this source was compiled before and
-// the compile took long, else from Metal's compiler, which keeps its own cache in the user's cache folder (but rotates it
+// the fill script compiled it (tools/shadercache_fill.sh), else from Metal's compiler, which keeps its own cache in the user's cache folder (but rotates it
 // at about 330 MB, shared by every program). The source is the translator's output, so its hash covers the DXBC and the
 // translator's version; the key adds the options (language version, math mode).
 extern id vx_library_cache_load(id<MTLDevice> dev, NSString *source, MTLCompileOptions *options, uint64_t *key);
 extern void vx_library_cache_store(NSString *source, MTLCompileOptions *options, uint64_t key, uint64_t took_ns);
 // One library per distinct source and process: a game asks for the same translated shader again and again (a Skyrim
-// capture: 18975 requests for about 600 distinct sources), and a request is a hash of the source, a disk lookup, a
+// capture: 18975 requests for 10807 distinct sources), and a request is a hash of the source, a disk lookup, a
 // compile or a library load each time otherwise. The map holds the library, or while it is being made the list of
 // requests waiting for it. VXRT_D3D11_LIBRARY_REUSE=0 turns it off (to measure).
 extern void vx_library_cache_note_reuse(void);
