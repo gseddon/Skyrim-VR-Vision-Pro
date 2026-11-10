@@ -412,7 +412,20 @@ static void copy_controller_state(void *guest, const native_controller_state *n)
     memcpy(guest, &g, sizeof g);
 }
 static void note_controller_state(unsigned slot, uint32_t device, uint32_t size, uint8_t r, const native_controller_state *n) {
-    static unsigned calls[2]; unsigned c = ++calls[slot - 34];
+    static unsigned calls[2], changes; unsigned c = ++calls[slot - 34];
+    // A state that differs from the one this device last returned is logged too ("changed"), so what the guest read
+    // after an input change is on record (bounded).
+    static struct { uint64_t pressed, touched; float axis[6]; uint8_t seen; } last[2][16];
+    int changed = 0;
+    if (r && device < 16) {
+        __typeof__(last[0][0]) *l = &last[slot - 34][device];
+        changed = l->seen && (l->pressed != n->pressed || l->touched != n->touched || memcmp(l->axis, n->axis, sizeof l->axis));
+        l->pressed = n->pressed; l->touched = n->touched; memcpy(l->axis, n->axis, sizeof l->axis); l->seen = 1;
+    }
+    if (changed && ++changes <= 4000)
+        vx_log("xrizer_guest_bridge: System019 slot%u device %u changed: packet %u pressed %#llx touched %#llx axis0 %.3f %.3f "
+            "axis1 %.3f axis2 %.3f (call %u, change %u)", slot, device, n->packet, (unsigned long long)n->pressed,
+            (unsigned long long)n->touched, n->axis[0], n->axis[1], n->axis[2], n->axis[4], c, changes);
     if (c <= 8 || !(c % 1000)) vx_log("xrizer_guest_bridge: System019 slot%u device %u size %u result %u packet %u pressed %#llx touched %#llx "
         "axis0 %.3f %.3f axis1 %.3f (call %u)", slot, device, size, r, n->packet, (unsigned long long)n->pressed,
         (unsigned long long)n->touched, n->axis[0], n->axis[1], n->axis[2], c);
