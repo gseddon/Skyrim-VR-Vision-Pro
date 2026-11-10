@@ -14,6 +14,8 @@ static const vx_xros_xrizer_static_api api = {
 };
 /* the host reports the game's submit time to the per-frame timing record (native_vr_present.m); this probe links the host alone */
 void vx_xros_timing_submit(uint64_t id) { (void)id; }
+/* the host logs through the runtime's vx_log (VXRT_UPSCALE lines); the probe has no runtime */
+void vx_log(const char *fmt, ...) { (void)fmt; }
 int main(void) {
     const vx_xros_xrizer_static_api *volatile pinned = &api;
     return vx_xros_xrizer_register(NULL, pinned, NULL);

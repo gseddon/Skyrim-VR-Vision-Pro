@@ -38,9 +38,10 @@ for i in "${!sources[@]}"; do
 done
 xcrun --sdk "$sdk" clang "${flags[@]}" "${incs[@]}" -c "$repo/VXRuntime/tests/xrizer_xros_static_link.c" -o "$build/probe.o"
 xcrun --sdk "$sdk" libtool -static -o "$build/libklepton.a" "${objects[3]}" "${objects[4]}" "${objects[5]}"
+mfx=(); [ "$sdk" = xros ] && mfx=(-framework MetalFX)
 archive="$build/libxrizer.a"
 cp "$cache/target/$rust_target/debug/libxrizer.a" "$archive"
-xcrun --sdk "$sdk" clang -target "$clang_target" -isysroot "$SDKROOT" "$build/probe.o" "${objects[@]}" "$archive" -framework Foundation -framework Metal -framework Security -framework SystemConfiguration -licucore -lz -o "$build/link-probe"
+xcrun --sdk "$sdk" clang -target "$clang_target" -isysroot "$SDKROOT" "$build/probe.o" "${objects[@]}" "$archive" -framework Foundation -framework Metal ${mfx[@]+"${mfx[@]}"} -framework Security -framework SystemConfiguration -licucore -lz -o "$build/link-probe"
 nm -gU "$build/link-probe" > "$build/symbols.txt"
 for symbol in VRClientCoreFactory xrizer_configure_openxr_provider xrizer_configure_metal_host vx_xros_xrizer_register kl_native_get_instance_proc_addr; do
  if ! grep -Eq "[[:space:]]_${symbol}$" "$build/symbols.txt"; then echo "missing static symbol: $symbol" >&2; exit 1; fi

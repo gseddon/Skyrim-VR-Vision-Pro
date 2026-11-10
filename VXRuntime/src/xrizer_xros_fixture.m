@@ -216,6 +216,7 @@ int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],co
             vx_log("xrizer xros fixture: render scale %.2f (VXRT_RENDER_SCALE)",scale);}
         float sc=(vx_xros_immersive_enabled() && !immersive_mono) ? scale : 1.f;
         over_w=(uint32_t)((float)width*(1.f+o)*sc+.5f);over_h=(uint32_t)((float)height*(1.f+o)*sc+.5f);
+        { extern void vx_xros_host_set_upscale_target(uint32_t,uint32_t); vx_xros_host_set_upscale_target((uint32_t)((float)width*(1.f+o)+.5f),(uint32_t)((float)height*(1.f+o)+.5f)); }
         tangents=over_tan;width=over_w;height=over_h;
     }
     XrTime predicted=(XrTime)(prediction*1e9);
@@ -262,7 +263,9 @@ int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],co
 void vx_xros_host_gate_stats(double *mean_ms,double *max_ms,unsigned long long *waits,unsigned long long *n);
 int vx_xros_gate_json(char *buf,uint32_t len) {
     double mean,mx;unsigned long long waits,n;vx_xros_host_gate_stats(&mean,&mx,&waits,&n);
-    return snprintf(buf,len,"\"gate_ms_mean\":%.2f,\"gate_ms_max\":%.2f,\"gate_waits\":%llu,\"gate_n\":%llu",mean,mx,waits,n);
+    extern void vx_xros_host_upscale_stats(double *,double *,unsigned long long *);
+    double um,ux;unsigned long long un;vx_xros_host_upscale_stats(&um,&ux,&un);
+    return snprintf(buf,len,"\"gate_ms_mean\":%.2f,\"gate_ms_max\":%.2f,\"gate_waits\":%llu,\"gate_n\":%llu,\"up_ms_mean\":%.3f,\"up_ms_max\":%.3f,\"up_n\":%llu",mean,mx,waits,n,um,ux,un);
 }
 /* Loading progress for the headset's loading screen: 0 nothing yet, 1 the xrizer host is up, 2 the game began its VR session (modules and
  * shaders loaded far enough to reach it), 3 the game has submitted a pair. 4 (the first pair shown) is the compositor's own. */
