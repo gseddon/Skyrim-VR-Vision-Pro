@@ -1,7 +1,7 @@
 #import <Foundation/Foundation.h>
 #include <string.h>
 #include <stdio.h>
-// Dither for 8-bit unorm render targets (VXRT_DITHER_8BIT=1): the pixel shader with up to 0.49 of an 8-bit step of
+// Dither for 8-bit unorm render targets (always on for pixel shaders that write unblended 8-bit targets): the pixel shader with up to 0.49 of an 8-bit step of
 // position-hashed noise added to the colour of each float4 output before it is stored. A value that is an exact
 // multiple of 1/255 stays where it is (the noise is below half a step), a value between two codes rounds to either with
 // the probability that matches its fraction: the very dark gradients Skyrim draws (the title-screen smoke is bytes 0-2)

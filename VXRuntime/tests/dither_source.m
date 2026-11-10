@@ -1,4 +1,4 @@
-// The 8-bit dither variant of a pixel shader (VXRT_DITHER_8BIT=1, vx_d3d11_dither_source): a hand-written shader in the
+// The 8-bit dither variant of a pixel shader (vx_d3d11_dither_source): a hand-written shader in the
 // translator's shape outputs 1.4/255 (between two codes) and 1/255 (exactly a code) into an RGBA8 target. The dithered
 // variant must give a mix of codes 1 and 2 averaging 1.4 for the first and always 1 for the second. Needs a Metal GPU.
 #import <Foundation/Foundation.h>
