@@ -21,6 +21,33 @@ static DWORD WINAPI tls_other_thread(void *arg) {
     for (int i = 0; i < 200; i++) if (TlsGetValue(g_idx[i]) != (void *)(ULONG_PTR)(0x5000 + i)) ok = 0;
     return ok;
 }
+// A thread holding a value in index X while X is freed and allocated again reads NULL afterwards (Windows zeroes the slot in
+// every thread). Skyrim VR's loader read a stale pointer here, from a thread-local object another module had freed.
+static DWORD g_reuse_idx;
+static HANDLE g_reuse_set, g_reuse_go, g_reuse_done;
+static int g_reuse_ok;
+static DWORD WINAPI tls_reuse_thread(void *arg) {
+    (void)arg;
+    g_reuse_ok = TlsSetValue(g_reuse_idx, (void *)0x7777) && TlsGetValue(g_reuse_idx) == (void *)0x7777;
+    SetEvent(g_reuse_set);
+    WaitForSingleObject(g_reuse_go, 10000);
+    if (TlsGetValue(g_reuse_idx) != NULL) g_reuse_ok = 0;
+    SetEvent(g_reuse_done);
+    return 0;
+}
+static void test_tls_reuse(DWORD idx) {
+    g_reuse_idx = idx;
+    g_reuse_set = CreateEventA(NULL, FALSE, FALSE, NULL); g_reuse_go = CreateEventA(NULL, FALSE, FALSE, NULL); g_reuse_done = CreateEventA(NULL, FALSE, FALSE, NULL);
+    HANDLE t = CreateThread(NULL, 0, tls_reuse_thread, NULL, 0, NULL);
+    CHECK(t && WaitForSingleObject(g_reuse_set, 10000) == WAIT_OBJECT_0);
+    CHECK(TlsFree(idx));
+    CHECK(TlsAlloc() == idx);
+    SetEvent(g_reuse_go);
+    CHECK(WaitForSingleObject(g_reuse_done, 10000) == WAIT_OBJECT_0);
+    CHECK(g_reuse_ok);
+    if (t) { WaitForSingleObject(t, 10000); CloseHandle(t); }
+    CloseHandle(g_reuse_set); CloseHandle(g_reuse_go); CloseHandle(g_reuse_done);
+}
 static void test_tls(void) {
     int n = 0, distinct = 1;
     for (; n < 200; n++) { g_idx[n] = TlsAlloc(); if (g_idx[n] == TLS_OUT_OF_INDEXES) break; }
@@ -51,6 +78,9 @@ static void test_tls(void) {
     CHECK(!TlsFree(last));                                                               // not allocated now
     DWORD again = TlsAlloc();
     CHECK(again != TLS_OUT_OF_INDEXES);
+    CHECK(again == last);                                                                // (the lowest free index is handed out again)
+    CHECK(TlsGetValue(again) == NULL);                                                   // TlsFree/TlsAlloc zero the slot in this thread ...
+    test_tls_reuse(again);                                                               // ... and in every other live thread
     for (int i = 0; i < n - 1; i++) CHECK(TlsFree(g_idx[i]));
     CHECK(TlsFree(again));
 }

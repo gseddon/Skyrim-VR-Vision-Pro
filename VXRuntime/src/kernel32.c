@@ -705,14 +705,19 @@ static WINAPI void GetSystemTimePreciseAsFileTime(uint64_t *ft) { GetSystemTimeA
 #define TLS_EXPANSION_SLOTS 1024
 #define TLS_INDEXES (TLS_MINIMUM_AVAILABLE + TLS_EXPANSION_SLOTS)
 static uint64_t g_tls_used[TLS_INDEXES / 64];
+void vx_tls_clear_slot(unsigned i, unsigned minimum_available);   // loader.c
 static WINAPI DWORD TlsAlloc(void) {
     for (DWORD i = 0; i < TLS_INDEXES; i++)
-        if (!(__sync_fetch_and_or(&g_tls_used[i / 64], 1ull << (i % 64)) & (1ull << (i % 64)))) return i;
+        if (!(__sync_fetch_and_or(&g_tls_used[i / 64], 1ull << (i % 64)) & (1ull << (i % 64)))) {
+            vx_tls_clear_slot(i, TLS_MINIMUM_AVAILABLE);
+            return i;
+        }
     vx_set_last_error(8 /* ERROR_NOT_ENOUGH_MEMORY */);
     return 0xffffffffu;   // TLS_OUT_OF_INDEXES
 }
 static WINAPI BOOL TlsFree(DWORD i) {
     if (i >= TLS_INDEXES || !(g_tls_used[i / 64] & (1ull << (i % 64)))) { vx_set_last_error(87); return 0; }
+    vx_tls_clear_slot(i, TLS_MINIMUM_AVAILABLE);
     __sync_fetch_and_and(&g_tls_used[i / 64], ~(1ull << (i % 64)));
     return 1;
 }
