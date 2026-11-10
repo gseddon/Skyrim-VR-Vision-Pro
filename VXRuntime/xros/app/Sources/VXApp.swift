@@ -203,7 +203,7 @@ enum VXLifecycle {
             var waited = 0
             while openInFlight && waited < 100 { try? await Task.sleep(nanoseconds: 100_000_000); waited += 1 }
         }
-        if spaceOpen { vxrt_jlog("immersive_open_skipped", "\"tag\":\"\(tag)\",\"space_open\":true"); return true }
+        if spaceOpen { vxrt_jlog("immersive_open_skipped", "\"tag\":\"\(tag)\",\"space_open\":true"); VXImmersiveController.shared.setNeedsResume(false); return true }
         reopenPending = true
         DispatchQueue.main.asyncAfter(deadline: .now() + watchdog) {
             guard reopenPending else { return }
@@ -237,8 +237,10 @@ enum VXLifecycle {
     static func scenePhaseChanged(to phase: ScenePhase) {
 #if XRIZER_XROS_FIXTURE
         guard vx_xros_immersive_enabled() != 0 else { return }
+        // A background / inactive scene is a PAUSE: the compositor layer pauses and resumes by itself when the app is active again (device L3,
+        // 2026-11-10 21:04). Showing the Resume window here (4d66205) put a flat window in front of the resumed game, and its button was a
+        // no-op because the space was still open. Resume is shown only when the space is really gone (layerInvalidated, a failed open).
         if phase == .background || (phase == .inactive && outputEnded) {
-            VXImmersiveController.shared.setNeedsResume(true)
             if ProcessInfo.processInfo.environment["VXRT_EXIT_ON_BACKGROUND"] == "1" { exitNow("scene_\(phase)") }
         }
 #endif
@@ -287,7 +289,14 @@ struct VXDisplayView: View {
                 // The immersive space was taken away (headset off, crown, a notification) or could not be opened: the game is paused, not gone.
                 VStack(spacing: 16) {
                     Text("Skyrim VR is paused").font(.title2)
-                    Button("Resume") { NotificationCenter.default.post(name: .vxReopenImmersive, object: nil) }
+                    Button("Resume") {
+                        Task {
+                            // this view's own, live action (not one captured from a replaced scene), and its result is logged
+                            let result = await openImmersiveSpace(id: "vr")
+                            vxrt_jlog("resume_tap", "\"result\":\"\(result)\",\"app_state\":\(UIApplication.shared.applicationState.rawValue)")
+                            if case .opened = result { VXLifecycle.spaceOpen = true; VXImmersiveController.shared.setNeedsResume(false) }
+                        }
+                    }
                 }
                 .padding(32)
                 .glassBackgroundEffect()
