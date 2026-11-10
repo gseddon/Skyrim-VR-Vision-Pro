@@ -750,6 +750,7 @@ static int find_next(find_state *f, FIND_DATA_A *d) {
     return 0;
 }
 
+static int find_trace(void) { static int on = -1; if (on < 0) on = getenv("VXRT_TRACE_FILES") != NULL; return on; }   // VXRT_TRACE_FILES: directory listings
 static HANDLE find_first(const char *spec, FIND_DATA_A *d) {
     char full[MAX_PATH_LEN];
     if (!vx_full_path(spec, full, sizeof full)) { vx_set_last_error(206); return INVALID_HANDLE; }
@@ -763,12 +764,12 @@ static HANDLE find_first(const char *spec, FIND_DATA_A *d) {
     if (overlay_shadow(dir, shadow, sizeof shadow) && !stat(shadow, &st) && S_ISDIR(st.st_mode) && (f->dirs[f->ndirs] = opendir(shadow)))
         snprintf(f->paths[f->ndirs++], MAX_PATH_LEN, "%s", shadow);
     if (strcmp(dir, f->ndirs ? f->paths[0] : "") && (f->dirs[f->ndirs] = opendir(dir))) snprintf(f->paths[f->ndirs++], MAX_PATH_LEN, "%s", dir);
-    if (!f->ndirs) { if (vx_trace) vx_log("FindFirstFile(%s): no directory %s", spec, dir); DWORD e = vx_error_from_errno(errno); free(f); vx_set_last_error(e == 2 ? 3 : e); return INVALID_HANDLE; }
+    if (!f->ndirs) { if (vx_trace || find_trace()) vx_log("FindFirstFile(%s): no directory %s", spec, dir); DWORD e = vx_error_from_errno(errno); free(f); vx_set_last_error(e == 2 ? 3 : e); return INVALID_HANDLE; }
     if (!find_next(f, d)) {
-        if (vx_trace) vx_log("FindFirstFile(%s): nothing in %s%s%s matches %s", spec, f->paths[0], f->ndirs > 1 ? " or " : "", f->ndirs > 1 ? f->paths[1] : "", f->pattern);
+        if (vx_trace || find_trace()) vx_log("FindFirstFile(%s): nothing in %s%s%s matches %s", spec, f->paths[0], f->ndirs > 1 ? " or " : "", f->ndirs > 1 ? f->paths[1] : "", f->pattern);
         find_destroy(f); vx_set_last_error(2 /* ERROR_FILE_NOT_FOUND */); return INVALID_HANDLE;
     }
-    if (vx_trace) vx_log("FindFirstFile(%s): %s", spec, d->name);
+    if (vx_trace || find_trace()) vx_log("FindFirstFile(%s): %s", spec, d->name);
     HANDLE h = vx_handle_new(VX_HANDLE_FIND, f, find_destroy);
     if (!h) { find_destroy(f); vx_set_last_error(4); return INVALID_HANDLE; }
     return h;
@@ -798,7 +799,8 @@ static WINAPI HANDLE FindFirstFileExW(const WCHAR *spec, int level, FIND_DATA_W 
 static WINAPI BOOL FindNextFileA(HANDLE h, FIND_DATA_A *d) {
     find_state *f = vx_handle_data(h, VX_HANDLE_FIND);
     if (!f) { vx_set_last_error(6); return 0; }
-    if (!find_next(f, d)) { vx_set_last_error(18 /* ERROR_NO_MORE_FILES */); return 0; }
+    if (!find_next(f, d)) { if (find_trace()) vx_log("FindNextFile: no more files"); vx_set_last_error(18 /* ERROR_NO_MORE_FILES */); return 0; }
+    if (find_trace()) vx_log("FindNextFile: %s attrs %#x size %u", d->name, (unsigned)d->attrs, (unsigned)d->size_low);
     return 1;
 }
 static WINAPI BOOL FindNextFileW(HANDLE h, FIND_DATA_W *d) {
