@@ -235,6 +235,7 @@ build/native_vr_present_test: tests/native_vr_present.m src/native_vr_present.m 
 
 native-vr-gpu-check: build/native_vr_present_test build/dither_source_test
 	build/native_vr_present_test
+	VXRT_REPROJ_FILTER=bicubic build/native_vr_present_test
 	build/dither_source_test
 
 build/dither_source_test: tests/dither_source.m src/dither_source.m
