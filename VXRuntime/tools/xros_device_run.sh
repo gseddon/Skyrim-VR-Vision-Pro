@@ -5,7 +5,7 @@
 # The installed host must record -lognonce in its launch event (main.m).
 set -u
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P) || exit 1
-APP=marimokodai.VXRuntimeHost
+APP=gseddon.dev.vxrt.VXRuntimeHost
 OUT=${OUT:-"$ROOT/runs/xros-device"}
 WAIT=${WAIT:-40}
 [ -n "${DEV:-}" ] || { echo 'DEV is required' >&2; exit 2; }

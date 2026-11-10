@@ -17,7 +17,7 @@
 set -e
 cd "$(dirname "$0")/.."
 DEV=${DEV:-717AC0D2-8713-5537-8D5F-A611235E7D35}
-APP=marimokodai.VXRuntimeHost
+APP=gseddon.dev.vxrt.VXRuntimeHost
 GAME=${GAME:-$HOME/Verantyx_VR_Drive/vxrt_wsteam/drive_c/Program Files (x86)/Steam/steamapps/common/Cyberpunk 2077}
 SETTINGS=${SETTINGS:-}
 ARENA=${XROS_ARENA:-0x7000000000}

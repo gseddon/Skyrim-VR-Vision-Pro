@@ -334,7 +334,7 @@ xros-aot-tests: build/vxrt-aot $(XROS_TESTS) $(if $(filter-out 0,$(XROS_BIG_FUNC
 endif
 endif
 # The app (xros/app, xcodegen): signed for the headset with the team's automatic profile.
-XROS_FIXTURE_BUNDLE_ID ?= marimokodai.VXRuntimeHost.$(if $(filter 1,$(XROS_XRIZER_GAME)),XrizerGame,XrizerOffscreen)
+XROS_FIXTURE_BUNDLE_ID ?= gseddon.dev.vxrt.VXRuntimeHost.$(if $(filter 1,$(XROS_XRIZER_GAME)),XrizerGame,XrizerOffscreen)
 XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
 xros-app: xros-lib xros-aot-tests
 ifeq ($(XROS_XRIZER_FIXTURE),1)

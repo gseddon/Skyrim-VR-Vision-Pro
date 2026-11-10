@@ -73,7 +73,7 @@ for arg in "$@"; do
             d=$fwout/$fwn.framework; mkdir -p "$d"
             printf '%s -c -o "%s" "%s" && %s -dynamiclib -install_name "@rpath/%s.framework/%s" -o "%s" "%s" && rm -f "%s" "%s" || { echo "xros_aot: %s failed"; exit 1; }\n' \
                 "$CC" "$out/f$nfw.o" "$f" "$CC" "$fwn" "$fwn" "$d/$fwn" "$out/f$nfw.o" "$out/f$nfw.o" "$( [ "$GAME" = 1 ] && echo "$f" )" "$fwn" > "$out/jobs/$nfw.sh"
-            id=marimokodai.VXRuntimeHost.aot.$(printf '%s' "$fwn" | tr '_' '-')
+            id=gseddon.dev.vxrt.VXRuntimeHost.aot.$(printf '%s' "$fwn" | tr '_' '-')
             cat > "$d/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
