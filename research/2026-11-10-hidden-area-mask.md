@@ -22,6 +22,11 @@ Goal: Skyrim VR skips shading eye-image pixels the lenses cannot show. The heads
 
 `VXRT_VISMASK_PROBE=1` replaces each eye with: nested rectangles at 2 % steps from the drawable's edge (cyan and yellow alternating, white every 10 %), the inset in percent printed (4, 8, ... 28) at the middle of each edge for even rings and along each corner diagonal (4 to 20), and the current mask outline in magenta. The user reports, per eye, the outermost ring or label visible at top, bottom, left, right and at each corner. Those readings (percent inset per edge, with the corner reading deciding the radius) become the default shape. Offline render: `/tmp/claude/perf/vismask/probe1_L.png` (image not committed).
 
+## Calibration (headset, 2026-11-10) and the default
+
+Probe readings (left eye, outermost ring seen): top 10 %, outer/temporal 28 %, bottom 24 %, nasal about 8 % with a strongly curved border; the right eye mirrored. Cart rides with the mask on cut those back: the first shape (temporal 0.24, bottom 0.20, hid 49.9 %) showed the mask at the left and bottom; 0.16/0.16 (hid 41.2 %) still a little; final default `0.13,0.05,0.07,0.14,0.4` (l,r,u,d,radius of the left eye) hides about 38.5 % of each eye image (rounded rectangle area). The mask is ON by default; `VXRT_VISMASK=off` disables it.
+
 ## Evidence so far
 
-See the results section appended at the end of the run (Mac and headset).
+- Mac dev host, title scene, 1024x1024 per eye, headless: mask off 59.7 pairs/s, 13.5 ms GPU per pair; mask on (0.15,0.05,0.25,0,0.5, about 43 % hidden) 80.6 pairs/s, 9.2 ms (-32 %); eye dump non-black 100 % -> 56.9 %.
+- Headset: the probe drew on the device; the game asked for the mesh on both eyes; wearer's readings above. No cart measurement of the mask-only effect was obtained (the app went to the background before the cart in arms B and C).

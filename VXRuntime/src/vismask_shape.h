@@ -1,6 +1,6 @@
 /* Visibility-mask levers (no OpenXR dependency), shared by the provider host glue (xrizer_vismask_host.h) and the
- * compositor's calibration probe (native_vr_present.m). Levers, default off:
- *   VXRT_VISMASK=off|on             or "mask=on|off" in Documents/vxrt_vismask.txt (the environment wins)
+ * compositor's calibration probe (native_vr_present.m). Levers; the mask is ON by default:
+ *   VXRT_VISMASK=off|on (default ON)  or "mask=on|off" in Documents/vxrt_vismask.txt (the environment wins)
  *   VXRT_VISMASK_SHAPE=l,r,u,d,radius   fractions of the eye image's width/height hidden at the left, right, top and bottom
  *                                   edges of the LEFT eye (0..0.45), then the corner radius (0..1 of the smaller half-extent).
  *                                   The right eye mirrors left and right. Also "shape=..." in the file.
@@ -12,8 +12,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-/* default shape (l,r,u,d,radius) when VXRT_VISMASK=on and no shape is given; replaced by the headset calibration */
-#define VX_VISMASK_DEFAULT_SHAPE "0.03,0.03,0.03,0.03,0.5"
+/* default shape (l,r,u,d,radius), calibrated on the headset 2026-11-10 from the probe readings (left eye: temporal 28, nasal ~8, top 10,
+ * bottom 24 percent seen) cut back by what the wearer still saw masked in the cart (temporal 24 -> 16 -> 13, bottom 20 -> 16 -> 14). */
+#define VX_VISMASK_DEFAULT_SHAPE "0.13,0.05,0.07,0.14,0.4"
 static inline void vx_vismask_file_value(const char *key, char *out, size_t cap) {
     out[0] = 0; const char *home = getenv("HOME"); if (!home) return;
     char path[1024]; snprintf(path, sizeof path, "%s/Documents/vxrt_vismask.txt", home);
@@ -35,7 +36,7 @@ static inline int vx_vismask_shape(unsigned eye, int *enabled, float out[5]) {
     if (!e || !*e) e = fm;
     if (!s || !*s) s = fs;
     if (!*s) s = VX_VISMASK_DEFAULT_SHAPE;
-    *enabled = !strcmp(e, "on") || !strcmp(e, "1");
+    *enabled = strcmp(e, "off") && strcmp(e, "0");   /* ON unless VXRT_VISMASK=off|0 (or mask=off in the file) */
     float v[5] = {0, 0, 0, 0, 0};
     if (sscanf(s, "%f,%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3], &v[4]) != 5) {
         bad = 1; sscanf(VX_VISMASK_DEFAULT_SHAPE, "%f,%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3], &v[4]);
