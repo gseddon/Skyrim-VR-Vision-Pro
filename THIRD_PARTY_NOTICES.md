@@ -70,6 +70,16 @@ physical Apple-host adapter remain incomplete. Its ordinary Metal extension
 is withheld; fixtures opt into the partial route. The Android/Linux guest
 loader and graphics stacks are not linked into this component.
 
+### Klepton Sense-controller code adapted into the visionOS app
+
+`VXRuntime/xros/app/Sources/VXSenseTune.swift` (grip correction levers and the capped prediction horizon) and
+`VXRuntime/xros/app/Sources/VXSenseHaptics.swift` (GameController to CoreHaptics engine/player handling) are adapted from
+Klepton's `visionos/Sources/KleptonControllers.swift` (MIT, Copyright (c) 2026 Max Thomas), upstream
+`1fe7e6caf6bb8bc90c1a5e61d5b9bfc6e110fa32`, lines 258-415 and 680-755 (tuning, prediction cap) and 1345-1545 (haptics).
+The AVP Play fork (`klepton-toolchain-866-e65c433`, no full git pin) has equivalent code in these areas and was not used
+where upstream is equivalent. Klepton's game-specific default offsets are not carried over. Both files carry the
+attribution in their headers; the MIT notice is `third_party/klepton_openxr/LICENSE`.
+
 ## WMA v2 decoder derived from FFmpeg (LGPL-2.1-or-later)
 
 `VXRuntime/src/wmadec/` decodes xWMA (WMA v2, format tag 0x161) audio for

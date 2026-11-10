@@ -7,6 +7,7 @@
 #include "frame_host.h"
 #include "view_host.h"
 #include "input_host.h"
+#include "haptic_host.h"
 #include "pose_math.h"
 #define XR_USE_GRAPHICS_API_METAL 1
 #include <openxr/openxr_platform.h>
@@ -37,6 +38,8 @@ static KlNativeInputHost input_host;
 static KlNativeInputHost2 input_host2;
 static KlNativeInputHost3 input_host3;
 static int input_configured; /* 0, 1, 2 or 3 */
+static KlNativeHapticHost haptic_host;
+static int haptic_configured;
 static int metal_extension_available(void) {
 #ifdef KL_NATIVE_TEST_METAL_PARTIAL
     return metal_configured;
@@ -254,6 +257,14 @@ XrResult kl_native_configure_input3(const KlNativeInputHost3 *host) {
     if (!host) { clear_input_host(); return XR_SUCCESS; }
     if (host->version != KL_NATIVE_INPUT_HOST_VERSION_3 || host->struct_size < sizeof(*host) || !host->sample) return XR_ERROR_VALIDATION_FAILURE;
     clear_input_host(); input_host3 = *host; input_configured = 3; return XR_SUCCESS;
+}
+
+XrResult kl_native_configure_haptics(const KlNativeHapticHost *host) {
+    for (unsigned i = 0; i < INSTANCE_LIMIT; ++i)
+        if (instances[i].live) return XR_ERROR_CALL_ORDER_INVALID;
+    if (!host) { memset(&haptic_host, 0, sizeof haptic_host); haptic_configured = 0; return XR_SUCCESS; }
+    if (host->version != KL_NATIVE_HAPTIC_HOST_VERSION || host->struct_size < sizeof(*host) || !host->apply || !host->stop) return XR_ERROR_VALIDATION_FAILURE;
+    haptic_host = *host; haptic_configured = 1; return XR_SUCCESS;
 }
 
 /* Klepton enumeration two-call behavior; no extensions or API layers are
@@ -830,6 +841,58 @@ static XrResult XRAPI_CALL klxr_SyncActions(XrSession session, const XrActionsSy
     if (sample.hand_connected[0] || sample.hand_connected[1]) return XR_ERROR_FEATURE_UNSUPPORTED;
     session->last_input_id = sample.sample_id; session->last_input_time = sample.sample_time; session->input_valid = 1;
     return XR_SUCCESS;
+}
+/* Common checks of xrApplyHapticFeedback / xrStopHapticFeedback, then the host
+ * call for each selected hand that is connected with a current profile that
+ * binds this vibration action. vibration == NULL means stop. */
+static XrResult haptic_forward(XrSession session, const XrHapticActionInfo *info, const XrHapticVibration *vibration) {
+    if (!valid_session(session)) return XR_ERROR_HANDLE_INVALID;
+    if (!info || info->type != XR_TYPE_HAPTIC_ACTION_INFO || info->next) return XR_ERROR_VALIDATION_FAILURE;
+    XrAction action = valid_action_for(session->owner, info->action);
+    if (!action) return XR_ERROR_HANDLE_INVALID;
+    if (action->type != XR_ACTION_TYPE_VIBRATION_OUTPUT) return XR_ERROR_ACTION_TYPE_MISMATCH;
+    if (!attached_action_set(session, action->owner)) return XR_ERROR_ACTIONSET_NOT_ATTACHED;
+    const char *sub = NULL;
+    if (info->subactionPath) {
+        sub = owned_path(session->owner, info->subactionPath);
+        if (!sub) return XR_ERROR_PATH_INVALID;
+        int found = 0;
+        for (uint32_t i = 0; i < action->subpath_count; ++i) if (action->subpaths[i] == info->subactionPath) found = 1;
+        if (!found) return XR_ERROR_PATH_UNSUPPORTED;
+    }
+    if (vibration) {
+        /* amplitude is 0..1 (NaN fails), duration is -1 (minimum) or >= 0, frequency >= 0 */
+        if (!(vibration->amplitude >= 0.f && vibration->amplitude <= 1.f) || vibration->duration < XR_MIN_HAPTIC_DURATION ||
+            !(vibration->frequency >= 0.f)) return XR_ERROR_VALIDATION_FAILURE;
+    }
+    if (!haptic_configured) return XR_ERROR_FEATURE_UNSUPPORTED;
+    if (input_configured != 3 || !session->has_input3) return XR_SUCCESS; /* no hand has been observed: nothing bound */
+    for (unsigned h = 0; h < 2; ++h) {
+        if (sub && strcmp(sub, hand_names[h])) continue;
+        if (!session->last_input3.hand[h].controls.connected || !session->current_profile[h]) continue;
+        int bound = 0;
+        for (unsigned i = 0; i < BINDING_LIMIT && !bound; ++i) {
+            const struct native_binding *b = &bindings[i];
+            if (b->owner != session->owner || b->action != action || b->profile != session->current_profile[h]) continue;
+            const char *c = hand_component(session->owner, b->path, h);
+            if (c && !strcmp(c, "output/haptic")) bound = 1;
+        }
+        if (!bound) continue;
+        XrResult result;
+        if (vibration) {
+            KlNativeHapticVibration v = { vibration->duration, vibration->frequency, vibration->amplitude };
+            result = haptic_host.apply(haptic_host.context, h, &v);
+        } else result = haptic_host.stop(haptic_host.context, h);
+        if (result != XR_SUCCESS) return XR_ERROR_RUNTIME_FAILURE;
+    }
+    return XR_SUCCESS;
+}
+static XrResult XRAPI_CALL klxr_ApplyHapticFeedback(XrSession session, const XrHapticActionInfo *info, const XrHapticBaseHeader *feedback) {
+    if (!feedback || feedback->type != XR_TYPE_HAPTIC_VIBRATION || feedback->next) return valid_session(session) ? XR_ERROR_VALIDATION_FAILURE : XR_ERROR_HANDLE_INVALID;
+    return haptic_forward(session, info, (const XrHapticVibration *)feedback);
+}
+static XrResult XRAPI_CALL klxr_StopHapticFeedback(XrSession session, const XrHapticActionInfo *info) {
+    return haptic_forward(session, info, NULL);
 }
 static XrResult inactive_state_action(XrSession session, const XrActionStateGetInfo *info, XrActionType type) {
     if (!valid_session(session)) return XR_ERROR_HANDLE_INVALID;
@@ -1497,6 +1560,8 @@ XRAPI_ATTR XrResult XRAPI_CALL kl_native_get_instance_proc_addr(XrInstance insta
     INSTANCE("xrDestroySession", klxr_DestroySession)
     INSTANCE("xrAttachSessionActionSets", klxr_AttachSessionActionSets)
     INSTANCE("xrSyncActions", klxr_SyncActions)
+    INSTANCE("xrApplyHapticFeedback", klxr_ApplyHapticFeedback)
+    INSTANCE("xrStopHapticFeedback", klxr_StopHapticFeedback)
     INSTANCE("xrGetCurrentInteractionProfile", klxr_GetCurrentInteractionProfile)
     INSTANCE("xrGetActionStateBoolean", klxr_GetActionStateBoolean)
     INSTANCE("xrGetActionStateFloat", klxr_GetActionStateFloat)
