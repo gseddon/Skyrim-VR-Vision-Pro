@@ -74,6 +74,11 @@ enum { DXBC_UAV_TYPED = 1, DXBC_UAV_RAW, DXBC_UAV_STRUCTURED };
 typedef struct { uint32_t sizes[48]; uint64_t counters[8]; } dxbc_aux;
 #define DXBC_CB_SIZES 32
 
+// The revision of the translator's output, for shader manifests (VISIONOS_PORT.md, "Shaders from a manifest"): bump it
+// whenever a change to dxbc.c changes the MSL it generates for any shader. (A manifest also records the cache key of each
+// source, so a missed bump shows as a key mismatch when the manifest is built, not as a wrong shader.)
+#define DXBC_TRANSLATOR_REV 1
+
 // Translates a DXBC container. Returns 0 and fills *out, or -1 with out->error set.
 int  dxbc_translate(const void *code, size_t size, dxbc_shader *out);
 // The same for a Direct3D 12 pipeline (vertex, pixel, geometry and compute shaders): resources through out->slots.
