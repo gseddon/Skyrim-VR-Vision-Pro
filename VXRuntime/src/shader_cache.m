@@ -6,6 +6,7 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <sys/mman.h>
 static uint64_t fnv1a12(uint64_t h, const void *data, size_t size) {
     const uint8_t *p = data;
     for (size_t i = 0; p && i < size; i++) { h ^= p[i]; h *= 0x100000001b3ull; }
@@ -191,7 +192,27 @@ id vx_library_cache_load(id<MTLDevice> mtl, NSString *source, MTLCompileOptions 
     }
     uint64_t t0 = fs_now12();
     NSError *le = nil;
+#if VX_XROS
+    // visionOS: the file is mapped and closed, and the library is made from that data, so a loaded library holds no
+    // descriptor. (newLibraryWithURL keeps the file open: 10,201 libraries at startup hit the 10,240-descriptor cap of
+    // device run 3 and the other 606 were "unreadable: Too many open files".)
+    id<MTLLibrary> lib = nil;
+    {
+        int lfd = open(path, O_RDONLY | O_CLOEXEC);
+        struct stat lst;
+        if (lfd >= 0 && !fstat(lfd, &lst) && lst.st_size > 0) {
+            void *map = mmap(NULL, (size_t)lst.st_size, PROT_READ, MAP_PRIVATE, lfd, 0);
+            close(lfd);
+            if (map != MAP_FAILED) {
+                size_t len = (size_t)lst.st_size;
+                dispatch_data_t data = dispatch_data_create(map, len, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ munmap(map, len); });
+                lib = [mtl newLibraryWithData:data error:&le];
+            }
+        } else if (lfd >= 0) close(lfd);
+    }
+#else
     id<MTLLibrary> lib = [mtl newLibraryWithURL:[NSURL fileURLWithPath:@(path)] error:&le];
+#endif
     __atomic_add_fetch(&g_cache_load_ns_x, fs_now12() - t0, __ATOMIC_RELAXED);
     if (!lib) {
         __atomic_add_fetch(&g_cache_unreadable_x, 1, __ATOMIC_RELAXED);

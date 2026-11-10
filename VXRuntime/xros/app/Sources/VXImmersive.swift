@@ -420,7 +420,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = color
         pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0.05 + 0.03 * pulse, green: 0.07 + 0.04 * pulse, blue: 0.12 + 0.06 * pulse, alpha: 1)
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0.10 + 0.06 * pulse, green: 0.20 + 0.08 * pulse, blue: 0.40 + 0.15 * pulse, alpha: 1)
         pass.colorAttachments[0].storeAction = .store
         pass.depthAttachment.texture = depth
         pass.depthAttachment.loadAction = .clear
@@ -428,7 +428,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         pass.depthAttachment.storeAction = .store
         cb.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
         // the marker: a 160 x 160 square copied from a buffer (no pipeline needed); the texture is bgra8 (srgb)
-        let side = 160
+        let side = 512
         if color.width >= side * 2, color.height >= side * 2, color.pixelFormat == .bgra8Unorm_srgb || color.pixelFormat == .bgra8Unorm {
             if placeholderMarker == nil {
                 var pixels = [UInt8](repeating: 0, count: side * side * 4)

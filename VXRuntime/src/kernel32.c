@@ -130,7 +130,18 @@ static WINAPI BOOL WriteConsoleW(HANDLE h, const WCHAR *buf, DWORD n, DWORD *wri
     return ok;
 }
 
+// The host's exit record (the visionOS app defines vx_host_exit_hook: a synchronous line in host_log.jsonl before _exit, since the
+// runtime's own log goes through a pipe that _exit can outrun). Absent elsewhere.
+__attribute__((weak)) void vx_host_exit_hook(const char *what, unsigned code, const char *module, unsigned long long offset, const char *opens) { (void)what; (void)code; (void)module; (void)offset; (void)opens; }
+void vx_file_open_ring_json(char *out, size_t cap, unsigned count);
+static void host_exit_record(const char *what, DWORD code, void *ret) {
+    const vx_image *m = vx_image_at((uint64_t)(uintptr_t)ret);
+    static char opens[6000];
+    vx_file_open_ring_json(opens, sizeof opens, 20);
+    vx_host_exit_hook(what, code, m ? m->name : "?", m ? (unsigned long long)((uint8_t *)ret - m->base) : 0ull, opens);
+}
 static WINAPI void ExitProcess(DWORD code) {
+    host_exit_record("ExitProcess", code, VX_RETURN_ADDRESS());
     {                                                              // (always: why a program ended is worth a line)
         const vx_image *m = vx_image_at((uint64_t)(uintptr_t)VX_RETURN_ADDRESS());
         vx_log("ExitProcess(%u) from %s+%#llx", code, m ? m->name : "?", m ? (unsigned long long)((uint8_t *)VX_RETURN_ADDRESS() - m->base) : 0ull);
@@ -147,6 +158,7 @@ int vx_process_info(HANDLE h, DWORD *code);
 HANDLE vx_process_handle(int pid, int child, HANDLE *second);
 static WINAPI BOOL TerminateProcess(HANDLE h, DWORD code) {
     if ((intptr_t)h == -1) {                                       // (who ends it: ExitProcess below only sees this function)
+        host_exit_record("TerminateProcess", code, VX_RETURN_ADDRESS());
         const vx_image *m = vx_image_at((uint64_t)(uintptr_t)VX_RETURN_ADDRESS());
         vx_log("TerminateProcess(current process, %u) from %s+%#llx, thread %u", (unsigned)code, m ? m->name : "?",
                m ? (unsigned long long)((uint8_t *)VX_RETURN_ADDRESS() - m->base) : 0ull, (unsigned)vx_current_tid());

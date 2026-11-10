@@ -57,6 +57,22 @@ static void jlog(const char *event, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_lock);
 }
 void vxrt_xros_program_exited(int rc) { jlog("exit", "\"rc\":%d", rc); }
+// The guest's ExitProcess / TerminateProcess (src/kernel32.c): one synchronous line, written before the process ends, with the
+// code, the caller's module and offset and the last opens (name, error, fd): the runtime's own log goes through a pipe that
+// _exit can outrun (device run 3: exit code 5 and no line saying who).
+void vx_host_exit_hook(const char *what, unsigned code, const char *module, unsigned long long offset, const char *opens) {
+    size_t cap = 8192 + strlen(opens ? opens : "");
+    char *line = malloc(cap);
+    if (!line) return;
+    int n = snprintf(line, cap, "{\"t\":%.3f,\"since_start\":%.3f,\"test\":\"%s\",\"event\":\"guest_exit\",\"available_mb\":%llu,\"footprint_mb\":%llu,"
+                     "\"what\":\"%s\",\"code\":%u,\"module\":\"%s\",\"offset\":\"%#llx\",\"last_opens\":[%s]}\n",
+                     now(), now() - t0, g_test, (unsigned long long)(os_proc_available_memory() >> 20), (unsigned long long)footprint_mb(),
+                     what, code, module, offset, opens ? opens : "");
+    pthread_mutex_lock(&g_log_lock);
+    if (g_log >= 0 && n > 0) { write(g_log, line, (size_t)n); fsync(g_log); }
+    pthread_mutex_unlock(&g_log_lock);
+    free(line);
+}
 
 // The address space as the system left it at launch (after the arena): every mapped region of 16 MB or more and every
 // gap of 64 MB or more up to 1 TB, then whether 1 GB can be had exactly at the candidate arena bases (each freed again).
