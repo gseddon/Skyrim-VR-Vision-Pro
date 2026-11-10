@@ -41,7 +41,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <AppKit/AppKit.h>
-#import <QuartzCore/CAMetalLayer.h>
+#import <QuartzCore/QuartzCore.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <math.h>
@@ -298,13 +298,134 @@ static void dk_log_sample(uint64_t id, const KlNativeInputHand3 h[2]) {
            dk_float(&dk.aim_pitch_bits) * 180 / M_PI, dk.changes);
 }
 
+/* Live rates for the mirror window's title (VXRT_XRIZER_DEV_KEYBOARD=1), updated twice a second over the last second.
+ * pairs: fresh eye pairs the game submitted (one per publish: repeats of the last pair are not counted); waits: the
+ * host's frame ticks (paced at 90 Hz); interval: time between consecutive fresh pairs; GPU: Metal GPUEndTime -
+ * GPUStartTime of the command buffer that copies the pair and draws the mirror (not the game's own rendering). */
+static struct { pthread_mutex_t lock; unsigned pairs, waits, gpu_n; double max_iv, gpu_sum; double last_pair; } dk_stats = {.lock = PTHREAD_MUTEX_INITIALIZER};
+static double dk_now_s(void) { return (double)clock_gettime_nsec_np(CLOCK_MONOTONIC) / 1e9; }
+static void dk_stats_wait(void) { if (!dk.window) return; pthread_mutex_lock(&dk_stats.lock); ++dk_stats.waits; pthread_mutex_unlock(&dk_stats.lock); }
+static void dk_stats_pair(double gpu_s) {
+    if (!dk.window) return;
+    double t = dk_now_s();
+    pthread_mutex_lock(&dk_stats.lock);
+    ++dk_stats.pairs;
+    if (dk_stats.last_pair > 0) { double iv = t - dk_stats.last_pair; if (iv > dk_stats.max_iv) dk_stats.max_iv = iv; }
+    dk_stats.last_pair = t;
+    if (gpu_s > 0) { dk_stats.gpu_sum += gpu_s; ++dk_stats.gpu_n; }
+    pthread_mutex_unlock(&dk_stats.lock);
+}
+static void dk_start_title_timer(void) {   /* main thread */
+    static dispatch_source_t timer; if (timer) return;
+    timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), NSEC_PER_SEC / 2, NSEC_PER_SEC / 20);
+    __block double prev_t = dk_now_s();
+    struct hist { double max[2], gpu[2], dt[2]; unsigned pairs[2], waits[2], gn[2]; } *hp = calloc(1, sizeof *hp);   /* two half-second slots */
+    __block unsigned slot = 0;
+    dispatch_source_set_event_handler(timer, ^{
+        if (!dk_window) return;
+        double t = dk_now_s();
+        pthread_mutex_lock(&dk_stats.lock);
+        unsigned pairs = dk_stats.pairs, waits = dk_stats.waits, gn = dk_stats.gpu_n; double miv = dk_stats.max_iv, gs = dk_stats.gpu_sum;
+        dk_stats.pairs = dk_stats.waits = dk_stats.gpu_n = 0; dk_stats.max_iv = dk_stats.gpu_sum = 0;
+        pthread_mutex_unlock(&dk_stats.lock);
+        slot ^= 1; hp->pairs[slot] = pairs; hp->waits[slot] = waits; hp->max[slot] = miv; hp->gpu[slot] = gs; hp->gn[slot] = gn; hp->dt[slot] = t - prev_t; prev_t = t;
+        double dt = hp->dt[0] + hp->dt[1]; unsigned P = hp->pairs[0] + hp->pairs[1], W = hp->waits[0] + hp->waits[1], G = hp->gn[0] + hp->gn[1];
+        if (dt <= 0) return;
+        double ivn = P ? dt / P : 0;   /* mean interval between fresh pairs */
+        double mx = hp->max[0] > hp->max[1] ? hp->max[0] : hp->max[1];
+        NSMutableString *title = [NSMutableString stringWithFormat:@"VXRuntime dev keyboard (click here for keys) | game %.0f fresh pairs/s | host %.0f Hz",
+                                  P / dt, W / dt];
+        if (P) [title appendFormat:@" | frame avg %.1f ms worst %.1f ms", ivn * 1000, mx * 1000]; else [title appendString:@" | no fresh pair"];
+        if (G) [title appendFormat:@" | copy+mirror GPU %.2f ms", (hp->gpu[0] + hp->gpu[1]) / G * 1000];
+        dk_window.title = title;
+        static unsigned shown; if (!(++shown % 20)) vx_log("xrizer dev keyboard: title: %s", title.UTF8String);
+    });
+    dispatch_resume(timer);
+}
+
+/* The key-map help panel, drawn by the window system over the mirror's layer (never into the game's image). It is built
+ * from dk.map, the table the keys really use, so VXRT_XRIZER_DEV_KEYMAP overrides show. F1 or ? toggles it; it is
+ * shown for the first 20 s. docs/dev-keyboard.md has the default table (tests/dev_keyboard_doc_check.py keeps them equal). */
+static CATextLayer *dk_help_left, *dk_help_right;
+static NSString *dk_key_label(unsigned code) {
+    static const struct { const char *name, *label; } nice[] = {{"lshift","Left Shift"},{"rshift","Right Shift"},{"lctrl","Left Ctrl"},{"rctrl","Right Ctrl"},
+        {"lalt","Left Alt"},{"ralt","Right Alt"},{"lbracket","["},{"rbracket","]"},{"comma",","},{"period","."},{"semicolon",";"},{"slash","/"},
+        {"quote","'"},{"backslash","\\"},{"minus","-"},{"equal","="},{"grave","`"},{"pageup","Page Up"},{"pagedown","Page Down"},{"return","Return"},
+        {"enter","Return"},{"backspace","Backspace"},{"escape","Esc"},{"space","Space"},{"tab","Tab"},{"home","Home"},{"end","End"},
+        {"up","Up arrow"},{"down","Down arrow"},{"left","Left arrow"},{"right","Right arrow"}};
+    for (size_t i = 0; i < sizeof dk_key_names / sizeof dk_key_names[0]; i++) {
+        if (dk_key_names[i].code != code) continue;
+        for (size_t k = 0; k < sizeof nice / sizeof nice[0]; k++) if (!strcmp(nice[k].name, dk_key_names[i].name)) return @(nice[k].label);
+        return strlen(dk_key_names[i].name) == 1 ? [@(dk_key_names[i].name) uppercaseString] : [@(dk_key_names[i].name) uppercaseString];
+    }
+    return [NSString stringWithFormat:@"key %u", code];
+}
+static NSString *dk_keys_for(unsigned hand, unsigned control) {
+    NSMutableArray *k = [NSMutableArray array];
+    for (unsigned code = 0; code < 128; code++) if (dk.map[code].control == control && dk.map[code].hand == hand && (control || hand)) {
+        NSString *l = dk_key_label(code); if (![k containsObject:l]) [k addObject:l];
+    }
+    return [k componentsJoinedByString:@" / "];
+}
+static NSString *dk_hand_help(unsigned hand) {
+    static const struct { unsigned control; const char *label[2]; const char *use[2]; } rows[] = {
+        {DK_STICK_UP,{"stick up","stick up"},{"move forward; menus: up","look up; menus: up"}},
+        {DK_STICK_DOWN,{"stick down","stick down"},{"move back; menus: down","look down; menus: down"}},
+        {DK_STICK_LEFT,{"stick left","stick left"},{"strafe left","turn left"}},
+        {DK_STICK_RIGHT,{"stick right","stick right"},{"strafe right","turn right"}},
+        {DK_STICK_CLICK,{"stick click","stick click"},{"sprint","item zoom (inventory)"}},
+        {DK_TRIGGER,{"trigger","trigger"},{"left hand attack/block/cast","right hand attack; menus: accept"}},
+        {DK_GRIP,{"grip","grip"},{"ready/sheathe weapon; menus: cancel","shout; menus: cancel"}},
+        {DK_PRIMARY,{"X","A"},{"tween (system) menu","activate; menus: accept"}},
+        {DK_SECONDARY,{"Y","B"},{"journal / wait; menus: tab left","favorites; menus: tab right"}},
+        {DK_MENU,{"menu","menu"},{"(xrizer does not bind it)","(xrizer does not bind it)"}}};
+    NSMutableString *t = [NSMutableString stringWithString:hand ? @"RIGHT HAND\n" : @"LEFT HAND\n"];
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        NSString *keys = dk_keys_for(hand, rows[i].control); if (!keys.length) continue;
+        [t appendFormat:@"%-22s %s\n  %@\n", rows[i].label[hand], rows[i].use[hand], keys];
+    }
+    return t;
+}
+static NSString *dk_head_help(void) {
+    static const char *const use[] = {NULL,"head turn left","head turn right","head pitch up","head pitch down","reset head and aim",
+        "hands aim left","hands aim right","hands aim up","hands aim down"};
+    NSMutableString *t = [NSMutableString stringWithString:@"HEAD AND AIM (relative to the head)\n"];
+    for (unsigned c = 1; c <= DK_AIM_DOWN; c++) { NSString *k = dk_keys_for(DK_HEAD, c); if (k.length) [t appendFormat:@"%@: %s\n", k, use[c]]; }
+    [t appendString:@"mouse drag: turn head   right-button drag: aim hands\n"];
+    return t;
+}
+static void dk_help_update(void) {
+    NSString *left = dk_hand_help(DK_LEFT), *right = dk_hand_help(DK_RIGHT);
+    dk_help_left.string = left;
+    dk_help_right.string = [right stringByAppendingFormat:@"\n%@\nQUIT: Ctrl-C in the terminal, or close the Skyrim window\nF1 or ? shows/hides this help", dk_head_help()];
+    for (CATextLayer *t in @[dk_help_left, dk_help_right]) { CGSize z = t.preferredFrameSize; t.bounds = CGRectMake(0, 0, z.width + 10, z.height + 8); }
+}
+static void dk_help_toggle(void) {
+    dk_help_left.hidden = !dk_help_left.hidden; dk_help_right.hidden = dk_help_left.hidden;
+}
+static CATextLayer *dk_help_layer(CALayer *parent, BOOL rightColumn) {
+    CATextLayer *t = [CATextLayer layer];
+    t.font = (__bridge CFTypeRef)[NSFont monospacedSystemFontOfSize:10 weight:NSFontWeightRegular]; t.fontSize = 10;
+    t.foregroundColor = CGColorGetConstantColor(kCGColorWhite); t.contentsScale = 2; t.wrapped = NO; t.alignmentMode = kCAAlignmentLeft;
+    t.backgroundColor = CGColorCreateGenericRGB(0, 0, 0, 0.72);
+    t.bounds = CGRectMake(0, 0, 500, 500); t.anchorPoint = CGPointMake(rightColumn ? 1 : 0, 1);
+    t.autoresizingMask = (rightColumn ? kCALayerMinXMargin : kCALayerMaxXMargin) | kCALayerMinYMargin;
+    t.position = CGPointMake(rightColumn ? parent.bounds.size.width - 4 : 4, parent.bounds.size.height - 4);
+    [parent addSublayer:t];
+    return t;
+}
+
 /* The mirror window: the two eyes side by side, the keyboard and the mouse. */
 @interface VXDevKeyView : NSView <NSWindowDelegate>
 @end
 @implementation VXDevKeyView
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
-- (void)keyDown:(NSEvent *)e { if (!(e.modifierFlags & NSEventModifierFlagCommand)) dk_key(e.keyCode, 1); }
+- (void)keyDown:(NSEvent *)e {
+    if (e.keyCode == 122 || [e.charactersIgnoringModifiers isEqualToString:@"?"] || [e.characters isEqualToString:@"?"]) { if (!e.isARepeat) dk_help_toggle(); return; }   /* F1, ? */
+    if (!(e.modifierFlags & NSEventModifierFlagCommand)) dk_key(e.keyCode, 1);
+}
 - (void)keyUp:(NSEvent *)e { dk_key(e.keyCode, 0); }
 - (void)flagsChanged:(NSEvent *)e {
     /* Which side's modifier: the device-dependent bits (NX_DEVICE*KEYMASK). */
@@ -346,7 +467,9 @@ static void dk_open_window(id<MTLDevice> device, unsigned width, unsigned height
             [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
             const char *na = getenv("VXRT_NO_ACTIVATE");
             if (na && *na == '1') [w orderFront:nil]; else { [w makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
-            dk_window = w;
+            dk_window = w; dk_start_title_timer();
+            dk_help_left = dk_help_layer(dk_layer, NO); dk_help_right = dk_help_layer(dk_layer, YES); dk_help_update();
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ if (!dk_help_left.hidden) dk_help_toggle(); });
             atomic_store(&dk.mirror, 1);
             vx_log("xrizer dev keyboard: mirror window open; click it to give it the keyboard");
         });
@@ -477,6 +600,7 @@ static XrResult wait_frame(void *p,KlNativeFrameSample *out) {
     }
     h.deadline=(h.deadline>t ? h.deadline : t)+INT64_C(11111111);
     if (h.nextFrame==UINT64_MAX) return XR_ERROR_RUNTIME_FAILURE;
+    dk_stats_wait();
     uint64_t id=++h.nextFrame;
     dk_frame(id,t);
     *out=(KlNativeFrameSample){.ticket=(__bridge void *)h,.frame_id=id,.pose_id=id,.predicted_display_time=t+INT64_C(11111111),
@@ -558,6 +682,7 @@ static XrResult publish(void *p,const KlNativeFramePair *pair) {
     if (dk.window) dk_mirror(h.device,cb,copies);
     [cb commit]; [cb waitUntilCompleted];
     if (cb.status!=MTLCommandBufferStatusCompleted || cb.error) return XR_ERROR_RUNTIME_FAILURE;
+    dk_stats_pair(cb.GPUEndTime>cb.GPUStartTime ? cb.GPUEndTime-cb.GPUStartTime : 0);
     for (unsigned i=0;i<2;i++) if (dumps[i]) {
         const uint8_t *px=dumps[i].contents; NSUInteger n=dumps[i].length/4, w=(NSUInteger)pair->eye[i].rect.extent.width;
         uint64_t sum[3]={0,0,0}, differ=0, nonzero=0; for (NSUInteger k=0;k<n;k++) {
