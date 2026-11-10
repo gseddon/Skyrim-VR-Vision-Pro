@@ -26,6 +26,7 @@ static void gpu11_release_mtl_object(void *object);
 extern MTLCompileOptions *vx_d3d11_compile_options(void);
 extern MTLCompileOptions *vx_d3d11_library_options(void);
 extern NSString *vx_d3d11_dual_source(const char *msl);
+extern NSString *vx_d3d11_dither_source(const char *msl);
 extern NSString *vx_d3d11_vs_kernel_source(const char *msl_kernel, const char *kinds);
 static MTLCompileOptions *d3d11_compile_options(void) { return vx_d3d11_compile_options(); }
 static MTLCompileOptions *d3d11_library_options(void) { return vx_d3d11_library_options(); }
@@ -153,7 +154,7 @@ static HRESULT query(void *this, const GUID *iid, void **out, const GUID *iface)
 // works on many at once, and a game creating thousands while it loads would otherwise wait for each in turn; the
 // first draw (or dispatch) that needs one waits for it.
 // so: a geometry shader made with stream output (so_layout), else NULL.
-typedef struct { d3d_object base; dxbc_shader info; void *function, *compute; gpu_ir_pipeline *compute_ir; uint32_t id, hash; unsigned char sha[32]; volatile int ready; void *dual; int dual_tried; void *variant; int variant_tried; void *so; } d3d_shader;   // hash: as in VXRT_DUMP_SHADERS names
+typedef struct { d3d_object base; dxbc_shader info; void *function, *compute; gpu_ir_pipeline *compute_ir; uint32_t id, hash; unsigned char sha[32]; volatile int ready; void *dual; int dual_tried; void *dither; int dither_tried; void *variant; int variant_tried; void *so; } d3d_shader;   // hash: as in VXRT_DUMP_SHADERS names
 // Stream output (stream 0): which output register components go where in the target buffers. An entry copies
 // count components from register reg, component comp on, to dword dword of each vertex's record in buffer slot.
 typedef struct { uint32_t reg, comp, count, slot_dword; } so_entry;   // slot_dword: slot << 24 | dword
@@ -200,6 +201,24 @@ static id<MTLFunction> dual_source_function(d3d_device *dev, d3d_shader *s) {
     pthread_mutex_unlock(&g_variant_lock);
     return (__bridge id<MTLFunction>)s->dual;
 }
+// VXRT_DITHER_8BIT=1: the dithered variant of a pixel shader (shader_cache.m), made once.
+static id<MTLFunction> dither_function(d3d_device *dev, d3d_shader *s) {
+    pthread_mutex_lock(&g_variant_lock);
+    if (!s->dither_tried) {
+        s->dither_tried = 1;
+        NSString *source = vx_d3d11_dither_source(s->info.msl);
+        if (source) {
+            NSError *err = nil;
+            variant_log(s, "dither", source.UTF8String, "");
+            id<MTLLibrary> lib = d3d11_library((__bridge id<MTLDevice>)dev->mtl, source, &err);
+            id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"vx_main"] : nil;
+            if (fn) s->dither = (void *)CFBridgingRetain(fn);
+            else vx_log("Direct3D: dither variant of shader %08x did not compile: %s", s->hash, err.localizedDescription.UTF8String);
+        }
+    }
+    pthread_mutex_unlock(&g_variant_lock);
+    return (__bridge id<MTLFunction>)s->dither;
+}
 static id<MTLFunction> shader_function(d3d_shader *s) {
     if (!s) return nil;
     if (!__atomic_load_n(&s->ready, __ATOMIC_ACQUIRE)) {
@@ -214,6 +233,7 @@ static void shader_destroy(d3d_object *o) {
     d3d_shader *s = (d3d_shader *)o;
     if (s->function) CFBridgingRelease(s->function);
     if (s->dual) CFBridgingRelease(s->dual);
+    if (s->dither) CFBridgingRelease(s->dither);
     if (s->variant) CFBridgingRelease(s->variant);
     gpu_ir_pipeline_release(s->compute_ir);
     if (s->compute) CFBridgingRelease(s->compute);
@@ -1259,6 +1279,19 @@ static id<MTLRenderPipelineState> pipeline(d3d_context *c, d3d_draw_state *s, id
     if (dual == 1 && ps && shader_function(ps)) {
         id<MTLFunction> f = dual_source_function(c->base.dev, ps);
         if (f) pd.fragmentFunction = f; else dual = 2;
+    }
+    if (!dual && ps && ncolors > 0 && !(s->blend && s->blend->desc[0])) {
+        // 8-bit unorm targets written without blending: the dithered variant (VXRT_DITHER_8BIT=1)
+        static int dither_on = -1;
+        if (dither_on < 0) { const char *e = getenv("VXRT_DITHER_8BIT"); dither_on = e && *e == '1'; }
+        int ok = dither_on;
+        for (int i = 0; i < ncolors && ok; i++) {
+            if (!colors[i]) continue;
+            const uint32_t *rt = s->blend ? s->blend->desc + 2 + 8 * (s->blend->desc[1] ? i : 0) : NULL;
+            if ((colors[i].pixelFormat != MTLPixelFormatRGBA8Unorm && colors[i].pixelFormat != MTLPixelFormatBGRA8Unorm) ||
+                colors[i].sampleCount != 1 || (rt && rt[0])) ok = 0;
+        }
+        if (ok && shader_function(ps)) { id<MTLFunction> f = dither_function(c->base.dev, ps); if (f) pd.fragmentFunction = f; }
     }
     if (s->layout && s->layout->n && !gs) {
         MTLVertexDescriptor *vd = [MTLVertexDescriptor vertexDescriptor];
