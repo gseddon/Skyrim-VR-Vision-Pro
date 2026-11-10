@@ -84,6 +84,8 @@ struct d3d_device {
     uint32_t flags, feature_level, max_latency;
     volatile uint64_t producer_submitted, producer_completed;
     volatile int producer_failed;
+    void *xr_guard_event;            // id<MTLEvent> (not owned; the xrizer bridge's) a producer must wait on before it writes again
+    volatile uint64_t xr_guard_value; // 0: none. Set while a queue-ordered eye copy may still be reading this device's textures
     volatile uint64_t submitted, completed;   // command buffers committed, and the last one the GPU finished
     int apple_family;                // Metal's Apple GPU family: 7 = M1, 8 = M2, 9 = M3/M4, 10 = M5 and later (0: other)
     void *slices;                    // chunks small renamed buffers are carved from (d3d11.m)
@@ -206,6 +208,13 @@ void         d3d_texture_replace(d3d_texture *t, void *mtl_texture);     // a sw
 // Caller serializes immediate-context recording and checked flush. Returns -1
 // on producer error or timeout; a producer error remains sticky for this device.
 int          d3d_flush_checked(d3d_device *dev);
+// GPU-side variants of d3d_flush_checked for the non-blocking xrizer eye copy (no CPU wait; see d3d11.m):
+int          d3d_flush_signal(d3d_device *dev, void *event, uint64_t value, uint64_t *target);   // send recorded work, then signal `event` = value once the queue got there
+int          d3d_producers_ok(d3d_device *dev, uint64_t target);   // 0 if the producers up to `target` completed without failure (bounded wait for their handlers)
+void         d3d_xr_guard_set(d3d_device *dev, void *event, uint64_t value);   // later command buffers of this device wait for `event` = value
+void         d3d_xr_guard_clear(d3d_device *dev, uint64_t value);            // ... unless a newer value replaced it
+void         d3d_xr_guard_encode(d3d_device *dev, void *command_buffer);     // id<MTLCommandBuffer>: encode that wait, if one is set
+
 #ifdef VXRT_GUEST_PRODUCER_TESTING
 void         d3d_test_fail_next_producer(void);
 #endif

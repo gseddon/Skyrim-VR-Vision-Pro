@@ -11,6 +11,7 @@
 #include "apple_metal_host.h"
 #include "image_sync_host.h"
 #include "pose_math.h"
+#include "xrizer_eye_ring.h"
 
 #define EVENT_CAPACITY 16
 struct vx_xros_xrizer_host {
@@ -26,6 +27,9 @@ struct vx_xros_xrizer_host {
     KlNativeSessionEvent events[EVENT_CAPACITY];
     unsigned event_head, event_count, surface_ready, attempted, registered, retiring, retired;
     unsigned readers, publishing;
+    vx_eye_ring *ring;          /* NULL: VXRT_XR_SYNC_SUBMIT=1, the blocking submit */
+    unsigned epoch;             /* bumped when the surface goes away: older in-flight copies are discarded */
+    uint64_t last_published, discarded;
     XrTime last_event_time;
     vx_native_vr *frames;
     vx_xros_frame_mailbox *mailbox;
@@ -33,8 +37,10 @@ struct vx_xros_xrizer_host {
 };
 static pthread_mutex_t singleton_lock = PTHREAD_MUTEX_INITIALIZER;
 static vx_xros_xrizer_host *singleton;
-static void keep(void *p) { if (p) CFRetain(p); }
-static void drop(void *p) { if (p) CFRelease(p); }
+static vx_eye_ring *reader_ring;   /* the singleton's ring, for the native_vr retain/release callbacks */
+static void keep(void *p) { if (p) { CFRetain(p); (void)vx_eye_ring_reader(reader_ring,p,1); } }
+static void drop(void *p) { if (p) { (void)vx_eye_ring_reader(reader_ring,p,-1); CFRelease(p); } }
+static void ring_log(const char *m) { NSLog(@"%s",m); }
 static XrResult available(void *ctx) {
     vx_xros_xrizer_host *h=ctx; pthread_mutex_lock(&h->lock);
     int ready=h->surface_ready && !h->retiring && !h->retired; pthread_mutex_unlock(&h->lock);
@@ -65,8 +71,9 @@ static XrResult begin_session(void *ctx, XrTime *time) {
 }
 static XrResult end_session(void *ctx, XrTime *time) {
     vx_xros_xrizer_host *h=ctx;
+    vx_eye_ring_drain(h->ring);   /* completion handlers publish under h->lock: wait for them first, without it */
     pthread_mutex_lock(&h->lock);
-    int clear = !h->readers && !h->publishing && vx_xros_mailbox_drained(h->mailbox);
+    int clear = !h->readers && !h->publishing && !vx_eye_ring_inflight(h->ring) && vx_xros_mailbox_drained(h->mailbox);
     if (clear) vx_native_vr_reset(h->frames);
     pthread_mutex_unlock(&h->lock);
     if (!clear) return XR_ERROR_CALL_ORDER_INVALID;
@@ -92,7 +99,7 @@ static XrResult cancel_frame(void *ctx, void *ticket) {
 static void pose_matrix(XrPosef p, float m[16]) {
     vx_xros_pose_matrix(p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w, p.position.x, p.position.y, p.position.z, m);
 }
-static XrResult publish_pair(void *ctx, const KlNativeFramePair *pair) {
+static XrResult publish_pair_sync(void *ctx, const KlNativeFramePair *pair) {
     vx_xros_xrizer_host *h=ctx; if (!pair || !pair->sample.ticket) return XR_ERROR_VALIDATION_FAILURE;
     if (!vx_xros_mailbox_matches(h->mailbox,&pair->sample)) return XR_ERROR_HANDLE_INVALID;
     pthread_mutex_lock(&h->lock);
@@ -158,6 +165,96 @@ done:
     pthread_mutex_lock(&h->lock); h->publishing=0; pthread_mutex_unlock(&h->lock);
     return result;
 }
+/* Non-blocking submit: validate and encode the two eye copies into a pooled slot, accept the ticket, commit, and return.
+ * The pair reaches native_vr (and so the presenter) from the command buffer's completion handler, only if the copy
+ * succeeded, the surface/session is the same, and no newer frame was published first. */
+static XrResult publish_pair_async(void *ctx, const KlNativeFramePair *pair) {
+    vx_xros_xrizer_host *h=ctx; if (!pair || !pair->sample.ticket) return XR_ERROR_VALIDATION_FAILURE;
+    if (!vx_xros_mailbox_matches(h->mailbox,&pair->sample)) return XR_ERROR_HANDLE_INVALID;
+    pthread_mutex_lock(&h->lock);
+    if (h->retiring || h->retired || h->publishing) { pthread_mutex_unlock(&h->lock); return XR_ERROR_CALL_ORDER_INVALID; }
+    h->publishing=1; unsigned epoch=h->epoch; pthread_mutex_unlock(&h->lock);
+    XrResult result=XR_ERROR_RUNTIME_FAILURE;
+    @autoreleasepool {
+        uint32_t w[2], ht[2], fmt[2];
+        for (unsigned i=0;i<2;i++) {
+            const KlNativeFrameEye *e=&pair->eye[i]; id<MTLTexture> src=(__bridge id<MTLTexture>)e->texture;
+            if (!src || src.device!=(__bridge id<MTLDevice>)h->device || !e->image_lease || src.sampleCount!=1 ||
+                src.textureType!=MTLTextureType2DArray || src.pixelFormat!=(MTLPixelFormat)e->format ||
+                (src.pixelFormat!=MTLPixelFormatRGBA8Unorm && src.pixelFormat!=MTLPixelFormatBGRA8Unorm &&
+                 src.pixelFormat!=MTLPixelFormatRGBA8Unorm_sRGB && src.pixelFormat!=MTLPixelFormatBGRA8Unorm_sRGB) ||
+                e->array_layer>=src.arrayLength || e->rect.offset.x<0 || e->rect.offset.y<0 || e->rect.extent.width<=0 || e->rect.extent.height<=0 ||
+                (NSUInteger)e->rect.offset.x+(NSUInteger)e->rect.extent.width>src.width ||
+                (NSUInteger)e->rect.offset.y+(NSUInteger)e->rect.extent.height>src.height) goto done;
+            w[i]=(uint32_t)e->rect.extent.width; ht[i]=(uint32_t)e->rect.extent.height; fmt[i]=(uint32_t)src.pixelFormat;
+        }
+        vx_eye_slot *slot=NULL;
+        if (vx_eye_ring_reserve(h->ring,w,ht,fmt,&slot)) { result=XR_ERROR_OUT_OF_MEMORY; goto done; }   /* may block at the in-flight bound */
+        id<MTLCommandBuffer> cb=[(__bridge id<MTLCommandQueue>)h->queue commandBuffer];
+        id<MTLBlitCommandEncoder> blit=[cb blitCommandEncoder];
+        if (!cb || !blit) { if (blit) [blit endEncoding]; vx_eye_ring_abort(h->ring,slot); goto done; }
+        for (unsigned i=0;i<2;i++) {
+            const KlNativeFrameEye *e=&pair->eye[i]; id<MTLTexture> src=(__bridge id<MTLTexture>)e->texture;
+            [blit copyFromTexture:src sourceSlice:e->array_layer sourceLevel:0 sourceOrigin:MTLOriginMake(e->rect.offset.x,e->rect.offset.y,0)
+                sourceSize:MTLSizeMake(e->rect.extent.width,e->rect.extent.height,1) toTexture:(__bridge id<MTLTexture>)slot->tex[i]
+                destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];
+        }
+        [blit endEncoding];
+        /* Pose and identity are captured by value: nothing of the borrowed pair is used after this call returns. */
+        vx_native_vr_pose pose={.frame_id=pair->sample.frame_id,.pose_id=pair->sample.pose_id,
+            .pose_time=(double)pair->sample.predicted_display_time/1e9,
+            .tracking_valid=(pair->sample.head_location_flags & (XR_SPACE_LOCATION_ORIENTATION_VALID_BIT|XR_SPACE_LOCATION_POSITION_VALID_BIT)) ==
+                (XR_SPACE_LOCATION_ORIENTATION_VALID_BIT|XR_SPACE_LOCATION_POSITION_VALID_BIT)};
+        pose_matrix(pair->sample.local_from_head,pose.origin_from_head);
+        for (unsigned i=0;i<2;i++) {
+            pose_matrix(kl_native_pose_relative(pair->sample.local_from_head,pair->eye[i].local_from_render_eye),pose.head_from_eye[i]);
+            XrFovf f=pair->eye[i].fov; pose.frustum[i][0]=tanf(f.angleLeft); pose.frustum[i][1]=tanf(f.angleRight);
+            pose.frustum[i][2]=-tanf(f.angleUp); pose.frustum[i][3]=-tanf(f.angleDown);
+        }
+        /* The ticket is consumed once the copy is going to the GPU; a stale ticket leaves the copy uncommitted. */
+        if (vx_xros_mailbox_finish(h->mailbox,pair->sample.ticket)) { vx_eye_ring_abort(h->ring,slot); goto done; }
+        id<MTLTexture> t0=(__bridge id<MTLTexture>)slot->tex[0], t1=(__bridge id<MTLTexture>)slot->tex[1];
+        /* The swapchain images' own writes (the guest-to-provider copies) complete before this copy on the same queue;
+         * their buffers are checked when this copy completes, because the provider no longer waited for them. */
+        id<MTLCommandBuffer> w0=(__bridge id<MTLCommandBuffer>)kl_apple_metal_image_pending_writes(&h->metal,pair->eye[0].image_lease);
+        id<MTLCommandBuffer> w1=(__bridge id<MTLCommandBuffer>)kl_apple_metal_image_pending_writes(&h->metal,pair->eye[1].image_lease);
+        vx_eye_ring_commit(h->ring,cb,slot,^(int ok,double gpu_s) {
+            (void)gpu_s;
+            if (ok && (!vx_eye_ring_writes_ok(w0) || !vx_eye_ring_writes_ok(w1))) ok=0;
+            pthread_mutex_lock(&h->lock);
+            if (!ok || h->retiring || h->retired || h->epoch!=epoch || pose.frame_id<=h->last_published) {
+                if (ok) ++h->discarded;
+                pthread_mutex_unlock(&h->lock); return;
+            }
+            id<MTLTexture> copies[2]={t0,t1};
+            vx_native_vr_handle frame=0; unsigned submitted=0, completed=0;
+            if (vx_native_vr_begin(h->frames,&pose,&frame)) { pthread_mutex_unlock(&h->lock); return; }
+            for (unsigned i=0;i<2;i++) {
+                MTLPixelFormat f=copies[i].pixelFormat;
+                vx_native_vr_eye eye={.resource=(__bridge void *)copies[i],.width=(uint32_t)copies[i].width,
+                    .height=(uint32_t)copies[i].height,.format=(uint32_t)f,.sample_count=1,
+                    .color_space=(f==MTLPixelFormatRGBA8Unorm_sRGB || f==MTLPixelFormatBGRA8Unorm_sRGB) ? VX_NATIVE_VR_COLOR_SRGB : VX_NATIVE_VR_COLOR_LINEAR,
+                    .u_max=1,.v_max=1};
+                if (vx_native_vr_submit(h->frames,frame,i,pose.frame_id,pose.pose_id,&eye)) goto failed;
+                submitted|=1u<<i;
+            }
+            for (unsigned i=0;i<2;i++) { if (vx_native_vr_complete(h->frames,frame,i)) goto failed; completed|=1u<<i; }
+            h->last_published=pose.frame_id;
+            pthread_mutex_unlock(&h->lock); return;
+failed:
+            (void)vx_native_vr_cancel(h->frames,frame);
+            for (unsigned i=0;i<2;i++) if ((submitted & (1u<<i)) && !(completed & (1u<<i))) (void)vx_native_vr_complete(h->frames,frame,i);
+            pthread_mutex_unlock(&h->lock);
+        });
+        result=XR_SUCCESS;
+    }
+done:
+    pthread_mutex_lock(&h->lock); h->publishing=0; pthread_mutex_unlock(&h->lock);
+    return result;
+}
+static XrResult publish_pair(void *ctx, const KlNativeFramePair *pair) {
+    vx_xros_xrizer_host *h=ctx; return h && h->ring ? publish_pair_async(ctx,pair) : publish_pair_sync(ctx,pair);
+}
 static void *factory(void *ctx, int *error) {
     vx_xros_xrizer_host *h=ctx; return h->api.client_core_factory("IVRClientCore_003",error);
 }
@@ -175,13 +272,16 @@ vx_xros_xrizer_host *vx_xros_xrizer_create(vx_xros_xrizer_mode mode, void *devic
     if (!h) { pthread_mutex_unlock(&singleton_lock); return NULL; }
     if (pthread_mutex_init(&h->lock,NULL)) { free(h); pthread_mutex_unlock(&singleton_lock); return NULL; }
     h->mode=mode; h->platform=*platform; h->device=(void *)CFRetain(device); h->queue=(void *)CFRetain(queue);
-    h->mailbox=vx_xros_mailbox_create(); h->frames=vx_native_vr_create(keep,drop);
+    h->mailbox=vx_xros_mailbox_create();
+    if (!vx_eye_ring_sync_requested()) h->ring=vx_eye_ring_create(device,2,ring_log);
+    reader_ring=h->ring; h->frames=vx_native_vr_create(keep,drop);
     if (!h->mailbox || !h->frames || kl_apple_metal_host_create(device,queue,&h->metal)!=XR_SUCCESS ||
-        kl_apple_metal_image_sync(&h->metal,&h->sync)!=XR_SUCCESS) {
+        (h->ring ? kl_apple_metal_image_sync_ordered(&h->metal,&h->sync) : kl_apple_metal_image_sync(&h->metal,&h->sync))!=XR_SUCCESS) {
         /* No provider/Rust callbacks have been installed; destroy only what
          * was allocated locally. All resources are still excluded from users. */
         if (h->metal.context) (void)kl_apple_metal_host_destroy(&h->metal);
         if (h->frames) (void)vx_native_vr_destroy(h->frames);
+        reader_ring=NULL; if (h->ring) vx_eye_ring_destroy(h->ring);
         if (h->mailbox) { vx_xros_mailbox_stop(h->mailbox); (void)vx_xros_mailbox_destroy(h->mailbox); }
         CFRelease(h->device); CFRelease(h->queue); pthread_mutex_destroy(&h->lock); free(h);
         pthread_mutex_unlock(&singleton_lock); return NULL;
@@ -220,7 +320,7 @@ int vx_xros_xrizer_surface(vx_xros_xrizer_host *h, int ready, const KlNativeView
     if (h->retiring || h->retired) { pthread_mutex_unlock(&h->lock); return -1; }
     if (ready) h->views=*views;
     h->surface_ready=(unsigned)ready;
-    if (!ready) vx_xros_mailbox_invalidate(h->mailbox);
+    if (!ready) { ++h->epoch; vx_xros_mailbox_invalidate(h->mailbox); }
     pthread_mutex_unlock(&h->lock); return 0;
 }
 int vx_xros_xrizer_geometry(vx_xros_xrizer_host *h, const KlNativeViewGeometry *geometry) {
@@ -265,7 +365,10 @@ int vx_xros_xrizer_retire(vx_xros_xrizer_host *h) {
     pthread_mutex_lock(&h->lock);
     h->retiring=1;
     vx_xros_mailbox_stop(h->mailbox);
-    int ok=!h->retired && !h->publishing && !h->readers && vx_xros_mailbox_drained(h->mailbox);
+    pthread_mutex_unlock(&h->lock);
+    vx_eye_ring_drain(h->ring);   /* in-flight copies finish (their handlers see retiring and publish nothing) */
+    pthread_mutex_lock(&h->lock);
+    int ok=!h->retired && !h->publishing && !vx_eye_ring_inflight(h->ring) && !h->readers && vx_xros_mailbox_drained(h->mailbox);
     if (ok) { vx_native_vr_reset(h->frames); h->surface_ready=0; h->retired=1; }
     pthread_mutex_unlock(&h->lock);
     return ok ? 0 : -1;

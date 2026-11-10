@@ -553,8 +553,28 @@ static d3d_view *make_view(d3d_device *dev, int kind, void **vtbl, d3d_object *r
 }
 
 // ---- the immediate context ----------------------------------------------------------------------------------------------------------
+// xrizer's non-blocking eye copy reads a game texture on another queue after the game went on recording. While such a copy
+// may still be reading, every command buffer this device opens first waits (on the GPU) for the copy's event, so the next
+// frame cannot overwrite what is being copied. (The wait costs nothing once the value was signalled.)
+void d3d_xr_guard_set(d3d_device *dev, void *event, uint64_t value) {
+    __atomic_store_n(&dev->xr_guard_event, event, __ATOMIC_RELEASE);
+    __atomic_store_n(&dev->xr_guard_value, value, __ATOMIC_RELEASE);
+}
+void d3d_xr_guard_clear(d3d_device *dev, uint64_t value) {
+    uint64_t expect = value;
+    __atomic_compare_exchange_n(&dev->xr_guard_value, &expect, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+void d3d_xr_guard_encode(d3d_device *dev, void *cbp) {
+    id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)cbp;
+    uint64_t v = __atomic_load_n(&dev->xr_guard_value, __ATOMIC_ACQUIRE);
+    if (v) [cb encodeWaitForEvent:(__bridge id<MTLEvent>)__atomic_load_n(&dev->xr_guard_event, __ATOMIC_ACQUIRE) value:v];
+}
 static id<MTLCommandBuffer> raw_cmd(d3d_context *c) {
-    if (!c->cmd) { c->cmd = (void *)CFBridgingRetain([(__bridge id<MTLCommandQueue>)c->base.dev->queue commandBuffer]); D3D_RECORDING(c); }
+    if (!c->cmd) {
+        id<MTLCommandBuffer> fresh = [(__bridge id<MTLCommandQueue>)c->base.dev->queue commandBuffer];
+        d3d_xr_guard_encode(c->base.dev, (__bridge void *)fresh);
+        c->cmd = (void *)CFBridgingRetain(fresh); D3D_RECORDING(c);
+    }
     return (__bridge id<MTLCommandBuffer>)c->cmd;
 }
 // The command buffer to encode into; clears still pending go first (whatever comes may read their targets).
@@ -770,6 +790,30 @@ int d3d_flush_checked(d3d_device *dev) {
     int failed = __atomic_load_n(&dev->producer_failed, __ATOMIC_ACQUIRE);
     pthread_mutex_unlock(&g_events_lock);
     return failed ? -1 : 0;
+}
+
+// Non-blocking counterpart of d3d_flush_checked: sends the recorded work, then commits a marker command buffer that signals
+// `event` = `value` when the queue reaches it. The repository relies on the same property below (set_events_when_done):
+// one queue's command buffers run in order, so when the marker signals, everything committed before it has finished.
+// *target is the producer count the caller later passes to d3d_producers_ok (from the copy's completion handler).
+int d3d_flush_signal(d3d_device *dev, void *event, uint64_t value, uint64_t *target) {
+    if (!dev || !dev->context || !dev->queue || !event) return -1;
+    pthread_mutex_lock(&g_events_lock);
+    d3d_flush(dev, 0);
+    *target = __atomic_load_n(&dev->producer_submitted, __ATOMIC_ACQUIRE);
+    id<MTLCommandBuffer> marker = [(__bridge id<MTLCommandQueue>)dev->queue commandBuffer];
+    [marker encodeSignalEvent:(__bridge id<MTLEvent>)event value:value];
+    [marker commit];
+    pthread_mutex_unlock(&g_events_lock);
+    return 0;
+}
+int d3d_producers_ok(d3d_device *dev, uint64_t target) {
+    uint64_t deadline = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) + 5000000000ull;
+    while (__atomic_load_n(&dev->producer_completed, __ATOMIC_ACQUIRE) < target) {   // handlers run a moment after the GPU is done
+        if (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) >= deadline) return -1;
+        usleep(100);
+    }
+    return __atomic_load_n(&dev->producer_failed, __ATOMIC_ACQUIRE) ? -1 : 0;
 }
 
 // Sets the events (handles of their own, duplicated at the call) and closes those handles once a command buffer
