@@ -21,6 +21,12 @@ final class VXImmersiveRenderer: @unchecked Sendable {
     private var tracking = false
     private var lastReport = CACurrentMediaTime()
     private var cleared = 0
+    // per-second frame diagnostics (the device kills an immersive app that stops presenting; run 2 died with no trace)
+    nonisolated(unsafe) static var frameCount: UInt64 = 0
+    nonisolated(unsafe) static var lastFrameUptime = 0.0
+    private var anchorPresent = 0, anchorTracked = 0, anchorMissing = 0, framesSecond = 0
+    private var submitMsSum = 0.0, submitMsMax = 0.0, inputWaitMsMax = 0.0
+    private var placeholderMarker: MTLBuffer?
     private var nativeXRTracking: VXNativeXRTracking?
     private var spatialClockCalibrated = false
     private var lastSpatialSample = 0.0
@@ -42,53 +48,64 @@ final class VXImmersiveRenderer: @unchecked Sendable {
             return
         }
         let r = VXImmersiveRenderer(layerRenderer, q)
+        // The compositor loop first and on its own thread, as Klepton does (KleptonCompositor.renderLoop: waitUntilRunning,
+        // then ARKit beside it): nothing about ARKit, its permission prompts or a session re-run may hold the frames back.
+        // (Device run 1: the loop waited for the accessory session; the loader gave up after 30 s.)
+        let thread = Thread { r.loop() }
+        thread.name = "VX compositor"
+        thread.qualityOfService = .userInteractive
+        thread.start()
         Task {
-            // The accessory session start (ARKit run with the Sense controllers, which can wait on a permission prompt)
-            // must never hold the compositor loop back: the loader waits for the loop's first geometry (30 s), so the
-            // adapter is started beside the loop, after it. (Device run 1: awaited before the loop, no frame ever ran.)
-            var startAdapter: VXNativeXRTracking?
-            if WorldTrackingProvider.isSupported {
-                var handsAllowed = false
-                if HandTrackingProvider.isSupported && vx_xros_native_enabled() != 0 {
-                    let authorization = await r.arSession.requestAuthorization(for: [.handTracking])
-                    handsAllowed = authorization[.handTracking] == .allowed
-                }
-                do {
-                    if handsAllowed {
-                        do {
-                            try await r.arSession.run([r.worldTracking, r.nativeInput.hands])
-                            r.nativeInput.handTrackingEnabled = true
-                        } catch {
-                            vxrt_jlog("vr_error", "\"what\":\"hand tracking unavailable\"")
-                            try await r.arSession.run([r.worldTracking])
-                        }
-                    } else { try await r.arSession.run([r.worldTracking]) }
-                    r.tracking = true
-                    // Sense controllers (accessory tracking) whenever the immersive space is open: the native diagnostic
-                    // (VXRT_NATIVE_VR) or the xrizer fixture/game (-immersive). The loader refuses both together, so the
-                    // xrizer build never had it before. Hands stay with the native path.
-                    var controllersWanted = vx_xros_native_enabled() != 0
+            guard WorldTrackingProvider.isSupported else { return }
+            // Sense controllers (accessory tracking) whenever the immersive space is open: the native diagnostic
+            // (VXRT_NATIVE_VR) or the xrizer fixture/game (-immersive). Hands stay with the native path.
+            var controllersWanted = vx_xros_native_enabled() != 0
+            var singleRun = false
 #if XRIZER_XROS_FIXTURE
-                    if vx_xros_fixture_enabled() != 0 { controllersWanted = true }
+            if vx_xros_fixture_enabled() != 0 { controllersWanted = true; singleRun = vx_xros_native_enabled() == 0 }
 #endif
-                    if controllersWanted {
-                        r.spatialClockCalibrated = Self.clockMatchesMach()
-                        if r.spatialClockCalibrated {
-                            let adapter = VXNativeXRTracking(session: r.arSession, world: r.worldTracking,
-                                hands: r.nativeInput.handTrackingEnabled ? r.nativeInput.hands : nil, gate: r.trackingGate)
-                            r.nativeXRTracking = adapter
-                            startAdapter = adapter
-                        } else {
-                            vxrt_jlog("vr_error", "\"what\":\"spatial clock calibration failed\"")
-                        }
-                    }
-                } catch { vxrt_jlog("vr_error", "\"what\":\"world tracking: \(error.localizedDescription)\"") }
+            // xrizer path: ONE ARKit run with the head and the controllers (Klepton's runARKit: world, hands, accessories
+            // in a single session.run), not a head-only run followed by a second one that pauses the head's queries.
+            if singleRun {
+                r.spatialClockCalibrated = Self.clockMatchesMach()
+                if r.spatialClockCalibrated {
+                    let adapter = VXNativeXRTracking(session: r.arSession, world: r.worldTracking, hands: nil, gate: r.trackingGate)
+                    r.nativeXRTracking = adapter
+                    await adapter.start()
+                    r.tracking = true
+                    return
+                }
+                vxrt_jlog("vr_error", "\"what\":\"spatial clock calibration failed\"")
+                controllersWanted = false
             }
-            let thread = Thread { r.loop() }
-            thread.name = "VX compositor"
-            thread.qualityOfService = .userInteractive
-            thread.start()
-            if let adapter = startAdapter { Task { await adapter.start() } }
+            var handsAllowed = false
+            if HandTrackingProvider.isSupported && vx_xros_native_enabled() != 0 {
+                let authorization = await r.arSession.requestAuthorization(for: [.handTracking])
+                handsAllowed = authorization[.handTracking] == .allowed
+            }
+            do {
+                if handsAllowed {
+                    do {
+                        try await r.arSession.run([r.worldTracking, r.nativeInput.hands])
+                        r.nativeInput.handTrackingEnabled = true
+                    } catch {
+                        vxrt_jlog("vr_error", "\"what\":\"hand tracking unavailable\"")
+                        try await r.arSession.run([r.worldTracking])
+                    }
+                } else { try await r.arSession.run([r.worldTracking]) }
+                r.tracking = true
+                if controllersWanted {
+                    r.spatialClockCalibrated = Self.clockMatchesMach()
+                    if r.spatialClockCalibrated {
+                        let adapter = VXNativeXRTracking(session: r.arSession, world: r.worldTracking,
+                            hands: r.nativeInput.handTrackingEnabled ? r.nativeInput.hands : nil, gate: r.trackingGate)
+                        r.nativeXRTracking = adapter
+                        await adapter.start()
+                    } else {
+                        vxrt_jlog("vr_error", "\"what\":\"spatial clock calibration failed\"")
+                    }
+                }
+            } catch { vxrt_jlog("vr_error", "\"what\":\"world tracking: \(error.localizedDescription)\"") }
         }
     }
 
@@ -167,17 +184,30 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         frame.startUpdate()
         frame.endUpdate()
         guard let timing = frame.predictTiming() else { return }
+        let waitStart = CACurrentMediaTime()
         LayerRenderer.Clock().wait(until: timing.optimalInputTime)
-        frame.startSubmission()
+        let waited = (CACurrentMediaTime() - waitStart) * 1000
+        if waited > inputWaitMsMax { inputWaitMsMax = waited }
+        // Klepton's order (KleptonCompositor.renderFrame, Apple's template): queryDrawables, THEN startSubmission. A frame
+        // abandoned before startSubmission is not an open submission; the old order opened it first and walked away
+        // from it when there was no drawable.
         let drawables = frame.queryDrawables()
-        // (no drawables: the system cancelled this frame; ending its submission would abort the app)
         guard !drawables.isEmpty else { return }
+        guard let cb = queue.makeCommandBuffer() else { return }
+        let submitStart = CACurrentMediaTime()
+        frame.startSubmission()
         let presentation = Self.seconds(timing.presentationTime)
         if spatialClockCalibrated, let adapter = nativeXRTracking, presentation - lastSpatialSample >= Self.spatialSampleInterval {
             lastSpatialSample = presentation
             Task { await adapter.collect(at: presentation) }
         }
         let anchor = tracking ? trackingGate.read { worldTracking.queryDeviceAnchor(atTimestamp: presentation) } ?? nil : nil
+        if tracking {
+            if let a = anchor { anchorPresent += 1; if a.isTracked { anchorTracked += 1 } } else { anchorMissing += 1 }
+        }
+        if Self.frameCount < 8 {
+            vxrt_jlog("frame_trace", "\"n\":\(Self.frameCount),\"drawables\":\(drawables.count),\"anchor\":\(anchor != nil),\"anchor_tracked\":\(anchor?.isTracked == true),\"input_wait_ms\":\(String(format: "%.2f", waited))")
+        }
         var head = anchor?.originFromAnchorTransform ?? matrix_identity_float4x4
         let nativeDiagnostic = vx_xros_native_enabled() != 0
 #if XRIZER_XROS_FIXTURE
@@ -337,10 +367,6 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                 $0.withMemoryRebound(to: Float.self, capacity: 16) { vx_xros_vr_begin_frame($0, presentation) }
             }
         }
-        guard let cb = queue.makeCommandBuffer() else {
-            if native { vx_xros_native_end(nil) } else { vx_xros_vr_end_frame(nil) }
-            frame.endSubmission(); return
-        }
         cb.label = "VX eyes"
         let cbp = Unmanaged.passUnretained(cb as AnyObject).toOpaque()
         for d in drawables {
@@ -379,21 +405,48 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         if native { vx_xros_native_end(cbp) } else { vx_xros_vr_end_frame(cbp) }
         cb.commit()
         frame.endSubmission()
+        let took = (CACurrentMediaTime() - submitStart) * 1000
+        submitMsSum += took; if took > submitMsMax { submitMsMax = took }
+        framesSecond += 1
+        Self.frameCount &+= 1
+        Self.lastFrameUptime = CACurrentMediaTime()
         report()
     }
 
-    // (no game frame yet: a dark grey room, depth far)
+    // (no game frame yet: a mid grey-blue that pulses slowly, so the wearer can tell the app is alive, and a head-locked
+    // light square in the middle of each eye. Depth far.)
     private func clear(_ cb: MTLCommandBuffer, _ color: MTLTexture, _ depth: MTLTexture) {
+        let pulse = 0.5 + 0.5 * sin(CACurrentMediaTime() * 2 * Double.pi / 3)
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = color
         pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0.03, green: 0.03, blue: 0.05, alpha: 1)
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0.05 + 0.03 * pulse, green: 0.07 + 0.04 * pulse, blue: 0.12 + 0.06 * pulse, alpha: 1)
         pass.colorAttachments[0].storeAction = .store
         pass.depthAttachment.texture = depth
         pass.depthAttachment.loadAction = .clear
         pass.depthAttachment.clearDepth = 0
         pass.depthAttachment.storeAction = .store
         cb.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
+        // the marker: a 160 x 160 square copied from a buffer (no pipeline needed); the texture is bgra8 (srgb)
+        let side = 160
+        if color.width >= side * 2, color.height >= side * 2, color.pixelFormat == .bgra8Unorm_srgb || color.pixelFormat == .bgra8Unorm {
+            if placeholderMarker == nil {
+                var pixels = [UInt8](repeating: 0, count: side * side * 4)
+                for y in 0..<side { for x in 0..<side {
+                    let border = x < 8 || y < 8 || x >= side - 8 || y >= side - 8
+                    let v: UInt8 = border ? 255 : 200
+                    let i = (y * side + x) * 4
+                    pixels[i] = v; pixels[i + 1] = v; pixels[i + 2] = border ? 255 : 230; pixels[i + 3] = 255
+                } }
+                placeholderMarker = layerRenderer.device.makeBuffer(bytes: pixels, length: pixels.count, options: .storageModeShared)
+            }
+            if let buf = placeholderMarker, let blit = cb.makeBlitCommandEncoder() {
+                blit.copy(from: buf, sourceOffset: 0, sourceBytesPerRow: side * 4, sourceBytesPerImage: side * side * 4,
+                          sourceSize: MTLSize(width: side, height: side, depth: 1), to: color, destinationSlice: 0, destinationLevel: 0,
+                          destinationOrigin: MTLOrigin(x: color.width / 2 - side / 2, y: color.height / 2 - side / 2, z: 0))
+                blit.endEncoding()
+            }
+        }
         cleared += 1
     }
 
@@ -412,6 +465,8 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         }
 #endif
         cleared = 0
+        fields += ",\"frames\":\(framesSecond),\"anchor_present\":\(anchorPresent),\"anchor_tracked\":\(anchorTracked),\"anchor_missing\":\(anchorMissing),\"submit_ms_mean\":\(String(format: "%.2f", framesSecond > 0 ? submitMsSum / Double(framesSecond) : 0)),\"submit_ms_max\":\(String(format: "%.2f", submitMsMax)),\"input_wait_ms_max\":\(String(format: "%.2f", inputWaitMsMax))"
+        framesSecond = 0; anchorPresent = 0; anchorTracked = 0; anchorMissing = 0; submitMsSum = 0; submitMsMax = 0; inputWaitMsMax = 0
         vxrt_jlog("vr", fields)
     }
 }

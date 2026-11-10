@@ -64,6 +64,7 @@ actor VXNativeXRTracking {
         guard !stopped else { return }
         guard AccessoryTrackingProvider.isSupported else {
             vxrt_jlog("xr_controllers", "\"what\":\"AccessoryTrackingProvider unsupported on this device: hands stay disconnected\"")
+            await refresh()   // (still the one ARKit run, for the head)
             return
         }
         for name in [NSNotification.Name.GCControllerDidConnect, .GCControllerDidDisconnect] {
@@ -120,6 +121,7 @@ actor VXNativeXRTracking {
                 try await session.run(providers)
                 if !stopped && pass == generation { devices = current; accessoryProvider = next }
                 else { refreshAgain = true }
+                vxrt_jlog("xr_controllers", "\"what\":\"session running\",\"accessory_provider\":\(next != nil),\"accessory_state\":\"\(next.map { "\($0.state)" } ?? "none")\",\"loaded\":\(loaded.count),\"mach_s\":\(String(format: "%.3f", CACurrentMediaTime()))")
             } catch {
                 /* provider unavailable: leave every observation invalid */
                 vxrt_jlog("xr_controllers", "\"what\":\"session run failed: \(error.localizedDescription)\"")

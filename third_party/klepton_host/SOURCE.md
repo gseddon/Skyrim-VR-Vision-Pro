@@ -63,3 +63,24 @@ with Klepton's file and symbol named as the reference.
 See `git log -- VXRuntime/xros/app` on the branch `worktree-agent-af19bef3afdccd68f`; the controller session start, the
 `xr_controllers` and `xr_controller_state` log events, `VXLifecycle`, `VXDefaultLaunch`, and the `-controllers` mode of the owned
 guest are ours.
+
+## Frame-loop discipline ported after device run 2 (2026-11-10)
+
+Device run 2 was SIGKILLed by the system 2.7 s in (termination namespace `0x28`, no app fault, no jetsam). Compared with the fork
+(`KleptonCompositor.swift` `renderFrame`, `csFrames`, `runARKit`, `startRenderLoop`) at `a7bad301`:
+
+| Area | Klepton | Ours before | Ported (`VXImmersive.swift`, `VXNativeXRTracking.swift`) |
+| --- | --- | --- | --- |
+| Submission order | `queryNextFrame`, `startUpdate`/`endUpdate`, `predictTiming`, wait `optimalInputTime`, `queryDrawables`, command buffer, THEN `startSubmission`; every bail-out before that abandons the frame without opening a submission; `endSubmission` once, after commit | `startSubmission` BEFORE `queryDrawables`; an empty drawables list or a failed command buffer left a started submission behind | Klepton's order; bail-outs leave before `startSubmission` |
+| ARKit and the loop | the loop thread waits for the layer, ARKit starts beside it; ONE `session.run([world, hands?, accessories])` | the loop thread was created only after ARKit runs (run 1); a head-only `run` followed by a second `run` that paused head queries (the gate) | loop thread first; on the xrizer path one `run` with the head and the Sense accessories (`VXNativeXRTracking.start` -> `refresh`), also when the accessory provider is unsupported (head only) |
+| Drawable device anchor | `drawable.deviceAnchor = anchor` every frame (nil is a refusal the system understands), `encodePresent` every drawable | same | unchanged |
+| Space style | `.immersionStyle`, `.upperLimbVisibility`, `.persistentSystemOverlays(.hidden)` | `.full`, overlays hidden | unchanged (mixed/black backdrop and hand matting not adopted) |
+| Placeholder | black where there is no picture (`mixedBlack`) | near-black clear | pulsing grey-blue clear plus a head-locked 160 px square (blit from a buffer) until the first pair |
+
+Not ported: the anchor walk-back/hold (`displayAnchor`), `waitForInflightFrame`, the RealityKit hand-over. Added here, not from Klepton:
+`frame_trace` (first 8 frames), per-second `anchor_present/tracked/missing`, `submit_ms_*`, `input_wait_ms_max` in the `vr` event, and a
+0.5 s main-thread `heartbeat` event in `host_log.jsonl`.
+
+The 385 GB `Guard` region in the crash report is the system's own: `va_range` (mach_vm_range_create) returned 46 for all four candidates and
+`va_guard_1gb` could not map (`alloc_kr` 3), so our `va_range_make` claimed none of it; `va_range_extended` only accounts the 63 GB
+`0x7040000000-0x8000000000` app range for `VirtualAlloc`. The 52 GB shared region at `0x2ea000000` is the dyld shared cache.
