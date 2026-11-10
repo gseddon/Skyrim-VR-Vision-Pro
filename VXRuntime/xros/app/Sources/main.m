@@ -35,6 +35,7 @@ static char g_docs[1024];
 static int g_log = -1;
 static pthread_mutex_t g_log_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_test[64] = "d3d12";
+static int default_launch;                                   // (the Info.plist VXDefaultLaunch arguments were applied)
 static int g_game;                                          // (-game <name>: a game installed in Documents/root)
 static double t0;
 
@@ -56,6 +57,22 @@ static void jlog(const char *event, const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_lock);
 }
 void vxrt_xros_program_exited(int rc) { jlog("exit", "\"rc\":%d", rc); }
+// The guest's ExitProcess / TerminateProcess (src/kernel32.c): one synchronous line, written before the process ends, with the
+// code, the caller's module and offset and the last opens (name, error, fd): the runtime's own log goes through a pipe that
+// _exit can outrun (device run 3: exit code 5 and no line saying who).
+void vx_host_exit_hook(const char *what, unsigned code, const char *module, unsigned long long offset, const char *opens) {
+    size_t cap = 8192 + strlen(opens ? opens : "");
+    char *line = malloc(cap);
+    if (!line) return;
+    int n = snprintf(line, cap, "{\"t\":%.3f,\"since_start\":%.3f,\"test\":\"%s\",\"event\":\"guest_exit\",\"available_mb\":%llu,\"footprint_mb\":%llu,"
+                     "\"what\":\"%s\",\"code\":%u,\"module\":\"%s\",\"offset\":\"%#llx\",\"last_opens\":[%s]}\n",
+                     now(), now() - t0, g_test, (unsigned long long)(os_proc_available_memory() >> 20), (unsigned long long)footprint_mb(),
+                     what, code, module, offset, opens ? opens : "");
+    pthread_mutex_lock(&g_log_lock);
+    if (g_log >= 0 && n > 0) { write(g_log, line, (size_t)n); fsync(g_log); }
+    pthread_mutex_unlock(&g_log_lock);
+    free(line);
+}
 
 // The address space as the system left it at launch (after the arena): every mapped region of 16 MB or more and every
 // gap of 64 MB or more up to 1 TB, then whether 1 GB can be had exactly at the candidate arena bases (each freed again).
@@ -195,6 +212,25 @@ __attribute__((constructor)) static void early(void) {
     g_log = open(p, O_WRONLY | O_CREAT | O_APPEND, 0644);
     snprintf(p, sizeof p, "%s/vxrt.log", g_docs);
     int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    // A build with Info.plist VXDefaultLaunch (XROS_DEFAULT_LAUNCH; the XROS_XRIZER_GAME=1 build: "-game skyrimvr -xrizer
+    // -immersive") starts that program when launched from the Home View with no -test/-game: the arguments are
+    // appended to the process's own. An explicit -test or -game (devicectl --argument, simctl) wins.
+    {
+        int ac = *_NSGetArgc(); char **av = *_NSGetArgv();
+        BOOL explicit_program = NO;
+        for (int i = 1; i < ac; i++) if (!strcmp(av[i], "-test") || !strcmp(av[i], "-game")) explicit_program = YES;
+        NSString *dflt = [NSBundle.mainBundle objectForInfoDictionaryKey:@"VXDefaultLaunch"];
+        NSArray<NSString *> *words = [dflt isKindOfClass:NSString.class] ? [dflt componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet] : @[];
+        NSMutableArray<NSString *> *extra = [NSMutableArray array];
+        for (NSString *w in words) if (w.length) [extra addObject:w];
+        if (!explicit_program && extra.count) {
+            char **nv = calloc((size_t)ac + extra.count + 1, sizeof *nv);
+            for (int i = 0; i < ac; i++) nv[i] = av[i];
+            for (NSUInteger i = 0; i < extra.count; i++) nv[ac + i] = strdup(extra[i].UTF8String);
+            *_NSGetArgv() = nv; *_NSGetArgc() = ac + (int)extra.count;
+            default_launch = 1;
+        }
+    }
     int argc = *_NSGetArgc(); char **argv = *_NSGetArgv();
     // -console (or VXRT_LOG_TEE=1): the runtime's log also goes to the launch's own stderr, so that
     // `xcrun devicectl device process launch --console ... -console` (or simctl launch --console-pty) streams it.
@@ -225,6 +261,9 @@ __attribute__((constructor)) static void early(void) {
     if (immersive && ((g_game && !strcmp(g_test, "skyrimvr")) || !strcmp(g_test, "xrizer_xros_guest"))) {
         int xrizer = !strcmp(g_test, "xrizer_xros_guest");
         for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "-xrizer")) xrizer = 1;
+        // -controllers (with the owned guest): its controller mode, 120 s (VXRT_XROS_CONTROLLERS=<seconds> to change).
+        if (!strcmp(g_test, "xrizer_xros_guest"))
+            for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "-controllers")) setenv("VXRT_XROS_CONTROLLERS", "120", 0);
         if (xrizer) {
             setenv("VXRT_XRIZER_XROS_IMMERSIVE", "1", 0);
             setenv("VXRT_XRIZER_XROS_FIXTURE", "1", 0);
@@ -248,7 +287,7 @@ __attribute__((constructor)) static void early(void) {
         const char *v = argv[i + 1]; size_t n = strlen(v);
         if (n > 0 && n < sizeof nonce && strspn(v, "0123456789abcdef") == n) memcpy(nonce, v, n + 1);
     }
-    jlog("launch", "\"device_ram_mb\":%llu,\"pid\":%d,\"nonce\":\"%s\"", (unsigned long long)(ram >> 20), getpid(), nonce);
+    jlog("launch", "\"device_ram_mb\":%llu,\"pid\":%d,\"nonce\":\"%s\",\"default_launch\":%d,\"program\":\"%s\"", (unsigned long long)(ram >> 20), getpid(), nonce, default_launch, g_test);
     uint64_t abase = xa_arena_base(), asize = xa_arena_size();
     int arena = xa_reserve();
     jlog("arena", "\"addr\":\"%#llx\",\"size_mb\":%llu,\"reserved\":%d", (unsigned long long)abase, (unsigned long long)(asize >> 20), arena);

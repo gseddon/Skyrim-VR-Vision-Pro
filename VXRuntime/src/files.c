@@ -330,7 +330,41 @@ int vx_is_pipe_name(const char *name);
 int vx_pipe_read(HANDLE h, void *buf, DWORD n, DWORD *got, void *ov, BOOL *ok);
 int vx_pipe_peek(HANDLE h, void *buf, DWORD n, DWORD *got, DWORD *avail, DWORD *left);
 int vx_is_pipe(HANDLE h);
+// The last 32 CreateFile calls (name, error, handle), for the host's exit record (vx_file_open_ring_json): why a program ended
+// is often the open that failed just before. Names are cut at 150 bytes.
+#define VX_OPEN_RING 32
+static struct { char name[152]; DWORD err; int fd; DWORD disposition; } g_open_ring[VX_OPEN_RING];
+static unsigned g_open_ring_n;
+static void open_ring_note(const char *name, DWORD err, int fd, DWORD disposition) {
+    unsigned i = __atomic_fetch_add(&g_open_ring_n, 1, __ATOMIC_RELAXED) % VX_OPEN_RING;
+    snprintf(g_open_ring[i].name, sizeof g_open_ring[i].name, "%s", name ? name : "");
+    g_open_ring[i].err = err; g_open_ring[i].fd = fd; g_open_ring[i].disposition = disposition;
+}
+// The newest `count` opens as a JSON array body (oldest first), quotes and backslashes escaped, into out.
+void vx_file_open_ring_json(char *out, size_t cap, unsigned count) {
+    unsigned total = __atomic_load_n(&g_open_ring_n, __ATOMIC_RELAXED);
+    if (count > VX_OPEN_RING) count = VX_OPEN_RING;
+    if (count > total) count = total;
+    size_t k = 0;
+    if (cap) out[0] = 0;
+    for (unsigned j = 0; j < count && k + 300 < cap; j++) {
+        unsigned idx = (total - count + j) % VX_OPEN_RING;
+        k += (size_t)snprintf(out + k, cap - k, "%s{\"name\":\"", j ? "," : "");
+        for (const char *p = g_open_ring[idx].name; *p && k + 8 < cap; p++) {
+            if (*p == '"' || *p == '\\') out[k++] = '\\';
+            if ((unsigned char)*p >= 0x20) out[k++] = *p;
+        }
+        k += (size_t)snprintf(out + k, cap - k, "\",\"err\":%u,\"fd\":%d,\"disp\":%u}", g_open_ring[idx].err, g_open_ring[idx].fd, g_open_ring[idx].disposition);
+    }
+}
+static HANDLE create_file_inner(const char *name, DWORD access, DWORD disposition, DWORD attrs);
 static HANDLE create_file(const char *name, DWORD access, DWORD disposition, DWORD attrs) {
+    HANDLE h = create_file_inner(name, access, disposition, attrs);
+    if (h == INVALID_HANDLE) open_ring_note(name, vx_get_last_error(), -1, disposition);
+    else open_ring_note(name, 0, (int)((intptr_t)h - 0x10000), disposition);
+    return h;
+}
+static HANDLE create_file_inner(const char *name, DWORD access, DWORD disposition, DWORD attrs) {
     if (vx_is_pipe_name(name)) return vx_pipe_open(name, attrs);   // the client end of a named pipe (pipes.c)
     if (!strcasecmp(name, "CONOUT$")) return (HANDLE)(intptr_t)-11;
     if (!strcasecmp(name, "CONIN$")) return (HANDLE)(intptr_t)-10;

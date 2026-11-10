@@ -24,6 +24,18 @@ static void fill(unsigned variant,unsigned eye){for(unsigned y=0;y<8;y++)for(uns
  p[0]=(unsigned char)(40+variant*80+x*11+y*3);p[1]=(unsigned char)(20+eye*130+x*3+y*2);
  p[2]=(unsigned char)(30+variant*70+eye*50+x+y);p[3]=255;
 }}
+/* controller mode (-test xrizer_xros_guest -immersive -controllers): text without a C library */
+static char line[512];static unsigned used;
+static void puts_(const char *t){while(*t&&used<sizeof line-1)line[used++]=*t++;}
+static void putn(long long v){char d[24];unsigned n=0;bool neg=v<0;unsigned long long u=neg?(unsigned long long)-v:(unsigned long long)v;
+ do{d[n++]=(char)('0'+u%10);u/=10;}while(u&&n<20);if(neg)puts_("-");while(n)if(used<sizeof line-1)line[used++]=d[--n];}
+static void puthex(unsigned long long v){const char *x="0123456789abcdef";puts_("0x");bool on=false;for(int i=60;i>=0;i-=4){unsigned nib=(unsigned)((v>>i)&15);if(nib||on||!i){on=true;if(used<sizeof line-1)line[used++]=x[nib];}}}
+static void flushline(){puts_("\n");unsigned w=0;WriteFile(GetStdHandle((unsigned)-11),line,used,&w,nullptr);used=0;}
+static void fillTint(unsigned eye,float trigger){
+ if(!(trigger>=0.f))trigger=0.f;if(trigger>1.f)trigger=1.f;
+ const unsigned char r=(unsigned char)(trigger*255.f+.5f),g=(unsigned char)(40+eye*60),b=(unsigned char)(60+eye*20);
+ for(unsigned i=0;i<64;i++){unsigned char *p=pixels[eye]+i*4;p[0]=r;p[1]=g;p[2]=b;p[3]=255;}   /* format 28 = R8G8B8A8: red = the trigger */
+}
 extern "C" void mainCRTStartup(){
  void *module=LoadLibraryA("openvr_api.dll"),*audit=LoadLibraryA("vxrt_xros_fixture_audit.dll"),*d3d=LoadLibraryA("d3d11.dll");
  auto init=(unsigned (*)(int *,int,const char *))GetProcAddress(module,"VR_InitInternal2");
@@ -51,10 +63,14 @@ extern "C" void mainCRTStartup(){
  /* VXRT_XROS_TEST_HANDS set (simulator, opt-in): the host reports two connected Oculus Touch controllers through input
   * host v3 instead of none; the script used is "0@r.trigger=1 r.a=1 l.stick=0.5,-0.25". */
  char scratch[8];const bool hands=GetEnvironmentVariableA("VXRT_XROS_TEST_HANDS",scratch,sizeof scratch)!=0;
- const unsigned frames=hands?8:2;   /* xrizer sets up its input actions and learns the interaction profile over its first frames */
+ /* VXRT_XROS_CONTROLLERS=<seconds> (-controllers): report both hands each second, pulse on trigger, tint each eye by its trigger */
+ unsigned ctl_ms=0;{char cb[16];unsigned n=GetEnvironmentVariableA("VXRT_XROS_CONTROLLERS",cb,sizeof cb);
+  for(unsigned i=0;i<n && i<sizeof cb && cb[i]>='0' && cb[i]<='9';i++)ctl_ms=ctl_ms*10+(unsigned)(cb[i]-'0');ctl_ms*=1000;}
+ const unsigned frames=(hands||ctl_ms)?8:2;   /* xrizer sets up its input actions and learns the interaction profile over its first frames */
  for(unsigned n=0;n<frames;n++){
   vr::TrackedDevicePose_t pose[3]={};check(compositor->WaitGetPoses(pose,3,nullptr,0)==0,8);
-  if(!hands)check(pose[0].bPoseIsValid && pose[0].bDeviceIsConnected && !pose[1].bDeviceIsConnected && !pose[2].bDeviceIsConnected,9);
+  if(ctl_ms)check(pose[0].bPoseIsValid && pose[0].bDeviceIsConnected,9);
+  else if(!hands)check(pose[0].bPoseIsValid && pose[0].bDeviceIsConnected && !pose[1].bDeviceIsConnected && !pose[2].bDeviceIsConnected,9);
   else {
    check(pose[0].bPoseIsValid && pose[0].bDeviceIsConnected,9);
    if(n==frames-1){   /* by now input was synced over several frames and the controllers are current */
@@ -96,10 +112,43 @@ extern "C" void mainCRTStartup(){
    compositor->PostPresentHandoff();Sleep(40);
   }
  }
+
+ if(ctl_ms){
+  const unsigned long long end=GetTickCount64()+ctl_ms;unsigned long long next=0;bool was[2]={false,false};unsigned pulses[2]={0,0};
+  for(unsigned n=frames;GetTickCount64()<end;){
+   vr::TrackedDevicePose_t pose[3]={};if(compositor->WaitGetPoses(pose,3,nullptr,0)!=0)break;
+   ++n;float trigger[2]={0.f,0.f};
+   const bool report=GetTickCount64()>=next;if(report)next=GetTickCount64()+1000;
+   for(unsigned h=0;h<2;h++){
+    const vr::TrackedDeviceIndex_t index=system->GetTrackedDeviceIndexForControllerRole(h?vr::TrackedControllerRole_RightHand:vr::TrackedControllerRole_LeftHand);
+    const bool present=index!=vr::k_unTrackedDeviceIndexInvalid && index<3;
+    vr::VRControllerState_t state={};const bool got=present && system->GetControllerState(index,&state,sizeof state);
+    if(got)trigger[h]=state.rAxis[1].x;
+    const bool pressed=got && trigger[h]>.5f;
+    if(pressed && !was[h]){system->TriggerHapticPulse(index,0,3000);pulses[h]++;}   /* on the trigger's rising edge */
+    was[h]=pressed;
+    if(report){
+     used=0;puts_("xrizer_xros_guest controllers hand=");puts_(h?"right":"left");puts_(" index=");putn(present?(long long)index:-1);
+     puts_(" connected=");putn(present && pose[index].bDeviceIsConnected);puts_(" pose_valid=");putn(present && pose[index].bPoseIsValid);
+     puts_(" tracking_result=");putn(present?(long long)pose[index].eTrackingResult:0);
+     puts_(" pos_mm=");if(present && pose[index].bPoseIsValid){for(unsigned a=0;a<3;a++){if(a)puts_(",");putn((long long)(pose[index].mDeviceToAbsoluteTracking.m[a][3]*1000.f));}}else puts_("none");
+     puts_(" trigger_milli=");putn(got?(long long)(state.rAxis[1].x*1000.f):-1);
+     puts_(" stick_milli=");putn(got?(long long)(state.rAxis[0].x*1000.f):0);puts_(",");putn(got?(long long)(state.rAxis[0].y*1000.f):0);
+     puts_(" buttons=");puthex(got?state.ulButtonPressed:0);puts_(" pulses=");putn(pulses[h]);flushline();
+    }
+   }
+   for(unsigned eye=0;eye<2;eye++){   /* left eye: left trigger; right eye: right trigger (Mirror My View shows it) */
+    fillTint(eye,trigger[eye]);((update_fn)table(context)[48])(context,textures[eye],0,nullptr,pixels[eye],32,256);
+    vr::Texture_t image={textures[eye],vr::TextureType_DirectX,vr::ColorSpace_Linear};
+    check(compositor->Submit((vr::EVREye)eye,&image,&bounds,vr::Submit_Default)==0,10+eye);
+   }
+   compositor->PostPresentHandoff();
+  }
+ }
  for(unsigned eye=0;eye<2;eye++)((release_fn)table(textures[eye])[2])(textures[eye]);
  ((release_fn)table(context)[2])(context);((release_fn)table(device)[2])(device);check(prepare()==0,14);check(loss()==0,16);
  check(compositor->WaitGetPoses(nullptr,0,nullptr,0)==vr::VRCompositorError_RequestFailed,17);
- shutdown();check(hold_ms || finished()==0,15);
+ shutdown();check(hold_ms || ctl_ms || finished()==0,15);
  const char text[]="xrizer_xros_guest: OpenVR geometry, two D3D pairs and provider readback passed\n";unsigned written=0;
  check(WriteFile(GetStdHandle((unsigned)-11),text,sizeof text-1,&written,nullptr) && written==sizeof text-1,13);
  ExitProcess(0);

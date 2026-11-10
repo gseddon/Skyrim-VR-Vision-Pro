@@ -50,6 +50,10 @@ int vx_native_vr_complete(vx_native_vr *q, vx_native_vr_handle handle, unsigned 
 // exactly one release of its unique lease. A frame permits one outstanding acquisition at a time.
 int vx_native_vr_acquire(vx_native_vr *q, vx_native_vr_frame *frame);
 int vx_native_vr_release(vx_native_vr *q, uint64_t lease);
+/* Shared readers (the xros immersive compositor): several frames in flight may hold the newest pair at once; the lease id is the
+ * slot's and each acquire_shared needs one release_shared. The exclusive pair above is unchanged. */
+int vx_native_vr_acquire_shared(vx_native_vr *q, vx_native_vr_frame *frame);
+int vx_native_vr_release_shared(vx_native_vr *q, uint64_t lease);
 // Cancel one frame; its leases and submitted GPU work drain normally. Duplicate or stale handles fail.
 int vx_native_vr_cancel(vx_native_vr *q, vx_native_vr_handle handle);
 // Cancel all frames. Existing reader leases and GPU work remain valid until released/completed.

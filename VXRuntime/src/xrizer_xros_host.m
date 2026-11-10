@@ -364,14 +364,14 @@ int vx_xros_xrizer_offer(vx_xros_xrizer_host *h, const KlNativeFrameSample *samp
 int vx_xros_xrizer_acquire(vx_xros_xrizer_host *h, vx_native_vr_frame *out) {
     if (!h || !out) return -1;
     pthread_mutex_lock(&h->lock);
-    int result=(h->retiring || h->retired) ? -1 : vx_native_vr_acquire(h->frames,out);
+    int result=(h->retiring || h->retired) ? -1 : vx_native_vr_acquire_shared(h->frames,out);
     if (!result) ++h->readers;
     pthread_mutex_unlock(&h->lock); return result;
 }
 int vx_xros_xrizer_release(vx_xros_xrizer_host *h, uint64_t lease) {
     if (!h) return -1;
     pthread_mutex_lock(&h->lock);
-    int result=!h->readers ? -1 : vx_native_vr_release(h->frames,lease);
+    int result=!h->readers ? -1 : vx_native_vr_release_shared(h->frames,lease);
     if (!result) --h->readers;
     pthread_mutex_unlock(&h->lock); return result;
 }

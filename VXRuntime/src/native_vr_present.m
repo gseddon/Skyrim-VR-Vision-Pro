@@ -47,6 +47,10 @@ int vx_xros_native_begin(const float head[16], const float eyes[32], const float
     return vx_xros_pose_is_current(time, g_native_frame.pose.pose_time, g_native_frame.pose.tracking_valid);
 }
 
+/* Why an eye was not drawn from a game pair (per second, in the host log as gap_*): the eye pass returned 0. */
+enum { GAP_NOT_HELD, GAP_UNTRACKED, GAP_BAD_EYE, GAP_TEXTURE, GAP_COLORSPACE, GAP_VIEW, GAP_FRUSTUM, GAP_SHADER, GAP_PIPELINE, GAP_ENCODER, GAP_N };
+static unsigned long long g_gap[GAP_N], g_gap_i[GAP_N];
+#define GAP(k) do { ++g_gap[k]; ++g_gap_i[k]; } while (0)
 #ifdef VXRT_XRIZER_XROS_FIXTURE
 /* What the compositor showed, per compositor frame (the compositor thread only). A pair is FRESH the first time its
  * provider frame id is presented and a REPEAT every later time (the game has not submitted a newer pair, the pose is
@@ -55,6 +59,10 @@ int vx_xros_native_begin(const float head[16], const float eyes[32], const float
  * in the compositor/Mach seconds epoch. */
 static struct { unsigned long long fresh, repeat, stale, none, eyes; uint64_t last_id; double age_sum, age_max, rep_age_max;
                unsigned long long i_fresh, i_repeat, i_stale, i_none; } g_imm;
+
+static double g_age_ema; static int g_age_ema_set;
+/* Exponential mean (seconds) of the age of fresh pairs: compositor presentation time minus the pair's pose time. */
+double vx_xros_immersive_age_ema(void) { return g_age_ema_set ? g_age_ema : 0; }
 int vx_xros_fixture_present_begin(double time) {
     g_native_held=0; g_fixture_held=0;
     if(vx_xros_fixture_acquire(&g_native_frame)) { ++g_imm.none; ++g_imm.i_none; return 0; }
@@ -64,17 +72,25 @@ int vx_xros_fixture_present_begin(double time) {
     if(!current) { ++g_imm.stale; ++g_imm.i_stale; }
     else if(g_native_frame.pose.frame_id>g_imm.last_id) {
         g_imm.last_id=g_native_frame.pose.frame_id; ++g_imm.fresh; ++g_imm.i_fresh; g_imm.age_sum+=age;
+        if(isfinite(age)){ if(g_age_ema_set) g_age_ema=g_age_ema*0.9+age*0.1; else { g_age_ema=age; g_age_ema_set=1; } }
         if(age>g_imm.age_max)g_imm.age_max=age;
     } else { ++g_imm.repeat; ++g_imm.i_repeat; if(age>g_imm.rep_age_max)g_imm.rep_age_max=age; }
-    return current;
+    /* A pair that is too old (a game hitch longer than a second) is counted stale but still shown, reprojected to the head: the last
+     * picture is better than the placeholder (the wearer saw the blue and pink screen flicker in between). Only an untracked pair is not drawn. */
+    (void)current;
+    if (!g_native_frame.pose.tracking_valid) { GAP(GAP_UNTRACKED); return 0; }
+    return 1;
 }
 /* JSON fields for the host log: totals and this interval's counts (the interval restarts here). */
 int vx_xros_immersive_stats(char *buf, uint32_t len) {
     int n=snprintf(buf,len,"\"imm_fresh\":%llu,\"imm_repeat\":%llu,\"imm_stale\":%llu,\"imm_none\":%llu,\"imm_eyes_drawn\":%llu,"
         "\"imm_interval_fresh\":%llu,\"imm_interval_repeat\":%llu,\"imm_interval_stale\":%llu,\"imm_interval_none\":%llu,"
-        "\"imm_age_ms_mean_fresh\":%.2f,\"imm_age_ms_max_fresh\":%.2f,\"imm_age_ms_max_repeat\":%.2f,\"imm_last_frame\":%llu",
+        "\"imm_age_ms_mean_fresh\":%.2f,\"imm_age_ms_max_fresh\":%.2f,\"imm_age_ms_max_repeat\":%.2f,\"imm_last_frame\":%llu,"
+        "\"gap_not_held\":%llu,\"gap_untracked\":%llu,\"gap_texture\":%llu,\"gap_colorspace\":%llu,\"gap_view\":%llu,\"gap_frustum\":%llu,\"gap_shader\":%llu,\"gap_pipeline\":%llu,\"gap_encoder\":%llu",
         g_imm.fresh,g_imm.repeat,g_imm.stale,g_imm.none,g_imm.eyes,g_imm.i_fresh,g_imm.i_repeat,g_imm.i_stale,g_imm.i_none,
-        g_imm.fresh ? g_imm.age_sum/g_imm.fresh*1e3 : 0.0,g_imm.age_max*1e3,g_imm.rep_age_max*1e3,(unsigned long long)g_imm.last_id);
+        g_imm.fresh ? g_imm.age_sum/g_imm.fresh*1e3 : 0.0,g_imm.age_max*1e3,g_imm.rep_age_max*1e3,(unsigned long long)g_imm.last_id,
+        g_gap_i[GAP_NOT_HELD],g_gap_i[GAP_UNTRACKED],g_gap_i[GAP_TEXTURE],g_gap_i[GAP_COLORSPACE],g_gap_i[GAP_VIEW],g_gap_i[GAP_FRUSTUM],g_gap_i[GAP_SHADER],g_gap_i[GAP_PIPELINE],g_gap_i[GAP_ENCODER]);
+    memset(g_gap_i,0,sizeof g_gap_i);
     g_imm.i_fresh=g_imm.i_repeat=g_imm.i_stale=g_imm.i_none=0;
     return n;
 }
@@ -86,7 +102,7 @@ static NSString *const g_native_shader = @
 "#include <metal_stdlib>\nusing namespace metal;\n"
 "struct P { float4 r[3]; float4 src; float4 dst; float4 bounds; };\n"
 "struct V { float4 position [[position]]; float2 uv; };\n"
-"vertex V nv(uint i [[vertex_id]]) { float2 p=float2((i==1)?3:-1,(i==2)?3:-1); return {float4(p,0,1),float2((p.x+1)*.5,(1-p.y)*.5)}; }\n"
+"vertex V nv(uint i [[vertex_id]]) { float2 p=float2((i==1)?3:-1,(i==2)?3:-1); return {float4(p,0.05,1),float2((p.x+1)*.5,(1-p.y)*.5)}; }\n"
 "fragment float4 nf(V v [[stage_in]], texture2d<float> img [[texture(0)]], constant P &p [[buffer(0)]]) {\n"
 " float2 t=float2(mix(-p.dst.x,p.dst.y,v.uv.x),mix(p.dst.z,-p.dst.w,v.uv.y));\n"
 " float3 d=float3(t,-1); float3 s=float3(dot(p.r[0].xyz,d),dot(p.r[1].xyz,d),dot(p.r[2].xyz,d));\n"
@@ -97,7 +113,9 @@ static NSString *const g_native_shader = @
 " return img.sample(smp,mix(p.bounds.xy,p.bounds.zw,uv)); }\n";
 
 int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const float tan[4], void *outp, void *depthp) {
-    if (!g_native_held || !g_native_frame.pose.tracking_valid || eye < 0 || eye > 1) return 0;
+    if (!g_native_held) { GAP(GAP_NOT_HELD); return 0; }
+    if (!g_native_frame.pose.tracking_valid) { GAP(GAP_UNTRACKED); return 0; }
+    if (eye < 0 || eye > 1) { GAP(GAP_BAD_EYE); return 0; }
     id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)cbp;
     id<MTLTexture> out = (__bridge id<MTLTexture>)outp;
     id<MTLTexture> depth = (__bridge id<MTLTexture>)depthp;
@@ -105,14 +123,43 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
     id<MTLTexture> tex = (__bridge id<MTLTexture>)e->resource;
     if (!cb || !out || !depth || !tex || tex.textureType != MTLTextureType2D || out.textureType != MTLTextureType2D ||
         depth.textureType != MTLTextureType2D || tex.sampleCount != 1 || tex.width != e->width || tex.height != e->height ||
-        tex.pixelFormat != e->format || e->sample_count != 1 || (e->color_space != VX_NATIVE_VR_COLOR_LINEAR && e->color_space != VX_NATIVE_VR_COLOR_SRGB)) return 0;
+        tex.pixelFormat != e->format || e->sample_count != 1 || (e->color_space != VX_NATIVE_VR_COLOR_LINEAR && e->color_space != VX_NATIVE_VR_COLOR_SRGB)) { GAP(GAP_TEXTURE); return 0; }
     MTLPixelFormat fmt = tex.pixelFormat, wanted = fmt;
     if (fmt == MTLPixelFormatRGBA8Unorm || fmt == MTLPixelFormatRGBA8Unorm_sRGB)
         wanted = e->color_space == VX_NATIVE_VR_COLOR_SRGB ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm;
     else if (fmt == MTLPixelFormatBGRA8Unorm || fmt == MTLPixelFormatBGRA8Unorm_sRGB)
         wanted = e->color_space == VX_NATIVE_VR_COLOR_SRGB ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm;
-    else if (e->color_space != VX_NATIVE_VR_COLOR_LINEAR) return 0;
-    if (wanted != fmt) { tex = [tex newTextureViewWithPixelFormat:wanted]; if (!tex) return 0; }
+    else if (e->color_space != VX_NATIVE_VR_COLOR_LINEAR) { GAP(GAP_COLORSPACE); return 0; }
+    if (wanted != fmt) { tex = [tex newTextureViewWithPixelFormat:wanted]; if (!tex) { GAP(GAP_VIEW); return 0; } }
+    /* Once about every second per eye: what the game's pair contains. A 3x3 grid of single pixels of the source texture is copied to a
+     * shared buffer on the GPU, and the completion handler logs the mean colour (device run 6: the user saw nothing in the space while the
+     * counters said frames were presented: black pairs, or pairs not on screen?). */
+    {
+        static unsigned long long counter[2];
+        static id<MTLBuffer> probe[2];
+        if ((counter[eye]++ % 90) == 1 && tex.width >= 3 && tex.height >= 3 && (tex.pixelFormat == MTLPixelFormatRGBA8Unorm || tex.pixelFormat == MTLPixelFormatBGRA8Unorm ||
+            tex.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB || tex.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB)) {
+            if (!probe[eye]) probe[eye] = [cb.device newBufferWithLength:9 * 4 options:MTLResourceStorageModeShared];
+            id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+            for (unsigned i = 0; i < 9; i++) {
+                NSUInteger x = (tex.width - 1) * (1 + i % 3) / 4, y = (tex.height - 1) * (1 + i / 3) / 4;
+                [blit copyFromTexture:tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x, y, 0) sourceSize:MTLSizeMake(1, 1, 1)
+                             toBuffer:probe[eye] destinationOffset:i * 4 destinationBytesPerRow:4 destinationBytesPerImage:4];
+            }
+            [blit endEncoding];
+            id<MTLBuffer> buf = probe[eye]; int e2 = eye; BOOL bgra = tex.pixelFormat == MTLPixelFormatBGRA8Unorm || tex.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB;
+            NSUInteger w = tex.width, h = tex.height;
+            struct { float s[4], d[4]; } fr; memcpy(fr.s, g_native_frame.pose.frustum[eye], sizeof fr.s); memcpy(fr.d, tan, sizeof fr.d);
+            [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+                (void)done;
+                const uint8_t *b = buf.contents; unsigned sum[3] = {0,0,0}, mx = 0;
+                for (unsigned i = 0; i < 9; i++) { unsigned r = b[i*4 + (bgra ? 2 : 0)], g = b[i*4 + 1], bl = b[i*4 + (bgra ? 0 : 2)];
+                    sum[0] += r; sum[1] += g; sum[2] += bl; if (r > mx) mx = r; if (g > mx) mx = g; if (bl > mx) mx = bl; }
+                vx_log("native VR pair probe: eye %d %lux%lu mean rgb %u %u %u of 255, brightest sample channel %u (9 points); game tan l/r/t/b %.4f %.4f %.4f %.4f, drawable tan %.4f %.4f %.4f %.4f", e2, (unsigned long)w, (unsigned long)h, sum[0]/9, sum[1]/9, sum[2]/9, mx,
+                       (double)fr.s[0], (double)fr.s[1], (double)fr.s[2], (double)fr.s[3], (double)fr.d[0], (double)fr.d[1], (double)fr.d[2], (double)fr.d[3]);
+            }];
+        }
+    }
     native_params p = {0};
     float source[16]; mul4(g_native_frame.pose.origin_from_head, g_native_frame.pose.head_from_eye[eye], source);
     // view is current eye-from-origin. Its transposed rotation is origin-from-current-eye.
@@ -121,19 +168,19 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
     memcpy(p.src, g_native_frame.pose.frustum[eye], sizeof p.src);
     memcpy(p.dst, tan, sizeof p.dst);
     p.bounds[0]=e->u_min; p.bounds[1]=e->v_min; p.bounds[2]=e->u_max; p.bounds[3]=e->v_max;
-    if (!(p.src[0] < p.src[1] && p.src[2] < p.src[3])) return 0;
+    if (!(p.src[0] < p.src[1] && p.src[2] < p.src[3])) { GAP(GAP_FRUSTUM); return 0; }
     static id<MTLLibrary> lib;
     static id<MTLRenderPipelineState> pipeline;
     static MTLPixelFormat colorFormat, depthFormat;
     if (!lib) { NSError *err = nil; lib = [cb.device newLibraryWithSource:g_native_shader options:nil error:&err]; if (!lib) vx_log("native VR shader: %s", err.localizedDescription.UTF8String); }
-    if (!lib) return 0;
+    if (!lib) { GAP(GAP_SHADER); return 0; }
     if (!pipeline || colorFormat != out.pixelFormat || depthFormat != depth.pixelFormat) {
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
         pd.vertexFunction = [lib newFunctionWithName:@"nv"]; pd.fragmentFunction = [lib newFunctionWithName:@"nf"];
         pd.colorAttachments[0].pixelFormat = out.pixelFormat; pd.depthAttachmentPixelFormat = depth.pixelFormat;
         NSError *err = nil; pipeline = [cb.device newRenderPipelineStateWithDescriptor:pd error:&err];
         colorFormat = out.pixelFormat; depthFormat = depth.pixelFormat;
-        if (!pipeline) { vx_log("native VR pipeline: %s", err.localizedDescription.UTF8String); return 0; }
+        if (!pipeline) { vx_log("native VR pipeline: %s", err.localizedDescription.UTF8String); GAP(GAP_PIPELINE); return 0; }
     }
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = out; pass.colorAttachments[0].loadAction = MTLLoadActionClear;
@@ -141,8 +188,20 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
     pass.depthAttachment.texture = depth; pass.depthAttachment.loadAction = MTLLoadActionClear;
     pass.depthAttachment.clearDepth = 0; pass.depthAttachment.storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass];
-    if (!enc) return 0;
-    [enc setRenderPipelineState:pipeline]; [enc setFragmentTexture:tex atIndex:0]; [enc setFragmentBytes:&p length:sizeof p atIndex:0];
+    if (!enc) { GAP(GAP_ENCODER); return 0; }
+    /* DEPTH WRITES. visionOS reprojects the submitted frame with its depth buffer: a colour image over a depth of 0 (reverse-Z: infinitely
+     * far everywhere) is composited as "nothing here at any finite distance" and is NOT SHOWN. Klepton measured it on the device
+     * (KleptonCompositor.swift, overlay depth: "a fullscreen quad at reverse-Z 0 with writes off is invisible; the same quad at 0.05 (2 m)
+     * with writes on appears"). Device runs 1 to 8 drew a correct picture (in-app capture: Skyrim's title screen) that the wearer never saw.
+     * The quad is written at reverse-Z 0.05 (about 2 m for near 0.1). */
+    static id<MTLDepthStencilState> depthWrite;
+    if (!depthWrite) {
+        MTLDepthStencilDescriptor *dd = [MTLDepthStencilDescriptor new];
+        dd.depthCompareFunction = MTLCompareFunctionAlways; dd.depthWriteEnabled = YES;
+        depthWrite = [cb.device newDepthStencilStateWithDescriptor:dd];
+    }
+    [enc setRenderPipelineState:pipeline]; if (depthWrite) [enc setDepthStencilState:depthWrite];
+    [enc setFragmentTexture:tex atIndex:0]; [enc setFragmentBytes:&p length:sizeof p atIndex:0];
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [enc endEncoding];
 #ifdef VXRT_XRIZER_XROS_FIXTURE
     ++g_imm.eyes;

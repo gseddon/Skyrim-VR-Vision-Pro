@@ -20,11 +20,15 @@ struct VXSenseTune {
         guard let v = env["VXRT_SENSE_PREDICT_MS"], let f = Double(v), f.isFinite else { return 0.05 }
         return max(0, f) / 1000
     }()
-    static let pitchDegrees: Float = env["VXRT_SENSE_PITCH_DEG"].flatMap { Float($0) } ?? 0
+    static let pitchDegrees: Float = env["VXRT_SENSE_PITCH_DEG"].flatMap { Float($0) } ?? -31.963   // Klepton: PSVR2 tilt 5.037 + hilt pitch -37
     static let position: SIMD3<Float> = {
-        guard let text = env["VXRT_SENSE_POS"] else { return .zero }
+        guard let text = env["VXRT_SENSE_POS"] else { return SIMD3(-0.005, 0.02, -0.02) }   // Klepton's general offset
         let parts = text.split(separator: ",").compactMap { Float($0) }
         return parts.count == 3 ? SIMD3(parts[0], parts[1], parts[2]) : .zero
+    }()
+    static let dropMeters: Float = {
+        guard let v = env["VXRT_SENSE_DROP_M"], let f = Float(v), f.isFinite else { return 0 }
+        return f
     }()
     static let mirrorLeftX = env["VXRT_SENSE_MIRROR"] != "0"
     static var isIdentity: Bool { pitchDegrees == 0 && position == .zero }
