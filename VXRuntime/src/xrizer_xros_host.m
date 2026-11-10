@@ -83,6 +83,11 @@ static XrResult sample_input(void *ctx, KlNativeInputSample *sample) {
     if (sample->hand_connected[0] != XR_FALSE || sample->hand_connected[1] != XR_FALSE) return XR_ERROR_FEATURE_UNSUPPORTED;
     return XR_SUCCESS;
 }
+static XrResult sample_input3(void *ctx, KlNativeInputSample3 *sample) {
+    vx_xros_xrizer_host *h=ctx;
+    if (!sample) return XR_ERROR_VALIDATION_FAILURE;
+    return h->platform.sample_input3(h->platform.context,sample);
+}
 static XrResult wait_frame(void *ctx, KlNativeFrameSample *sample) {
     return vx_xros_mailbox_wait(((vx_xros_xrizer_host *)ctx)->mailbox, 2000, sample);
 }
@@ -206,11 +211,13 @@ int vx_xros_xrizer_register(vx_xros_xrizer_host *h, const vx_xros_xrizer_static_
     KlNativeSessionHost session={KL_NATIVE_SESSION_HOST_VERSION,sizeof(session),h,poll_event,begin_session,end_session,request_exit};
     KlNativeFrameHost frame={KL_NATIVE_FRAME_HOST_VERSION,sizeof(frame),h,wait_frame,publish_pair,cancel_frame};
     KlNativeInputHost input={KL_NATIVE_INPUT_HOST_VERSION,sizeof(input),h,sample_input};
+    KlNativeInputHost3 input3={KL_NATIVE_INPUT_HOST_VERSION_3,sizeof(input3),h,sample_input3};
+    int controllers=h->platform.size>=sizeof(h->platform) && h->platform.sample_input3;
     if (kl_native_configure(&host)!=XR_SUCCESS || kl_native_configure_views(&views)!=XR_SUCCESS ||
         kl_native_configure_view_geometry(&geometry)!=XR_SUCCESS ||
         kl_native_configure_metal(&h->metal)!=XR_SUCCESS || kl_native_configure_image_sync(&h->sync)!=XR_SUCCESS ||
         kl_native_configure_session(&session)!=XR_SUCCESS || kl_native_configure_frame(&frame)!=XR_SUCCESS ||
-        kl_native_configure_input(&input)!=XR_SUCCESS || api->configure_provider(kl_native_get_instance_proc_addr) ||
+        (controllers ? kl_native_configure_input3(&input3) : kl_native_configure_input(&input))!=XR_SUCCESS || api->configure_provider(kl_native_get_instance_proc_addr) ||
         api->configure_metal(source) || api->install_factory(factory,h)) return -1;
     pthread_mutex_lock(&h->lock); h->registered=1; pthread_mutex_unlock(&h->lock); return 0;
 }

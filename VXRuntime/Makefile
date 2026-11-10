@@ -65,6 +65,7 @@ ifneq ($(XROS_SDK),xrsimulator)
 $(error XROS_XRIZER_FIXTURE requires XROS_SDK=xrsimulator)
 endif
 VXRT_ARM64_EXTRA_SRC += src/xrizer_guest_bridge.c src/xrizer_openvr_exports.c src/xrizer_guest_d3d.m src/xrizer_xros_host.m src/xrizer_xros_mailbox.c src/xrizer_xros_optics.m src/xrizer_xros_sense.c src/xrizer_xros_fixture.m
+VXRT_ARM64_EXTRA_SRC += src/xrizer_xros_controllers.c
 VXRT_ARM64_THUNKS_ROOT = $(XROS_DIR)/thunkroot
 VXRT_ARM64_EXTRA_CFLAGS += -DVXRT_XRIZER_XROS_FIXTURE -I../third_party/xrizer/include -I../third_party/klepton_openxr/include -I../third_party/klepton_openxr/src
 endif

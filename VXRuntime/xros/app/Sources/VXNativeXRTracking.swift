@@ -1,5 +1,6 @@
-// Local spatial-controller observations for the future native provider host.
-// These observations are not yet registered with Klepton's disconnected-only v1 input host.
+// Local spatial-controller observations for the native provider host. With XRIZER_XROS_FIXTURE (the simulator
+// fixture/game build, where the provider host exists) collect(at:) publishes them to input host version 3 through
+// vx_xros_controllers_publish; otherwise they stay local.
 import ARKit
 import GameController
 import Foundation
@@ -57,7 +58,11 @@ actor VXNativeXRTracking {
     }
 
     func start() async {
-        guard !stopped, AccessoryTrackingProvider.isSupported else { return }
+        guard !stopped else { return }
+        guard AccessoryTrackingProvider.isSupported else {
+            vxrt_jlog("xr_controllers", "\"what\":\"AccessoryTrackingProvider unsupported on this device: hands stay disconnected\"")
+            return
+        }
         for name in [NSNotification.Name.GCControllerDidConnect, .GCControllerDidDisconnect] {
             let token = NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
                 Task { await self?.refresh() }
@@ -176,6 +181,49 @@ actor VXNativeXRTracking {
     }
 
     func collect(at presentation: TimeInterval) {
+#if XRIZER_XROS_FIXTURE
+        // Prediction horizon capped as in Klepton (see VXSenseTune); the sample is stamped with the instant predicted.
+        var info = mach_timebase_info_data_t()
+        mach_timebase_info(&info)
+        let now = Double(mach_absolute_time()) * Double(info.numer) / Double(info.denom) / 1e9
+        let target = VXSenseTune.predictionTarget(presentation: presentation, now: now)
+        latest = snapshot(at: target)
+        publish(latest, at: target)
+#else
         latest = snapshot(at: presentation)
+#endif
     }
+
+#if XRIZER_XROS_FIXTURE
+    // One v3 observation: the hands ARKit tracked at `presentation` (Mach seconds, the clock of frame prediction),
+    // in the ARKit origin that is the provider's LOCAL space. A hand without a tracked accessory, or without both
+    // grip and aim locations, is published disconnected. Tracked bits follow ARKit's position tracking only.
+    private func publish(_ observations: [VXSpatialObservation], at presentation: TimeInterval) {
+        var hands = [vx_xros_controller_hand](repeating: vx_xros_controller_hand(), count: 2)
+        for o in observations {
+            let c = o.canonical
+            guard (0..<2).contains(c.hand), let grip = o.originFromGrip, let aim = o.originFromAim else { continue }
+            func value(_ b: VXSpatialButton?) -> Bool { b?.pressed ?? false }
+            func pose(_ m: simd_float4x4) -> (Float, Float, Float, Float, Float, Float, Float) {
+                let q = simd_normalize(simd_quatf(m)), p = m.columns.3
+                return (p.x, p.y, p.z, q.vector.x, q.vector.y, q.vector.z, q.vector.w)
+            }
+            var h = vx_xros_controller_hand()
+            h.connected = 1
+            h.grip_position_tracked = c.gripPose.positionTracked ? 1 : 0
+            h.aim_position_tracked = c.aimPose.positionTracked ? 1 : 0
+            h.grip = VXSenseTune.correctedGrip(grip, hand: c.hand); h.aim = pose(aim)
+            h.trigger = c.controls.trigger?.value ?? .nan
+            h.stick_x = c.controls.stick?.x ?? .nan; h.stick_y = c.controls.stick?.y ?? .nan
+            if h.stick_x.isNaN || h.stick_y.isNaN { h.stick_x = .nan; h.stick_y = .nan }
+            h.primary = value(c.controls.primary) ? 1 : 0; h.secondary = value(c.controls.secondary) ? 1 : 0
+            h.grip_pressed = value(c.controls.grip) ? 1 : 0; h.menu = value(c.controls.menu) ? 1 : 0
+            h.stick_pressed = value(c.controls.stickPress) ? 1 : 0
+            hands[c.hand] = h
+        }
+        let ns = presentation * 1e9
+        guard ns.isFinite, ns > 0, ns < Double(Int64.max) else { return }
+        vx_xros_controllers_publish(hands, Int64(ns))
+    }
+#endif
 }
