@@ -62,10 +62,12 @@ PY
         rc=$?; echo "$rc" > "$case_dir/launch.status"; echo "Launch failed: $case_dir" >&2; exit 1
     fi
     sleep "$WAIT"
-    # host_log: one file per launch (host_log-<ts>.jsonl); the newest is pulled by tools/pull_host_log.sh and stored as host_log.jsonl
-    "$(dirname "$0")/../../tools/pull_host_log.sh" "$case_dir/host_log.jsonl" "$DEV" "$APP" > "$case_dir/host_log.copy.txt" 2>&1 \
-        && echo 0 > "$case_dir/host_log.jsonl.copy.status" || { echo "Copy failed: host_log" >&2; exit 1; }
-    for log in vxrt.log; do
+    # host_log: one file per launch (host_log-<ts>.jsonl): the newest is pulled by tools/pull_host_log.sh; if that cannot list the device, the
+    # plain Documents/host_log.jsonl (a symlink to the current session, or the old single file) is copied as before.
+    for log in vxrt.log host_log.jsonl; do
+        if [ "$log" = host_log.jsonl ] && "$(dirname "$0")/../../tools/pull_host_log.sh" "$case_dir/$log" "$DEV" "$APP" > "$case_dir/$log.copy.txt" 2>&1; then
+            echo 0 > "$case_dir/$log.copy.status"; [ -f "$case_dir/$log" ] && continue
+        fi
         if xcrun devicectl --timeout 60 device copy from --device "$DEV" --domain-type appDataContainer --domain-identifier "$APP" --source "Documents/$log" --destination "$case_dir/$log" > "$case_dir/$log.copy.txt" 2>&1; then
             echo 0 > "$case_dir/$log.copy.status"
         else
