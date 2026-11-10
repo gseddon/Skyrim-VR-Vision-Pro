@@ -265,6 +265,27 @@ the exit status is 0 only when every DXBC was found, every entry translated and 
 manifest are private (derived from the game); the compiled libraries go into the app's `bundle/shadercache` read-only cache
 (`VXRT_D3D12_SHADER_CACHE_RO`) or `Documents/shadercache`, as above.
 
+#### The headset shader set: the default build step
+
+`make -C VXRuntime xros-shader-set` (SDK `$(XROS_SDK)`, default `xros`) is the one step that makes the headset set, and
+`make xros-app XROS_XRIZER_GAME=1` (the Skyrim app) runs it first and embeds the result (`XROS_SHADER_SET`, default
+`build/private/shadercache-$(XROS_SDK)-manifest`) as `bundle/shadercache`. It needs, both private and git-ignored:
+
+- the manifest, default `build/private/skyrim-shader-manifest.tsv` (`XROS_SHADER_MANIFEST=`): hashes only, no game code, no MSL, but
+  derived from the game, so it is kept with the other private artifacts and not committed. Make it once with a Mac run of the
+  game on an empty shader cache, `VXRT_SHADER_MANIFEST=<file> tools/play_skyrim_dev.sh`, or by replaying a capture with
+  `build/vxrt-d3d11-replay <capture>.cap --fast` with the same variable and `VXRT_SHADER_CACHE=<empty dir>` (a hit in the cache is not recorded). The build stops with that command when the file is missing. Entries are
+  appended per cache miss, so a manifest made from a partial run is a partial set; the replay of `p1300.cap` gave all 10807.
+- the user's own install (`XROS_SHADER_GAME=` or `SKYRIM_ASSET_ROOT=`), read only.
+
+The step is skipped when `<dir>/.complete` is newer than the manifest, and `.complete` is only written when the builder
+exits 0 (every entry found, translated, key matching). `make xros-app XROS_SHADER_SET=<dir>` embeds a set made another way
+(for example from a Mac game boot's `pending/` with `tools/shadercache_fill.sh <dir> xros`), and `XROS_SHADER_SET=` embeds none.
+The runtime is unchanged: a shader missing from the embedded set is still compiled in the app and queued in the app's
+`Documents/shadercache/pending` (the writable cache), so a later `devicectl` copy of that folder and
+`tools/shadercache_fill.sh` can fill the gap, and a manifest that was incomplete only costs a first-use compile.
+Wiring this into the AVP Play prep script is a later follow-up (`plans/2026-11-09-avp-play-backend.md`).
+
 ### d3d12.exe in the immersive space
 
 108 "ok" lines and no failure, the same as in the window (its swap-chain test presents 128x96 frames: they are
