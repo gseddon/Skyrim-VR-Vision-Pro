@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include "apple_metal_host.h"
+#include <objc/runtime.h>
 #include <time.h>
 
 @interface KLAppleMetalImage : NSObject
@@ -16,6 +17,7 @@
 @property(nonatomic, strong) id<MTLCommandQueue> queue;
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, KLAppleMetalImage *> *images;
 @property(nonatomic) uint64_t nextLease;
+@property(nonatomic) BOOL ordered;   /* kl_apple_metal_image_sync_ordered: write buffers may overlap on the queue */
 @property(nonatomic, strong) NSArray<NSNumber *> *formats;
 @end
 @implementation KLAppleMetalResources
@@ -94,8 +96,13 @@ XrResult kl_apple_metal_record_texture_writes(KlNativeMetalHost *host, void *tex
     if (cb.status < MTLCommandBufferStatusCommitted || cb.status == MTLCommandBufferStatusError)
         return XR_ERROR_RUNTIME_FAILURE;
     for (KLAppleMetalImage *entry in r.images.allValues) if ((__bridge void *)entry.texture == texture) {
-        if (entry.writes && entry.writes.status != MTLCommandBufferStatusCompleted)
-            return XR_ERROR_CALL_ORDER_INVALID;
+        if (entry.writes && entry.writes.status != MTLCommandBufferStatusCompleted) {
+            /* Ordered mode: both eyes copy into layers of one image without the CPU waiting in between. The new write
+             * buffer is queue-ordered after the pending one (same texture, same queue); the publisher checks the
+             * chain through the prior-writes association. */
+            if (!r.ordered) return XR_ERROR_CALL_ORDER_INVALID;
+            objc_setAssociatedObject(cb, @selector(klPriorWrites), entry.writes, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
         entry.writes = cb;
         return XR_SUCCESS;
     }
@@ -130,6 +137,31 @@ static XrResult complete_writes(void *context, void *lease) {
     if (!entry.writes) return XR_ERROR_CALL_ORDER_INVALID;
     [entry.writes waitUntilCompleted];
     return entry.writes.status == MTLCommandBufferStatusCompleted && !entry.writes.error ? XR_SUCCESS : XR_ERROR_RUNTIME_FAILURE;
+}
+
+/* Ordered variant: complete_writes does not wait on the CPU. The caller promises that its next use of the image is a
+ * command buffer on this host's queue (so the GPU orders it after the writes) and that it checks, from that command
+ * buffer's completion, kl_apple_metal_image_pending_writes() before publishing anything. A failed write buffer is
+ * reported here when it is already known; otherwise by that later check. */
+static XrResult complete_writes_ordered(void *context, void *lease) {
+    if (!context || !lease) return XR_ERROR_VALIDATION_FAILURE;
+    KLAppleMetalImage *entry = resources(context).images[@((uintptr_t)lease)];
+    if (!entry) return XR_ERROR_HANDLE_INVALID;
+    if (!entry.writes) return XR_ERROR_CALL_ORDER_INVALID;
+    return entry.writes.status == MTLCommandBufferStatusError || entry.writes.error ? XR_ERROR_RUNTIME_FAILURE : XR_SUCCESS;
+}
+XrResult kl_apple_metal_image_sync_ordered(KlNativeMetalHost *host, KlNativeImageSyncHost *out) {
+    if (!host || !host->context || !out) return XR_ERROR_VALIDATION_FAILURE;
+    resources(host->context).ordered = YES;
+    *out = (KlNativeImageSyncHost){ .version = KL_NATIVE_IMAGE_SYNC_HOST_VERSION,
+        .struct_size = sizeof(*out), .context = host->context, .wait_available = wait_available,
+        .complete_writes = complete_writes_ordered };
+    return XR_SUCCESS;
+}
+void *kl_apple_metal_image_pending_writes(KlNativeMetalHost *host, void *lease) {
+    if (!host || !host->context || !lease) return NULL;
+    KLAppleMetalImage *entry = resources(host->context).images[@((uintptr_t)lease)];
+    return entry && entry.writes ? (__bridge void *)entry.writes : NULL;
 }
 
 XrResult kl_apple_metal_image_sync(KlNativeMetalHost *host, KlNativeImageSyncHost *out) {

@@ -61,6 +61,7 @@
 #include "frame_host.h"
 #include "input_host.h"
 #include "apple_metal_host.h"
+#include "xrizer_eye_ring.h"
 #ifdef VXRT_XRIZER_DEV_AUDIT
 extern int vx_xrizer_dev_audit_observe(uint32_t variant);
 #endif
@@ -79,6 +80,7 @@ extern int vx_xrizer_dev_audit_observe(uint32_t variant);
 @property(nonatomic) XrTime deadline;   // when the next frame is due (one 90 Hz period after the previous one)
 @property(nonatomic) unsigned width, height;
 @property(nonatomic) BOOL outstanding;
+@property(nonatomic) vx_eye_ring *ring;   /* NULL: VXRT_XR_SYNC_SUBMIT=1 (or the audit build's audit mode): blocking submit */
 /* Opt-in development choice (VXRT_XRIZER_DEV_STAGE=1): declare the synthetic local origin to be the floor. */
 @property(nonatomic) BOOL syntheticStage;
 /* Opt-in diagnostic (VXRT_XRIZER_DEV_CONTROLLERS=1|touch|index|vive): two connected, stationary synthetic controllers
@@ -510,8 +512,9 @@ static void dk_mirror(id<MTLDevice> device, id<MTLCommandBuffer> cb, id<MTLTextu
 }
 
 static VXDevXRHost *host(void *p) { return (__bridge VXDevXRHost *)p; }
-static void keep(void *p) { if (p) CFRetain(p); }
-static void drop(void *p) { if (p) CFRelease(p); }
+static void keep(void *p) { if (p) { CFRetain(p); if (dev_host) (void)vx_eye_ring_reader(dev_host.ring,p,1); } }
+static void drop(void *p) { if (p) { if (dev_host) (void)vx_eye_ring_reader(dev_host.ring,p,-1); CFRelease(p); } }
+static void ring_log(const char *m) { vx_log("%s",m); }
 static XrResult available(void *p) { return p ? XR_SUCCESS : XR_ERROR_RUNTIME_FAILURE; }
 static XrResult views(void *p, KlNativeViewConfiguration *out) {
     VXDevXRHost *h=host(p); if (!h || !out) return XR_ERROR_VALIDATION_FAILURE;
@@ -558,6 +561,7 @@ static XrResult request_exit(void *p) {
 static XrResult end_session(void *p,XrTime *out) {
     VXDevXRHost *h=host(p); XrTime t=now_ns();
     if (!h || !out || !t || h.outstanding || h.event.type || !h.frames) return XR_ERROR_RUNTIME_FAILURE;
+    vx_eye_ring_drain(h.ring); vx_eye_ring_log_stats(h.ring);   /* pending copies publish from completion handlers: they finish before the queue goes */
     vx_native_vr_reset(h.frames);
     if (vx_native_vr_destroy(h.frames)) return XR_ERROR_RUNTIME_FAILURE;
     h.frames=NULL; *out=t; h.event=(KlNativeSessionEvent){KL_NATIVE_SESSION_EXITING,t};
@@ -636,53 +640,12 @@ static void pose_matrix(XrPosef p,float m[16]) {
     memcpy(m,v,sizeof v);
 }
 #include "pose_math.h"
-static XrResult publish(void *p,const KlNativeFramePair *pair) {
-    VXDevXRHost *h=host(p);
-    KlNativeFrameSample sample=h ? h.sample : (KlNativeFrameSample){0};
-    if (!h || !pair || !h.frames || !h.outstanding || pair->sample.ticket!=(__bridge void *)h ||
-        pair->sample.frame_id!=h.sample.frame_id || pair->sample.pose_id!=h.sample.pose_id ||
-        pair->sample.predicted_display_time!=h.sample.predicted_display_time ||
-        pair->sample.head_location_flags!=h.sample.head_location_flags ||
-        memcmp(&pair->sample.local_from_head,&sample.local_from_head,sizeof sample.local_from_head) ||
-        memcmp(pair->sample.head_from_eye,sample.head_from_eye,sizeof sample.head_from_eye) ||
-        memcmp(pair->sample.fov,sample.fov,sizeof sample.fov)) return XR_ERROR_RUNTIME_FAILURE;
-    id<MTLTexture> copies[2]={nil,nil};
-    id<MTLBuffer> dumps[2]={nil,nil};
+/* Everything after the copy finished on the GPU: statistics, optional dumps, then the pair to native_vr. `settle`: the
+ * blocking path clears the outstanding ticket here; the non-blocking path already did when it committed. */
+static XrResult finish_pair(VXDevXRHost *h,const KlNativeFramePair *pair,id<MTLTexture> const copies[2],id<MTLBuffer> const dumps[2],
+                            BOOL keep_files,double gpu_s,BOOL settle) {
     uint64_t fid=pair->sample.frame_id;
-    if (d3d11_capture_on) d3d11_capture_eye_frame(fid);   /* VXRT_D3D11_CAPTURE: the eye pair of this frame is complete */
-    static unsigned long every; if (!every) { const char *e=getenv("VXRT_XRIZER_DEV_DUMP_EVERY"); every=e ? strtoul(e,NULL,10) : 600; if (every<30) every=600; }
-    BOOL keep_files=fid==1 || fid==2 || fid==60 || fid%every==0;   /* VXRT_XRIZER_DEV_DUMP_EVERY=N: a file every N frames (default 600, at least 30) */
-    BOOL dump=h.dumpDir && (keep_files || fid%30==0); /* statistics every 30th frame; files for the selected few */
-    id<MTLCommandBuffer> cb=[h.queue commandBuffer]; if (!cb) return XR_ERROR_RUNTIME_FAILURE;
-    id<MTLBlitCommandEncoder> blit=[cb blitCommandEncoder]; if (!blit) return XR_ERROR_RUNTIME_FAILURE;
-    for (unsigned i=0;i<2;i++) {
-        const KlNativeFrameEye *e=&pair->eye[i]; id<MTLTexture> src=(__bridge id<MTLTexture>)e->texture;
-        if (!src || src.device!=h.device || src.pixelFormat!=MTLPixelFormatRGBA8Unorm || e->format!=(int64_t)src.pixelFormat || !e->image_lease || e->rect.offset.x<0 || e->rect.offset.y<0 ||
-            e->rect.extent.width<=0 || e->rect.extent.height<=0 || e->array_layer>=src.arrayLength ||
-            (NSUInteger)e->rect.offset.x+(NSUInteger)e->rect.extent.width>src.width ||
-            (NSUInteger)e->rect.offset.y+(NSUInteger)e->rect.extent.height>src.height || src.sampleCount!=1) {
-            [blit endEncoding]; return XR_ERROR_RUNTIME_FAILURE;
-        }
-        MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat
-            width:(NSUInteger)e->rect.extent.width height:(NSUInteger)e->rect.extent.height mipmapped:NO];
-        d.storageMode=MTLStorageModePrivate; d.usage=MTLTextureUsageShaderRead;
-        copies[i]=[h.device newTextureWithDescriptor:d]; if (!copies[i]) { [blit endEncoding]; return XR_ERROR_OUT_OF_MEMORY; }
-        [blit copyFromTexture:src sourceSlice:e->array_layer sourceLevel:0 sourceOrigin:MTLOriginMake(e->rect.offset.x,e->rect.offset.y,0)
-            sourceSize:MTLSizeMake(e->rect.extent.width,e->rect.extent.height,1) toTexture:copies[i]
-            destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];
-        if (dump) {
-            NSUInteger bpr=(NSUInteger)e->rect.extent.width*4;
-            dumps[i]=[h.device newBufferWithLength:bpr*(NSUInteger)e->rect.extent.height options:MTLResourceStorageModeShared];
-            if (dumps[i]) [blit copyFromTexture:src sourceSlice:e->array_layer sourceLevel:0 sourceOrigin:MTLOriginMake(e->rect.offset.x,e->rect.offset.y,0)
-                sourceSize:MTLSizeMake(e->rect.extent.width,e->rect.extent.height,1) toBuffer:dumps[i]
-                destinationOffset:0 destinationBytesPerRow:bpr destinationBytesPerImage:bpr*(NSUInteger)e->rect.extent.height];
-        }
-    }
-    [blit endEncoding];
-    if (dk.window) dk_mirror(h.device,cb,copies);
-    [cb commit]; [cb waitUntilCompleted];
-    if (cb.status!=MTLCommandBufferStatusCompleted || cb.error) return XR_ERROR_RUNTIME_FAILURE;
-    dk_stats_pair(cb.GPUEndTime>cb.GPUStartTime ? cb.GPUEndTime-cb.GPUStartTime : 0);
+    dk_stats_pair(gpu_s);
     for (unsigned i=0;i<2;i++) if (dumps[i]) {
         const uint8_t *px=dumps[i].contents; NSUInteger n=dumps[i].length/4, w=(NSUInteger)pair->eye[i].rect.extent.width;
         uint64_t sum[3]={0,0,0}, differ=0, nonzero=0; for (NSUInteger k=0;k<n;k++) {
@@ -722,15 +685,98 @@ static XrResult publish(void *p,const KlNativeFramePair *pair) {
     }
 #endif
     vx_native_vr_frame read;
-    if (vx_native_vr_acquire(h.frames,&read)) { vx_native_vr_reset(h.frames); h.outstanding=NO; return XR_SUCCESS; }
+    if (vx_native_vr_acquire(h.frames,&read)) { vx_native_vr_reset(h.frames); if (settle) h.outstanding=NO; return XR_SUCCESS; }
     vx_log("xrizer dev host: offscreen fresh pair frame %llu pose %llu (%ux%u, %ux%u), no display",(unsigned long long)pose.frame_id,
         (unsigned long long)pose.pose_id,read.eye[0].width,read.eye[0].height,read.eye[1].width,read.eye[1].height);
     if (vx_native_vr_release(h.frames,read.lease)) return XR_ERROR_RUNTIME_FAILURE;
-    vx_native_vr_reset(h.frames); h.outstanding=NO; return XR_SUCCESS;
+    vx_native_vr_reset(h.frames); if (settle) h.outstanding=NO; return XR_SUCCESS;
 failed:
     (void)vx_native_vr_cancel(h.frames,frame);
     for (unsigned i=0;i<2;i++) if ((submitted & (1u<<i)) && !(completed & (1u<<i))) (void)vx_native_vr_complete(h.frames,frame,i);
     return XR_ERROR_RUNTIME_FAILURE;
+}
+
+static XrResult publish(void *p,const KlNativeFramePair *pair) {
+    VXDevXRHost *h=host(p);
+    KlNativeFrameSample sample=h ? h.sample : (KlNativeFrameSample){0};
+    if (!h || !pair || !h.frames || !h.outstanding || pair->sample.ticket!=(__bridge void *)h ||
+        pair->sample.frame_id!=h.sample.frame_id || pair->sample.pose_id!=h.sample.pose_id ||
+        pair->sample.predicted_display_time!=h.sample.predicted_display_time ||
+        pair->sample.head_location_flags!=h.sample.head_location_flags ||
+        memcmp(&pair->sample.local_from_head,&sample.local_from_head,sizeof sample.local_from_head) ||
+        memcmp(pair->sample.head_from_eye,sample.head_from_eye,sizeof sample.head_from_eye) ||
+        memcmp(pair->sample.fov,sample.fov,sizeof sample.fov)) return XR_ERROR_RUNTIME_FAILURE;
+    id<MTLTexture> copies[2]={nil,nil};
+    id<MTLBuffer> dumps[2]={nil,nil};
+    vx_eye_slot *slot=NULL; vx_eye_ring *ring=h.ring;
+    uint64_t fid=pair->sample.frame_id;
+    if (d3d11_capture_on) d3d11_capture_eye_frame(fid);   /* VXRT_D3D11_CAPTURE: the eye pair of this frame is complete */
+    static unsigned long every; if (!every) { const char *e=getenv("VXRT_XRIZER_DEV_DUMP_EVERY"); every=e ? strtoul(e,NULL,10) : 600; if (every<30) every=600; }
+    BOOL keep_files=fid==1 || fid==2 || fid==60 || fid%every==0;   /* VXRT_XRIZER_DEV_DUMP_EVERY=N: a file every N frames (default 600, at least 30) */
+    BOOL dump=h.dumpDir && (keep_files || fid%30==0); /* statistics every 30th frame; files for the selected few */
+    if (ring) {   /* non-blocking path: validate both eyes, then take a pooled slot (blocks at the in-flight bound) */
+        uint32_t w[2],ht[2],fmt[2];
+        for (unsigned i=0;i<2;i++) {
+            const KlNativeFrameEye *e=&pair->eye[i]; id<MTLTexture> src=(__bridge id<MTLTexture>)e->texture;
+            if (!src || src.device!=h.device || src.pixelFormat!=MTLPixelFormatRGBA8Unorm || e->format!=(int64_t)src.pixelFormat || !e->image_lease || e->rect.offset.x<0 || e->rect.offset.y<0 ||
+                e->rect.extent.width<=0 || e->rect.extent.height<=0 || e->array_layer>=src.arrayLength ||
+                (NSUInteger)e->rect.offset.x+(NSUInteger)e->rect.extent.width>src.width ||
+                (NSUInteger)e->rect.offset.y+(NSUInteger)e->rect.extent.height>src.height || src.sampleCount!=1) return XR_ERROR_RUNTIME_FAILURE;
+            w[i]=(uint32_t)e->rect.extent.width; ht[i]=(uint32_t)e->rect.extent.height; fmt[i]=(uint32_t)src.pixelFormat;
+        }
+        if (vx_eye_ring_reserve(ring,w,ht,fmt,&slot)) return XR_ERROR_OUT_OF_MEMORY;
+        copies[0]=(__bridge id<MTLTexture>)slot->tex[0]; copies[1]=(__bridge id<MTLTexture>)slot->tex[1];
+    }
+    id<MTLCommandBuffer> cb=[h.queue commandBuffer]; if (!cb) { if (slot) vx_eye_ring_abort(ring,slot); return XR_ERROR_RUNTIME_FAILURE; }
+    id<MTLBlitCommandEncoder> blit=[cb blitCommandEncoder]; if (!blit) { if (slot) vx_eye_ring_abort(ring,slot); return XR_ERROR_RUNTIME_FAILURE; }
+    for (unsigned i=0;i<2;i++) {
+        const KlNativeFrameEye *e=&pair->eye[i]; id<MTLTexture> src=(__bridge id<MTLTexture>)e->texture;
+        if (!src || src.device!=h.device || src.pixelFormat!=MTLPixelFormatRGBA8Unorm || e->format!=(int64_t)src.pixelFormat || !e->image_lease || e->rect.offset.x<0 || e->rect.offset.y<0 ||
+            e->rect.extent.width<=0 || e->rect.extent.height<=0 || e->array_layer>=src.arrayLength ||
+            (NSUInteger)e->rect.offset.x+(NSUInteger)e->rect.extent.width>src.width ||
+            (NSUInteger)e->rect.offset.y+(NSUInteger)e->rect.extent.height>src.height || src.sampleCount!=1) {
+            [blit endEncoding]; if (slot) vx_eye_ring_abort(ring,slot); return XR_ERROR_RUNTIME_FAILURE;
+        }
+        MTLTextureDescriptor *d=[MTLTextureDescriptor texture2DDescriptorWithPixelFormat:src.pixelFormat
+            width:(NSUInteger)e->rect.extent.width height:(NSUInteger)e->rect.extent.height mipmapped:NO];
+        d.storageMode=MTLStorageModePrivate; d.usage=MTLTextureUsageShaderRead;
+        if (!slot) { copies[i]=[h.device newTextureWithDescriptor:d]; if (!copies[i]) { [blit endEncoding]; return XR_ERROR_OUT_OF_MEMORY; } }
+        [blit copyFromTexture:src sourceSlice:e->array_layer sourceLevel:0 sourceOrigin:MTLOriginMake(e->rect.offset.x,e->rect.offset.y,0)
+            sourceSize:MTLSizeMake(e->rect.extent.width,e->rect.extent.height,1) toTexture:copies[i]
+            destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0)];
+        if (dump) {
+            NSUInteger bpr=(NSUInteger)e->rect.extent.width*4;
+            dumps[i]=[h.device newBufferWithLength:bpr*(NSUInteger)e->rect.extent.height options:MTLResourceStorageModeShared];
+            if (dumps[i]) [blit copyFromTexture:src sourceSlice:e->array_layer sourceLevel:0 sourceOrigin:MTLOriginMake(e->rect.offset.x,e->rect.offset.y,0)
+                sourceSize:MTLSizeMake(e->rect.extent.width,e->rect.extent.height,1) toBuffer:dumps[i]
+                destinationOffset:0 destinationBytesPerRow:bpr destinationBytesPerImage:bpr*(NSUInteger)e->rect.extent.height];
+        }
+    }
+    [blit endEncoding];
+    if (dk.window) dk_mirror(h.device,cb,copies);
+    if (slot) {
+        /* Non-blocking: the game's ticket is consumed once the copy is committed. Dumps, statistics and the hand-off to
+         * native_vr run in the completion handler, from a by-value copy of the pair: nothing borrowed outlives this call.
+         * A failed command buffer publishes nothing. Frames publish in order; a stale one is dropped. */
+        KlNativeFramePair pc=*pair; id<MTLTexture> c0=copies[0], c1=copies[1]; id<MTLBuffer> d0=dumps[0], d1=dumps[1];
+        h.outstanding=NO;
+        KlNativeMetalHost metal=h.metal;   /* the swapchain images' own write buffers: checked when this copy completes */
+        id<MTLCommandBuffer> w0=(__bridge id<MTLCommandBuffer>)kl_apple_metal_image_pending_writes(&metal,pair->eye[0].image_lease);
+        id<MTLCommandBuffer> w1=(__bridge id<MTLCommandBuffer>)kl_apple_metal_image_pending_writes(&metal,pair->eye[1].image_lease);
+        vx_eye_ring_commit(ring,cb,slot,^(int ok,double gpu_s) {
+            static pthread_mutex_t order=PTHREAD_MUTEX_INITIALIZER; static uint64_t last;
+            if (ok && (!vx_eye_ring_writes_ok(w0) || !vx_eye_ring_writes_ok(w1))) ok=0;
+            if (!ok) return;
+            id<MTLTexture> cs[2]={c0,c1}; id<MTLBuffer> ds[2]={d0,d1};
+            pthread_mutex_lock(&order);
+            if (pc.sample.frame_id>last) { last=pc.sample.frame_id; (void)finish_pair(h,&pc,cs,ds,keep_files,gpu_s,NO); }
+            pthread_mutex_unlock(&order);
+        });
+        return XR_SUCCESS;
+    }
+    [cb commit]; [cb waitUntilCompleted];
+    if (cb.status!=MTLCommandBufferStatusCompleted || cb.error) return XR_ERROR_RUNTIME_FAILURE;
+    return finish_pair(h,pair,copies,dumps,keep_files,cb.GPUEndTime>cb.GPUStartTime ? cb.GPUEndTime-cb.GPUStartTime : 0,YES);
 }
 int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
     if (dev_host || !path || path[0]!='/' || !width || !height || width>4096 || height>4096 ||
@@ -769,12 +815,17 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
                      h.syntheticControllers==KL_NATIVE_INPUT_PROFILE_VALVE_INDEX ? "valve/index_controller" : "htc/vive_controller");
           } else if (dk.enabled) { vx_log("xrizer dev host: VXRT_XRIZER_DEV_KEYBOARD needs controllers (VXRT_XRIZER_DEV_CONTROLLERS=0 given)"); return -1; } }
         h.width=width; h.height=height; h.device=MTLCreateSystemDefaultDevice(); h.queue=[h.device newCommandQueue];
-        h.inputTime=now_ns(); h.frames=vx_native_vr_create(keep,drop);
+        h.inputTime=now_ns();
+#ifdef VXRT_XRIZER_DEV_AUDIT
+        if (!h.audit)
+#endif
+        if (!vx_eye_ring_sync_requested() && h.device) h.ring=vx_eye_ring_create((__bridge void *)h.device,2,ring_log);
+        h.frames=vx_native_vr_create(keep,drop);
         if (!h.device || !h.queue || !h.inputTime || !h.frames) return -1;
         KlNativeMetalHost metal;
         if (kl_apple_metal_host_create((__bridge void *)h.device,(__bridge void *)h.queue,&metal)!=XR_SUCCESS) return -1;
         h.metal=metal; KlNativeImageSyncHost sync;
-        if (kl_apple_metal_image_sync(&metal,&sync)!=XR_SUCCESS) return -1;
+        if ((h.ring ? kl_apple_metal_image_sync_ordered(&metal,&sync) : kl_apple_metal_image_sync(&metal,&sync))!=XR_SUCCESS) return -1;
         void *ctx=(__bridge void *)h;
         KlNativeHost system={.version=1,.size=sizeof(system),.context=ctx,.hmd_available=available};
         KlNativeViewHost view={KL_NATIVE_VIEW_HOST_VERSION,sizeof(view),ctx,views};

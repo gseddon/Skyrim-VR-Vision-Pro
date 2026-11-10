@@ -2667,6 +2667,7 @@ static void gs_draw(d3d_context *c, uint32_t count, uint32_t instances, uint32_t
     if (early) {
         if (!c->pre) {
             id<MTLCommandBuffer> pre = [(__bridge id<MTLCommandQueue>)c->base.dev->queue commandBuffer];
+            d3d_xr_guard_encode(c->base.dev, (__bridge void *)pre);
             c->pre = (void *)CFBridgingRetain(pre);
             D3D_RECORDING(c);
             c->pre_enc = (void *)CFBridgingRetain([pre computeCommandEncoder]);
