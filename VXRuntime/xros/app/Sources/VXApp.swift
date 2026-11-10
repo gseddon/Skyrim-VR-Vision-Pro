@@ -2,6 +2,7 @@
 // the immersive space the program's swap chain is shown in (VXImmersive.swift). The space opens by itself at launch
 // unless the app was started with -present flat (the window then is the only picture: a debug fallback).
 import CompositorServices
+import OSLog
 import QuartzCore
 import SwiftUI
 import UIKit
@@ -63,6 +64,8 @@ enum VXLifecycle {
     nonisolated(unsafe) static var reopens = 0
     static func layerInvalidated() -> Bool {
         spaceOpen = false
+        dumpSystemLog("layer_invalidated")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { dumpSystemLog("layer_invalidated+2s", seconds: 4) }
 #if XRIZER_XROS_FIXTURE
         guard vx_xros_immersive_enabled() != 0, ProcessInfo.processInfo.environment["VXRT_REOPEN"] != "0" else { return false }
         if reopens >= 5 {
@@ -95,6 +98,26 @@ enum VXLifecycle {
         fflush(nil)
         exit(0)
     }
+    // The system's own words about why: this process's unified-log entries (CompositorServices, FrontBoard/RunningBoard client-side messages,
+    // UIKit scene lifecycle) from the last `seconds`, at notice level or above, into the host log as `syslog` events. Process-scoped, so it
+    // needs no entitlement and no device file service. Called when the layer is invalidated, when the app backgrounds and 2 s after each.
+    static func dumpSystemLog(_ why: String, seconds: Double = 20) {
+        DispatchQueue.global(qos: .utility).async {
+            guard let store = try? OSLogStore(scope: .currentProcessIdentifier) else { vxrt_jlog("syslog", "\"why\":\"\(why)\",\"error\":\"no store\""); return }
+            let position = store.position(date: Date().addingTimeInterval(-seconds))
+            guard let entries = try? store.getEntries(at: position) else { return }
+            var n = 0
+            for case let e as OSLogEntryLog in entries where e.level.rawValue >= OSLogEntryLog.Level.notice.rawValue {
+                let sub = e.subsystem
+                guard sub.contains("CompositorServices") || sub.contains("FrontBoard") || sub.contains("RunningBoard") || sub.contains("UIKit") || sub.contains("SwiftUI") || sub.contains("backboard") || sub.contains("SpringBoard") || sub.contains("RealityKit") || sub.contains("ARKit") || sub.contains("com.apple.xr") || sub.isEmpty else { continue }
+                let msg = e.composedMessage.prefix(300).map { c -> String in
+                    switch c { case "\"": return "\\\""; case "\\": return "\\\\"; case "\n", "\r", "\t": return " "; default: return String(c) } }.joined()
+                vxrt_jlog("syslog", "\"why\":\"\(why)\",\"at\":\(String(format: "%.3f", e.date.timeIntervalSince1970)),\"sub\":\"\(sub)\",\"cat\":\"\(e.category)\",\"msg\":\"\(msg)\"")
+                n += 1; if n >= 150 { break }
+            }
+            vxrt_jlog("syslog_done", "\"why\":\"\(why)\",\"lines\":\(n)")
+        }
+    }
     static func observeApplication() {
         let nc = NotificationCenter.default
         func state() -> String { "\"app_state\":\(UIApplication.shared.applicationState.rawValue),\"frames\":\(VXImmersiveRenderer.frameCount),\"space_open\":\(spaceOpen),\"reopen_pending\":\(reopenPending)" }
@@ -109,6 +132,8 @@ enum VXLifecycle {
         }
         nc.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
             vxrt_jlog("app_background", state())
+            dumpSystemLog("app_background")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { dumpSystemLog("app_background+2s", seconds: 4) }
             guard let secs = testExitSeconds else { return }
             let work = DispatchWorkItem { if UIApplication.shared.applicationState == .background { exitNow("app_background_test_exit") } }
             backgroundExit = work
