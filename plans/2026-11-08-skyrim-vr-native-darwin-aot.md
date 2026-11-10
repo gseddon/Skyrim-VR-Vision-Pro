@@ -25,6 +25,8 @@ Distribution follow-on (2026-11-09): the user wants this runtime usable as an [A
 
 Compatibility fixes (2026-11-09): every change made because Windows guarantees something Metal does not (zeroed resources, unbound reads, IEEE math, ...) is tracked with its cost, off switch and game evidence in [the compatibility-fix ledger](2026-11-09-windows-metal-compat-fixes.md), so any that cost too much can be dropped knowingly.
 
+Performance handoff (2026-11-10): what was built and measured this session, and the uninvestigated performance ideas (bottleneck measurement via replay, tile render passes, foveation/MetalFX, headset shader precompile), are in [the performance handoff](2026-11-10-performance-handoff.md).
+
 ## Source control and active checkout
 
 The source-only checkpoint is published in `gseddon/Skyrim-VR-Vision-Pro`, branch
