@@ -12,6 +12,8 @@ static const vx_xros_xrizer_static_api api = {
     VX_XROS_XRIZER_API_VERSION, sizeof(api), xrizer_configure_openxr_provider,
     xrizer_configure_metal_host, VRClientCoreFactory, install
 };
+/* the host reports the game's submit time to the per-frame timing record (native_vr_present.m); this probe links the host alone */
+void vx_xros_timing_submit(uint64_t id) { (void)id; }
 int main(void) {
     const vx_xros_xrizer_static_api *volatile pinned = &api;
     return vx_xros_xrizer_register(NULL, pinned, NULL);

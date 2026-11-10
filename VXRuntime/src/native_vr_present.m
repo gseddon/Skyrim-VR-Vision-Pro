@@ -3,6 +3,8 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <pthread.h>
+#include <time.h>
 #include <string.h>
 #include "xros_vr.h"
 #include "xrizer_xros_optics.h"
@@ -60,11 +62,97 @@ static unsigned long long g_gap[GAP_N], g_gap_i[GAP_N];
 static struct { unsigned long long fresh, repeat, stale, none, eyes; uint64_t last_id; double age_sum, age_max, rep_age_max;
                unsigned long long i_fresh, i_repeat, i_stale, i_none; } g_imm;
 
+
+/* Per-frame timing (the motion-to-photon record). For every pair the compositor shows for the first time: when its head pose was SAMPLED
+ * (the compositor offered it to the game), the display time that pose was predicted for, when the game SUBMITTED the pair (xrEndFrame
+ * reached the host), the compositor's presentation target for the frame that first shows it, and when that frame's GPU work ended
+ * (the nearest observable to the actual presentation; a frame that ends after its target missed it). All on the Mach uptime clock
+ * (CACurrentMediaTime), seconds. Also per compositor frame: the delay between commit and the GPU starting it (queue contention) and the
+ * GPU time. Drained once a second by the compositor (vx_xros_timing_drain). */
+#define TIMING_N 1024
+static struct { uint64_t id; double sample, pose, submit; } g_tm[TIMING_N];
+static pthread_mutex_t g_tm_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct { uint64_t id; double sample, pose, submit, target, gpu_end; } g_fq[64];
+static unsigned g_fq_n;
+static struct { unsigned long long frames, late; double wait_sum, wait_max, gpu_sum, gpu_max, slack_min; } g_cf;
+static double vx_uptime(void) { return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9; }
+void vx_xros_timing_offer(uint64_t id, double predicted) {
+    pthread_mutex_lock(&g_tm_lock);
+    g_tm[id % TIMING_N].id = id; g_tm[id % TIMING_N].sample = vx_uptime(); g_tm[id % TIMING_N].pose = predicted; g_tm[id % TIMING_N].submit = 0;
+    pthread_mutex_unlock(&g_tm_lock);
+}
+static volatile int g_any_submit;
+int vx_xros_timing_submitted(void) { return g_any_submit; }
+void vx_xros_timing_submit(uint64_t id) {
+    g_any_submit = 1;
+    pthread_mutex_lock(&g_tm_lock);
+    if (g_tm[id % TIMING_N].id == id) g_tm[id % TIMING_N].submit = vx_uptime();
+    pthread_mutex_unlock(&g_tm_lock);
+}
+static void timing_fresh(uint64_t id, double target) {
+    pthread_mutex_lock(&g_tm_lock);
+    if (g_tm[id % TIMING_N].id == id && g_fq_n < 64) {
+        g_fq[g_fq_n].id = id; g_fq[g_fq_n].sample = g_tm[id % TIMING_N].sample; g_fq[g_fq_n].pose = g_tm[id % TIMING_N].pose;
+        g_fq[g_fq_n].submit = g_tm[id % TIMING_N].submit; g_fq[g_fq_n].target = target; g_fq[g_fq_n].gpu_end = 0; ++g_fq_n;
+    }
+    pthread_mutex_unlock(&g_tm_lock);
+}
+/* the compositor frame's command buffer finished: its queue wait, GPU time and slack against the presentation target */
+static void timing_frame_done(id<MTLCommandBuffer> done, double commit_wall, uint64_t fresh_id, double target) {
+    double gs = done.GPUStartTime, ge = done.GPUEndTime;
+    pthread_mutex_lock(&g_tm_lock);
+    if (gs > 0 && ge >= gs) {
+        double wait = gs - commit_wall, gpu = ge - gs, slack = target - ge;
+        ++g_cf.frames; g_cf.wait_sum += wait; if (wait > g_cf.wait_max) g_cf.wait_max = wait;
+        g_cf.gpu_sum += gpu; if (gpu > g_cf.gpu_max) g_cf.gpu_max = gpu;
+        if (slack < 0) ++g_cf.late;
+        if (g_cf.frames == 1 || slack < g_cf.slack_min) g_cf.slack_min = slack;
+        if (fresh_id) for (unsigned i = 0; i < g_fq_n; i++) if (g_fq[i].id == fresh_id) { g_fq[i].gpu_end = ge; break; }
+    }
+    pthread_mutex_unlock(&g_tm_lock);
+}
+/* JSON fields (no braces) for the host log. With `stats`: this interval's compositor-frame statistics (and the interval restarts). Always: up to
+ * `max_pairs` per-pair records [id, sample, pose, submit, target, gpu_end] (seconds, uptime clock, minus `epoch` so the numbers stay short) of the
+ * pairs first shown whose frame has finished on the GPU, popped. Returns the byte count; *left is the number of finished records still queued
+ * (the log line is limited to 1.5 KB: the caller loops). */
+int vx_xros_timing_drain(char *buf, uint32_t len, double epoch, int stats, unsigned max_pairs, unsigned *left) {
+    pthread_mutex_lock(&g_tm_lock);
+    int n = 0;
+    if (stats) {
+        double s2sub = 0, sub2t = 0, s2t = 0, s2end = 0, p2t = 0; unsigned done = 0, with_submit = 0;
+        for (unsigned i = 0; i < g_fq_n; i++) if (g_fq[i].gpu_end) {
+            ++done; s2t += g_fq[i].target - g_fq[i].sample; s2end += g_fq[i].gpu_end - g_fq[i].sample; p2t += g_fq[i].target - g_fq[i].pose;
+            if (g_fq[i].submit) { ++with_submit; s2sub += g_fq[i].submit - g_fq[i].sample; sub2t += g_fq[i].target - g_fq[i].submit; }
+        }
+        n = snprintf(buf, len, "\"mtp_pairs\":%u,\"mtp_sample_to_submit_ms\":%.1f,\"mtp_submit_to_target_ms\":%.1f,\"mtp_sample_to_target_ms\":%.1f,\"mtp_sample_to_gpu_end_ms\":%.1f,\"mtp_pose_to_target_ms\":%.1f,"
+            "\"cf_frames\":%llu,\"cf_gpu_wait_ms_mean\":%.2f,\"cf_gpu_wait_ms_max\":%.2f,\"cf_gpu_ms_mean\":%.2f,\"cf_gpu_ms_max\":%.2f,\"cf_late\":%llu,\"cf_slack_ms_min\":%.2f,",
+            done, with_submit ? s2sub / with_submit * 1e3 : 0.0, with_submit ? sub2t / with_submit * 1e3 : 0.0, done ? s2t / done * 1e3 : 0.0, done ? s2end / done * 1e3 : 0.0, done ? p2t / done * 1e3 : 0.0,
+            g_cf.frames, g_cf.frames ? g_cf.wait_sum / g_cf.frames * 1e3 : 0.0, g_cf.wait_max * 1e3, g_cf.frames ? g_cf.gpu_sum / g_cf.frames * 1e3 : 0.0, g_cf.gpu_max * 1e3,
+            g_cf.late, g_cf.frames ? g_cf.slack_min * 1e3 : 0.0);
+        memset(&g_cf, 0, sizeof g_cf);
+    }
+    if (n < 0 || (uint32_t)n >= len) n = 0;
+    n += snprintf(buf + n, len - (uint32_t)n, "\"pairs\":[");
+    unsigned keep = 0, taken = 0, remaining = 0; int first = 1;
+    for (unsigned i = 0; i < g_fq_n; i++) {
+        if (g_fq[i].gpu_end == 0) { g_fq[keep++] = g_fq[i]; continue; }   /* GPU not done yet: next time */
+        if (taken >= max_pairs || (uint32_t)n + 120 >= len) { g_fq[keep++] = g_fq[i]; ++remaining; continue; }
+        n += snprintf(buf + n, len - (uint32_t)n, "%s[%llu,%.4f,%.4f,%.4f,%.4f,%.4f]", first ? "" : ",", (unsigned long long)g_fq[i].id,
+            g_fq[i].sample - epoch, g_fq[i].pose - epoch, g_fq[i].submit ? g_fq[i].submit - epoch : 0.0, g_fq[i].target - epoch, g_fq[i].gpu_end - epoch);
+        first = 0; ++taken;
+    }
+    g_fq_n = keep;
+    n += snprintf(buf + n, len - (uint32_t)n, "]");
+    if (left) *left = remaining;
+    pthread_mutex_unlock(&g_tm_lock);
+    return n;
+}
+static uint64_t g_shown_fresh_id; static double g_shown_target;   /* compositor thread: this frame's fresh pair, if any */
 static double g_age_ema; static int g_age_ema_set;
 /* Exponential mean (seconds) of the age of fresh pairs: compositor presentation time minus the pair's pose time. */
 double vx_xros_immersive_age_ema(void) { return g_age_ema_set ? g_age_ema : 0; }
 int vx_xros_fixture_present_begin(double time) {
-    g_native_held=0; g_fixture_held=0;
+    g_native_held=0; g_fixture_held=0; g_shown_fresh_id=0; g_shown_target=time;
     if(vx_xros_fixture_acquire(&g_native_frame)) { ++g_imm.none; ++g_imm.i_none; return 0; }
     g_native_held=1;g_fixture_held=1;
     int current=vx_xros_pose_is_current(time, g_native_frame.pose.pose_time, g_native_frame.pose.tracking_valid);
@@ -72,6 +160,7 @@ int vx_xros_fixture_present_begin(double time) {
     if(!current) { ++g_imm.stale; ++g_imm.i_stale; }
     else if(g_native_frame.pose.frame_id>g_imm.last_id) {
         g_imm.last_id=g_native_frame.pose.frame_id; ++g_imm.fresh; ++g_imm.i_fresh; g_imm.age_sum+=age;
+        g_shown_fresh_id=g_native_frame.pose.frame_id; timing_fresh(g_shown_fresh_id, time);
         if(isfinite(age)){ if(g_age_ema_set) g_age_ema=g_age_ema*0.9+age*0.1; else { g_age_ema=age; g_age_ema_set=1; } }
         if(age>g_imm.age_max)g_imm.age_max=age;
     } else { ++g_imm.repeat; ++g_imm.i_repeat; if(age>g_imm.rep_age_max)g_imm.rep_age_max=age; }
@@ -318,9 +407,14 @@ void vx_xros_native_end(void *cbp) {
         g_fixture_held=0;
         if(!cb) { vx_xros_fixture_release(lease); return; }
         uint64_t frame_id=g_native_frame.pose.frame_id, pose_id=g_native_frame.pose.pose_id;
+        uint64_t fresh_id=g_shown_fresh_id; double target=g_shown_target, commit_wall=vx_uptime();
         [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
-            vx_log("xrizer xros fixture: drawable command completion frame=%llu pose=%llu status=%lu error=%s",
-                (unsigned long long)frame_id,(unsigned long long)pose_id,(unsigned long)done.status,done.error ? "yes" : "no");
+            timing_frame_done(done, commit_wall, fresh_id, target);
+            /* not per compositor frame (90 a second, a file write in a Metal callback): only a failure, and the first few */
+            static unsigned logged;
+            if ((done.status != MTLCommandBufferStatusCompleted || done.error || logged < 3) && logged < 200) { ++logged;
+                vx_log("xrizer xros fixture: drawable command completion frame=%llu pose=%llu status=%lu error=%s",
+                    (unsigned long long)frame_id,(unsigned long long)pose_id,(unsigned long)done.status,done.error ? "yes" : "no"); }
             vx_xros_fixture_release(lease);
         }];
         return;

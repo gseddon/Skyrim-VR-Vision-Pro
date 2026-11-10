@@ -8,6 +8,7 @@
 #include "xrizer_xros_host.h"
 #include "xrizer_xros_optics.h"
 #include "xrizer_xros_mailbox.h"
+void vx_xros_timing_submit(uint64_t id);   /* native_vr_present.m */
 #include "apple_metal_host.h"
 #include "image_sync_host.h"
 #include "pose_math.h"
@@ -101,8 +102,27 @@ static XrResult haptic_apply(void *ctx, uint32_t hand, const KlNativeHapticVibra
 static XrResult haptic_stop(void *ctx, uint32_t hand) {
     vx_xros_xrizer_host *h=ctx; return h->platform.haptic_stop(h->platform.context,hand);
 }
+/* VXRT_PAIRS_IN_FLIGHT (default 1, 0 = no gate): the game's next frame starts (its pose is taken) only once fewer than this many of its pairs
+ * are still in flight. With a GPU-bound game the CPU otherwise runs a frame or two ahead, and the pose it took is that many frame times
+ * old when the GPU draws it. The mailbox then hands over the NEWEST compositor sample. */
+static unsigned pairs_in_flight_limit(void) {
+    static int v=-1;
+    if (v<0) { const char *e=getenv("VXRT_PAIRS_IN_FLIGHT"); v = e && *e ? atoi(e) : 1; if (v<0||v>4) v=1; }
+    return (unsigned)v;
+}
+static double g_gate_ms_sum, g_gate_ms_max; static unsigned long long g_gate_n, g_gate_waits;
+void vx_xros_host_gate_stats(double *mean_ms, double *max_ms, unsigned long long *waits, unsigned long long *n) {
+    *mean_ms = g_gate_n ? g_gate_ms_sum/(double)g_gate_n : 0; *max_ms = g_gate_ms_max; *waits = g_gate_waits; *n = g_gate_n;
+    g_gate_ms_sum = g_gate_ms_max = 0; g_gate_n = g_gate_waits = 0;
+}
 static XrResult wait_frame(void *ctx, KlNativeFrameSample *sample) {
-    return vx_xros_mailbox_wait(((vx_xros_xrizer_host *)ctx)->mailbox, 2000, sample);
+    vx_xros_xrizer_host *h=ctx;
+    unsigned limit=pairs_in_flight_limit();
+    if (limit && h->ring) {
+        double ms=vx_eye_ring_wait_below(h->ring, limit, 250);
+        g_gate_ms_sum+=ms; if (ms>g_gate_ms_max) g_gate_ms_max=ms; ++g_gate_n; if (ms>0.5) ++g_gate_waits;
+    }
+    return vx_xros_mailbox_wait(h->mailbox, 2000, sample);
 }
 static XrResult cancel_frame(void *ctx, void *ticket) {
     return vx_xros_mailbox_finish(((vx_xros_xrizer_host *)ctx)->mailbox,ticket) ? XR_ERROR_HANDLE_INVALID : XR_SUCCESS;
@@ -264,6 +284,7 @@ done:
     return result;
 }
 static XrResult publish_pair(void *ctx, const KlNativeFramePair *pair) {
+    if (pair) vx_xros_timing_submit(pair->sample.frame_id);   /* the game's xrEndFrame reached the host: the per-frame timing record */
     vx_xros_xrizer_host *h=ctx; return h && h->ring ? publish_pair_async(ctx,pair) : publish_pair_sync(ctx,pair);
 }
 static void *factory(void *ctx, int *error) {
