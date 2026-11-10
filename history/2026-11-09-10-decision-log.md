@@ -125,3 +125,25 @@ The session started from a handoff. Skyrim VR ran under strict ahead-of-time tra
 - Physical headset and controller testing, which needs separate authorisation.
 - The vibrating harness.
 - The replay's non-determinism.
+
+---
+
+## Session 2, afternoon (10 Nov): onto the headset
+
+- **Merged:** the metallib shader cache (redesigned to queue sources in `pending/` and fill offline), the non-blocking eye-pair submit (Helgen cart about 59 → 85 pairs/s on the Mac), the visionOS branches, and the F2 keyboard passthrough. The developer console opened with real typing on the Mac.
+- **Shaders:** Skyrim really has 10,807 distinct shaders; our translator adds no variants. The offline manifest gives byte-identical output to the runtime. **Gareth chose to check in the gzipped manifest** (hashes only), so a headset shader set needs no game boot.
+- **"Allow it to continue onto the headset."** He approved device installs, then standing approval to deploy, screenshot and iterate. **"Is there some Klepton stuff we could be just using?"** That steered the work to reuse Klepton's visionOS host conventions piece by piece rather than inventing them.
+- **The road to pixels on the Vision Pro, run by run:**
+  - runs 1–2: the frame loop waited on ARKit, which was waiting on the motion permission prompt;
+  - run 3: the app ran out of file descriptors loading 10,807 shaders;
+  - run 4: the provider refused xrWaitFrame with a frame begun;
+  - run 5: no STAGE space;
+  - run 6: the flat window;
+  - runs 7–8: the in-app capture proved Skyrim rendered correctly but nothing showed;
+  - **run 9: reverse-Z depth.** The eye pass wrote depth 0 ("infinitely far"), so visionOS showed nothing. Klepton writes 0.05. **"Skyrim has just rendered in immersive now!!"**
+- **After that:**
+  - runs 10–11: shared frame readers fixed the flicker;
+  - the head and controllers turned out to share an ARKit origin;
+  - the headset is GPU-bound at about 17 fresh pairs/s with about 150 ms pair age, which is the lag on head turns;
+  - run 13 added head-pose prediction and Klepton's Sense grip offset: "a bit better, still juddery".
+- **Next, as he asked:** a display-rate, GPU-priority compositor; a clean loading bar instead of pink squares; foveated rendering; the controller offset, now to the left of the hand.
