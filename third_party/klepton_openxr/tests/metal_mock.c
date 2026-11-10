@@ -4,6 +4,7 @@
 #include "image_sync_host.h"
 #include "frame_host.h"
 #include "input_host.h"
+#include "haptic_host.h"
 #define XR_USE_GRAPHICS_API_METAL 1
 #include <openxr/openxr_platform.h>
 #include <assert.h>
@@ -23,6 +24,11 @@ static KlNativeInputSample2 input_sample2;
 static XrResult input_result = XR_SUCCESS;
 static XrResult sample_input(void *ctx, KlNativeInputSample *out) { (void)ctx; *out = input_sample; return input_result; }
 static XrResult sample_input2(void *ctx, KlNativeInputSample2 *out) { (void)ctx; *out = input_sample2; return input_result; }
+static KlNativeHapticVibration hap_last;
+static unsigned hap_applies, hap_stops, hap_hand = 9, hap_stop_hand = 9;
+static XrResult hap_result = XR_SUCCESS;
+static XrResult hap_apply(void *ctx, uint32_t hand, const KlNativeHapticVibration *v) { (void)ctx; ++hap_applies; hap_hand = hand; hap_last = *v; return hap_result; }
+static XrResult hap_stop(void *ctx, uint32_t hand) { (void)ctx; ++hap_stops; hap_stop_hand = hand; return hap_result; }
 static KlNativeInputSample3 input_sample3;
 static XrResult sample_input3(void *ctx, KlNativeInputSample3 *out) { (void)ctx; *out = input_sample3; return input_result; }
 static KlNativeInputHand2 absent_hand(void) {
@@ -458,11 +464,20 @@ int main(void) {
         KlNativeInputHost3 host3 = { KL_NATIVE_INPUT_HOST_VERSION_3, sizeof(host3), NULL, sample_input3 };
         host3.version = 2; assert(kl_native_configure_input3(&host3) == XR_ERROR_VALIDATION_FAILURE);
         host3.version = KL_NATIVE_INPUT_HOST_VERSION_3; assert(kl_native_configure_input3(&host3) == XR_SUCCESS);
+        {   /* haptic host: independent of the input host version, validated, configured before any instance */
+            KlNativeHapticHost hh = { KL_NATIVE_HAPTIC_HOST_VERSION, sizeof(hh), NULL, hap_apply, hap_stop };
+            hh.version = 2; assert(kl_native_configure_haptics(&hh) == XR_ERROR_VALIDATION_FAILURE);
+            hh.version = KL_NATIVE_HAPTIC_HOST_VERSION; hh.stop = NULL; assert(kl_native_configure_haptics(&hh) == XR_ERROR_VALIDATION_FAILURE);
+            hh.stop = hap_stop; assert(kl_native_configure_haptics(&hh) == XR_SUCCESS);
+        }
         assert(new_instance(&ci, &instance) == XR_SUCCESS);
         GET(PFN_xrCreateActionSpace, action_space, instance, "xrCreateActionSpace");
         GET(PFN_xrSuggestInteractionProfileBindings, suggest, instance, "xrSuggestInteractionProfileBindings");
         GET(PFN_xrBeginFrame, begin_frame3, instance, "xrBeginFrame");
         GET(PFN_xrEndFrame, end_frame3, instance, "xrEndFrame");
+        GET(PFN_xrApplyHapticFeedback, apply_haptic, instance, "xrApplyHapticFeedback");
+        GET(PFN_xrStopHapticFeedback, stop_haptic, instance, "xrStopHapticFeedback");
+        assert(kl_native_configure_haptics(NULL) == XR_ERROR_CALL_ORDER_INVALID);   /* an instance exists */
         assert(req(instance, 1, &r) == XR_SUCCESS);
         assert(new_session(instance, &si, &session) == XR_SUCCESS);
         XrActionSet set3; assert(create_set(instance, &asi, &set3) == XR_SUCCESS);
@@ -477,12 +492,21 @@ int main(void) {
             snprintf(ai.localizedActionName, sizeof ai.localizedActionName, "V3 Action %u", i);
             assert(create_action(set3, &ai, &a3[i]) == XR_SUCCESS);
         }
-        const char *bound[6] = { "/user/hand/left/input/trigger/value", "/user/hand/right/input/a/click", "/user/hand/left/input/x/click",
-            "/user/hand/right/input/thumbstick", "/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose" };
-        XrActionSuggestedBinding sb[6];
+        XrAction hap, hap2;   /* hap is bound on both hands; hap2 is never suggested */
+        {
+            XrActionCreateInfo ai = { .type = XR_TYPE_ACTION_CREATE_INFO, .actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT, .countSubactionPaths = 2, .subactionPaths = hands };
+            snprintf(ai.actionName, sizeof ai.actionName, "buzz"); snprintf(ai.localizedActionName, sizeof ai.localizedActionName, "Buzz");
+            assert(create_action(set3, &ai, &hap) == XR_SUCCESS);
+            snprintf(ai.actionName, sizeof ai.actionName, "buzz2"); snprintf(ai.localizedActionName, sizeof ai.localizedActionName, "Buzz 2");
+            assert(create_action(set3, &ai, &hap2) == XR_SUCCESS);
+        }
+        const char *bound[8] = { "/user/hand/left/input/trigger/value", "/user/hand/right/input/a/click", "/user/hand/left/input/x/click",
+            "/user/hand/right/input/thumbstick", "/user/hand/left/input/grip/pose", "/user/hand/right/input/grip/pose",
+            "/user/hand/left/output/haptic", "/user/hand/right/output/haptic" };
+        XrActionSuggestedBinding sb[8];
         const unsigned which[6] = { 1, 0, 0, 2, 3, 3 };
-        for (unsigned i = 0; i < 6; ++i) { sb[i].action = a3[which[i]]; assert(to_path(instance, bound[i], &sb[i].binding) == XR_SUCCESS); }
-        XrInteractionProfileSuggestedBinding suggestion = { .type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING, .interactionProfile = touch, .countSuggestedBindings = 6, .suggestedBindings = sb };
+        for (unsigned i = 0; i < 8; ++i) { sb[i].action = i < 6 ? a3[which[i]] : hap; assert(to_path(instance, bound[i], &sb[i].binding) == XR_SUCCESS); }
+        XrInteractionProfileSuggestedBinding suggestion = { .type = XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING, .interactionProfile = touch, .countSuggestedBindings = 8, .suggestedBindings = sb };
         assert(suggest(instance, &suggestion) == XR_SUCCESS);
         XrActionSpaceCreateInfo asc = { .type = XR_TYPE_ACTION_SPACE_CREATE_INFO, .action = a3[0], .subactionPath = hands[0], .poseInActionSpace.orientation.w = 1 };
         XrSpace grip_left, grip_right, local3;
@@ -554,6 +578,45 @@ int main(void) {
         input_sample3.hand[0].controls.grip_position_tracked = XR_TRUE;
         assert(sync_actions(session, &sync3) == XR_SUCCESS);
         assert(poll_event(instance, (eb.type = XR_TYPE_EVENT_DATA_BUFFER, &eb)) == XR_EVENT_UNAVAILABLE);   /* same profiles, no event */
+        {   /* haptics at sample 2: both hands connected with the Touch profile, vibration bound on both */
+            XrHapticActionInfo hi = { .type = XR_TYPE_HAPTIC_ACTION_INFO, .action = hap, .subactionPath = hands[0] };
+            XrHapticVibration vib = { .type = XR_TYPE_HAPTIC_VIBRATION, .duration = 50000000, .frequency = 160.f, .amplitude = 0.5f };
+            const XrHapticBaseHeader *hb = (const XrHapticBaseHeader *)&vib;
+            assert(apply_haptic(session, &hi, hb) == XR_SUCCESS && hap_applies == 1 && hap_hand == 0 &&
+                   hap_last.duration == 50000000 && hap_last.frequency == 160.f && hap_last.amplitude == 0.5f);
+            hi.subactionPath = hands[1]; vib.frequency = XR_FREQUENCY_UNSPECIFIED; vib.duration = XR_MIN_HAPTIC_DURATION;
+            assert(apply_haptic(session, &hi, hb) == XR_SUCCESS && hap_applies == 2 && hap_hand == 1 && hap_last.frequency == 0.f && hap_last.duration == -1);
+            hi.subactionPath = XR_NULL_PATH; vib.duration = 1000; vib.amplitude = 1.f;
+            assert(apply_haptic(session, &hi, hb) == XR_SUCCESS && hap_applies == 4);   /* every bound hand */
+            hi.subactionPath = hands[0]; assert(stop_haptic(session, &hi) == XR_SUCCESS && hap_stops == 1 && hap_stop_hand == 0);
+            hi.subactionPath = XR_NULL_PATH; assert(stop_haptic(session, &hi) == XR_SUCCESS && hap_stops == 3 && hap_stop_hand == 1);
+            /* an action nobody suggested a binding for does nothing */
+            hi.action = hap2; hi.subactionPath = hands[0];
+            assert(apply_haptic(session, &hi, hb) == XR_SUCCESS && hap_applies == 4 && stop_haptic(session, &hi) == XR_SUCCESS && hap_stops == 3);
+            /* errors */
+            hi.action = hap;
+            XrPath head; assert(to_path(instance, "/user/head", &head) == XR_SUCCESS);
+            hi.subactionPath = head; assert(apply_haptic(session, &hi, hb) == XR_ERROR_PATH_UNSUPPORTED && stop_haptic(session, &hi) == XR_ERROR_PATH_UNSUPPORTED);
+            hi.subactionPath = (XrPath)0x7fffff; assert(apply_haptic(session, &hi, hb) == XR_ERROR_PATH_INVALID);
+            hi.subactionPath = hands[0];
+            hi.action = a3[0]; assert(apply_haptic(session, &hi, hb) == XR_ERROR_ACTION_TYPE_MISMATCH && stop_haptic(session, &hi) == XR_ERROR_ACTION_TYPE_MISMATCH);
+            hi.action = (XrAction)0; assert(apply_haptic(session, &hi, hb) == XR_ERROR_HANDLE_INVALID);
+            hi.action = hap;
+            vib.amplitude = 1.5f; assert(apply_haptic(session, &hi, hb) == XR_ERROR_VALIDATION_FAILURE);
+            vib.amplitude = NAN; assert(apply_haptic(session, &hi, hb) == XR_ERROR_VALIDATION_FAILURE);
+            vib.amplitude = 0.5f; vib.duration = -2; assert(apply_haptic(session, &hi, hb) == XR_ERROR_VALIDATION_FAILURE);
+            vib.duration = 1000; vib.frequency = -1.f; assert(apply_haptic(session, &hi, hb) == XR_ERROR_VALIDATION_FAILURE);
+            vib.frequency = 0; assert(apply_haptic(session, &hi, NULL) == XR_ERROR_VALIDATION_FAILURE);
+            vib.type = XR_TYPE_ACTION_STATE_BOOLEAN; assert(apply_haptic(session, &hi, hb) == XR_ERROR_VALIDATION_FAILURE);
+            vib.type = XR_TYPE_HAPTIC_VIBRATION;
+            hi.type = XR_TYPE_ACTION_STATE_GET_INFO; assert(apply_haptic(session, &hi, hb) == XR_ERROR_VALIDATION_FAILURE && stop_haptic(session, &hi) == XR_ERROR_VALIDATION_FAILURE);
+            hi.type = XR_TYPE_HAPTIC_ACTION_INFO;
+            assert(hap_applies == 4 && hap_stops == 3);   /* none of the errors reached the host */
+            hap_result = XR_ERROR_RUNTIME_FAILURE;   /* a host failure is the application's runtime failure */
+            assert(apply_haptic(session, &hi, hb) == XR_ERROR_RUNTIME_FAILURE && stop_haptic(session, &hi) == XR_ERROR_RUNTIME_FAILURE);
+            hap_result = XR_SUCCESS;
+            assert(apply_haptic((XrSession)0, &hi, hb) == XR_ERROR_HANDLE_INVALID);
+        }
         g3.action = a3[1]; g3.subactionPath = hands[0];
         assert(float_state(session, &g3, &f3) == XR_SUCCESS && f3.isActive && f3.currentState == 0.75f && f3.changedSinceLastSync && f3.lastChangeTime == 40);
         assert(locate_space(grip_left, local3, 35, &loc) == XR_SUCCESS && loc.locationFlags == valid);   /* tracked bits are and-ed with LOCAL, which reports valid only */
@@ -562,6 +625,14 @@ int main(void) {
         assert(poll_event(instance, (eb.type = XR_TYPE_EVENT_DATA_BUFFER, &eb)) == XR_SUCCESS && eb.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED);
         assert(current_profile(session, hands[1], &ps) == XR_SUCCESS && ps.interactionProfile == XR_NULL_PATH);
         assert(locate_space(grip_right, local3, 35, &loc) == XR_SUCCESS && loc.locationFlags == 0);
+        {   /* the right hand has no current profile (vive was not suggested): nothing is forwarded to it */
+            XrHapticActionInfo hi = { .type = XR_TYPE_HAPTIC_ACTION_INFO, .action = hap, .subactionPath = hands[1] };
+            XrHapticVibration vib = { .type = XR_TYPE_HAPTIC_VIBRATION, .duration = 1000, .amplitude = 1.f };
+            unsigned before = hap_applies, sbefore = hap_stops;
+            assert(apply_haptic(session, &hi, (const XrHapticBaseHeader *)&vib) == XR_SUCCESS && stop_haptic(session, &hi) == XR_SUCCESS && hap_applies == before && hap_stops == sbefore);
+            hi.subactionPath = XR_NULL_PATH;
+            assert(apply_haptic(session, &hi, (const XrHapticBaseHeader *)&vib) == XR_SUCCESS && hap_applies == before + 1 && hap_hand == 0);
+        }
         g3.action = a3[0]; g3.subactionPath = hands[1];
         assert(bool_state(session, &g3, &b3) == XR_SUCCESS && !b3.isActive);
         input_sample3.sample_id = 4; input_sample3.sample_time = 60;
@@ -571,6 +642,14 @@ int main(void) {
         input_sample3.hand[1] = (KlNativeInputHand3){ .controls = absent_hand() };
         assert(sync_actions(session, &sync3) == XR_SUCCESS);
         assert(poll_event(instance, (eb.type = XR_TYPE_EVENT_DATA_BUFFER, &eb)) == XR_EVENT_UNAVAILABLE);   /* right was already without a profile */
+        {   /* a disconnected hand: not forwarded either (the left hand still is) */
+            XrHapticActionInfo hi = { .type = XR_TYPE_HAPTIC_ACTION_INFO, .action = hap, .subactionPath = hands[1] };
+            XrHapticVibration vib = { .type = XR_TYPE_HAPTIC_VIBRATION, .duration = 1000, .amplitude = 1.f };
+            unsigned before = hap_applies;
+            assert(apply_haptic(session, &hi, (const XrHapticBaseHeader *)&vib) == XR_SUCCESS && hap_applies == before);
+            hi.subactionPath = hands[0];
+            assert(apply_haptic(session, &hi, (const XrHapticBaseHeader *)&vib) == XR_SUCCESS && hap_applies == before + 1);
+        }
         XrFrameBeginInfo fb = { .type = XR_TYPE_FRAME_BEGIN_INFO };
         XrFrameEndInfo fe = { .type = XR_TYPE_FRAME_END_INFO, .displayTime = 35, .environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE };
         assert(begin_frame3(session, &fb) == XR_SUCCESS && end_frame3(session, &fe) == XR_SUCCESS);
@@ -578,6 +657,26 @@ int main(void) {
         assert(poll_state(poll_event, instance) == XR_SESSION_STATE_STOPPING);
         ack_time = 71; assert(end(session) == XR_SUCCESS);
         assert(poll_state(poll_event, instance) == XR_SESSION_STATE_IDLE);
+        assert(destroy_session(session) == XR_SUCCESS);
+        assert(destroy_instance(instance) == XR_SUCCESS);
+        /* no haptic host: the same call refuses, and an input host of version 2 forwards nothing even with one */
+        assert(kl_native_configure_haptics(NULL) == XR_SUCCESS);
+        assert(new_instance(&ci, &instance) == XR_SUCCESS);
+        GET(PFN_xrApplyHapticFeedback, apply_haptic4, instance, "xrApplyHapticFeedback");
+        assert(req(instance, 1, &r) == XR_SUCCESS);
+        assert(new_session(instance, &si, &session) == XR_SUCCESS);
+        {
+            XrActionSet hs; assert(create_set(instance, &asi, &hs) == XR_SUCCESS);
+            XrPath lp; assert(to_path(instance, "/user/hand/left", &lp) == XR_SUCCESS);
+            XrAction ha; XrActionCreateInfo ai = { .type = XR_TYPE_ACTION_CREATE_INFO, .actionType = XR_ACTION_TYPE_VIBRATION_OUTPUT, .countSubactionPaths = 1, .subactionPaths = &lp };
+            snprintf(ai.actionName, sizeof ai.actionName, "nohost"); snprintf(ai.localizedActionName, sizeof ai.localizedActionName, "No host");
+            assert(create_action(hs, &ai, &ha) == XR_SUCCESS);
+            XrSessionActionSetsAttachInfo at = { .type = XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO, .countActionSets = 1, .actionSets = &hs };
+            assert(attach_sets(session, &at) == XR_SUCCESS);
+            XrHapticActionInfo hi = { .type = XR_TYPE_HAPTIC_ACTION_INFO, .action = ha, .subactionPath = lp };
+            XrHapticVibration vib = { .type = XR_TYPE_HAPTIC_VIBRATION, .duration = 1000, .amplitude = 1.f };
+            assert(apply_haptic4(session, &hi, (const XrHapticBaseHeader *)&vib) == XR_ERROR_FEATURE_UNSUPPORTED);
+        }
         assert(destroy_session(session) == XR_SUCCESS);
         assert(destroy_instance(instance) == XR_SUCCESS);
         assert(kl_native_configure_input2(&host2) == XR_SUCCESS);   /* back to version 2: action spaces refused */

@@ -60,6 +60,7 @@
 #include "session_host.h"
 #include "frame_host.h"
 #include "input_host.h"
+#include "haptic_host.h"
 #include "apple_metal_host.h"
 #include "xrizer_eye_ring.h"
 #ifdef VXRT_XRIZER_DEV_AUDIT
@@ -583,6 +584,14 @@ static XrResult input(void *p,KlNativeInputSample *out) {
 /* Diagnostic: two connected controllers in front of the synthetic head (dk_hands), valid but untracked poses. Without
  * the development keyboard they never change: one observation (same id and time on every poll), no button pressed,
  * trigger and stick at rest. With it each change of keys or head is a new observation (id and time). Not physical input. */
+/* Haptic output on the Mac: nothing vibrates; each request the provider forwards is logged (the path is observable). */
+static XrResult dev_haptic_apply(void *p,uint32_t hand,const KlNativeHapticVibration *v) {
+    (void)p; vx_log("xrizer dev host: haptic (logged, no actuator) %s hand amplitude %.2f duration %lld ns frequency %.0f Hz",
+        hand ? "right" : "left",v->amplitude,(long long)v->duration,v->frequency); return XR_SUCCESS;
+}
+static XrResult dev_haptic_stop(void *p,uint32_t hand) {
+    (void)p; vx_log("xrizer dev host: haptic stop (logged, no actuator) %s hand",hand ? "right" : "left"); return XR_SUCCESS;
+}
 static XrResult synthetic_controllers(void *p,KlNativeInputSample3 *out) {
     VXDevXRHost *h=host(p); if (!h || !out || !h.inputTime || !h.syntheticControllers) return XR_ERROR_RUNTIME_FAILURE;
     KlNativeInputHand3 hands[2]; dk_hands(h.syntheticControllers,hands);
@@ -840,11 +849,13 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
         KlNativeFrameHost frame={KL_NATIVE_FRAME_HOST_VERSION,sizeof(frame),ctx,wait_frame,publish,cancel_frame};
         KlNativeInputHost inputHost={KL_NATIVE_INPUT_HOST_VERSION,sizeof(inputHost),ctx,input};
         KlNativeInputHost3 controllerHost={KL_NATIVE_INPUT_HOST_VERSION_3,sizeof(controllerHost),ctx,synthetic_controllers};
+        KlNativeHapticHost hapticHost={KL_NATIVE_HAPTIC_HOST_VERSION,sizeof(hapticHost),ctx,dev_haptic_apply,dev_haptic_stop};
         if (kl_native_configure(&system)!=XR_SUCCESS || kl_native_configure_views(&view)!=XR_SUCCESS ||
             kl_native_configure_view_geometry(&geometry)!=XR_SUCCESS ||
             kl_native_configure_metal(&metal)!=XR_SUCCESS || kl_native_configure_image_sync(&sync)!=XR_SUCCESS ||
             kl_native_configure_session(&session)!=XR_SUCCESS || kl_native_configure_frame(&frame)!=XR_SUCCESS ||
-            (h.syntheticControllers ? kl_native_configure_input3(&controllerHost) : kl_native_configure_input(&inputHost))!=XR_SUCCESS) return -1;
+            (h.syntheticControllers ? kl_native_configure_input3(&controllerHost) : kl_native_configure_input(&inputHost))!=XR_SUCCESS ||
+            kl_native_configure_haptics(&hapticHost)!=XR_SUCCESS) return -1;
         XrizerMetalHost source;
         if (vx_xrizer_guest_d3d_create((__bridge void *)h.device,(__bridge void *)h.queue,record_destination,ctx,&source)) return -1;
         h.source=source; h.library=dlopen(path,RTLD_NOW|RTLD_LOCAL); if (!h.library) return -1;

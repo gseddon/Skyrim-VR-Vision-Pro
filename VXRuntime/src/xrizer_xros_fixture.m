@@ -16,6 +16,7 @@
 #include "xrizer_xros_sense.h"
 #include "xrizer_xros_fixture_guest.h"
 #include "xrizer_xros_host.h"
+#include "xrizer_xros_controllers.h"
 #include "xrizer_guest_d3d.h"
 #include "xrizer_openvr_exports.h"
 extern int32_t xrizer_configure_openxr_provider(PFN_xrGetInstanceProcAddr);
@@ -140,7 +141,7 @@ int vx_xros_fixture_enabled(void) { const char *v=getenv("VXRT_XRIZER_XROS_FIXTU
 int vx_xros_fixture_start(void *device,void *queue) {
     if(!vx_xros_fixture_enabled() || !device || !queue)return -1;
     pthread_mutex_lock(&lock); int used=host || failed; pthread_mutex_unlock(&lock); if(used)return -1;
-    vx_xros_xrizer_platform platform={VX_XROS_XRIZER_API_VERSION,sizeof(platform),NULL,begin,end,request_exit,input};
+    vx_xros_xrizer_platform platform={VX_XROS_XRIZER_API_VERSION,sizeof(platform),NULL,begin,end,request_exit,input,vx_xros_controllers_sample,vx_xros_haptics_apply,vx_xros_haptics_stop};
     vx_xros_xrizer_host *created=vx_xros_xrizer_create(VX_XROS_XRIZER_INJECTED_TEST,device,queue,&platform);
     if(!created || vx_xrizer_guest_d3d_create(device,queue,vx_xros_xrizer_record_destination,created,&source))goto fail;
     host=created; fixture_device=(__bridge id<MTLDevice>)device; fixture_queue=(__bridge id<MTLCommandQueue>)queue;
@@ -226,8 +227,10 @@ int WINAPI vx_xros_fixture_verify_shutdown(void) {
     float eyes[32]={0};for(unsigned eye=0;eye<2;eye++)for(unsigned i=0;i<4;i++)eyes[eye*16+i*5]=1;
     const float tangents[8]={-1,1,-1,1,-1,1,-1,1};
     int resumed=vx_xros_fixture_offer(8,8,eyes,tangents,(double)now_ns()/1e9+10,NULL,0);
+    /* two eye copies per presented pair: the 2-frame guest copies 4; the opt-in 8-frame controller run (VXRT_XROS_TEST_HANDS) 16 */
+    pthread_mutex_lock(&lock);unsigned long long pairs=vx_xros_fixture_present_enabled() ? fresh_presented : 2;pthread_mutex_unlock(&lock);
     int ok=begin_count==1 && end_count==1 && exit_count==1 && resumed==-1 &&
-        !vx_xrizer_guest_d3d_counts(&source,&acquired,&released,&copied) && acquired==released && copied==4;
+        !vx_xrizer_guest_d3d_counts(&source,&acquired,&released,&copied) && acquired==released && copied==2*pairs;
     if(vx_xros_fixture_present_enabled()) {
         pthread_mutex_lock(&lock);unsigned long long fresh=fresh_presented,repeats=repeat_presented;pthread_mutex_unlock(&lock);
         vx_log("xrizer xros fixture: drawable presentations fresh=%llu repeats=%llu",fresh,repeats);
