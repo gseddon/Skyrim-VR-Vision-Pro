@@ -259,7 +259,7 @@ Not verified: stereo comfort and scale (the stage height is assumed), whether co
 
 Evidence tools: `devicectl device capture screenshot` is unsupported on visionOS ("capability not supported"), so the app writes quarter-size PNGs of its own left and right drawable every 8 s to `Documents/shots/` and an `output_probe` event; `devicectl device copy from` of the running app's `host_log.jsonl` often stalls for minutes, so important lines are also printed (`pose_audit`, `native VR pair probe`) into `vxrt.log`.
 
-Open: the compositor and the game share one GPU queue priority; the display-rate loop (the compositor presenting every display frame, reprojecting the newest pair, independent of the game's rate) and GPU priority for the compositor are not done. The grip offset and the prediction horizon are untested on the device.
+Open (superseded by runs A to D below): the display-rate loop was delivered by giving the provider its own command queue; no queue priority was needed.
 
 ### Runs A to D: compositor at display rate, latency, loading screen, controller pose (branch `compositor`, bundle `gseddon.dev.vxrt.SkyrimVR`, physical Vision Pro, the actual game in the Helgen cart ride, user wearing the headset)
 
@@ -283,3 +283,5 @@ Logs: `/tmp/claude/perf/compositor/run{A,B,C,D}/` (host_log.jsonl, vxrt.log); an
 **Next steps (user requests, 2026-11-10):**
 * Expose the render scale (`VXRT_RENDER_SCALE`, default 0.7) as a user setting in the Klepton frontend settings when the Klepton settings UI is ported.
 * Expose hand visibility (`VXRT_SHOW_HANDS`, default hidden) in the same settings.
+
+Checks on the merged branch (compositor 3f347e6 plus codex/standalone-import): `make -C VXRuntime -j8 check` exit 0; `third_party/klepton_openxr/build-test.sh` exit 0; simulator fixture (`-test xrizer_xros_guest`, offscreen present): drawable max_delta 0 on both pairs, fresh 2 repeats 1, 49 AOT entries, 0 fallbacks. Confirmation run E (defaults: no markers, hands hidden) was launched on the headset; the user's verdict is not recorded here.
