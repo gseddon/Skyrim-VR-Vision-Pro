@@ -34,6 +34,12 @@
  * space return enter tab backspace escape lshift rshift lctrl rctrl lalt ralt up down left right home end pageup
  * pagedown minus equal lbracket rbracket semicolon quote comma period slash backslash grave f1-f12.
  *
+ * Keyboard mode (typing into the game, e.g. Skyrim VR's console): F2 in the window, or "f2" in a key script, switches
+ * between controller mode (above) and keyboard mode. In keyboard mode no key drives the controllers; every key goes to
+ * the game as a key on a Windows keyboard (vx_key_event_chars: GetAsyncKeyState, the DirectInput keyboard, WM_KEYDOWN
+ * with its scan code, WM_CHAR, raw input). The grave key (`, DIK_GRAVE 0x29, VK_OEM_3) opens Skyrim's console: pressing
+ * it in controller mode switches to keyboard mode and sends it. The mode is in the window title and the F1 panel.
+ *
  * VXRT_XRIZER_DEV_KEY_SCRIPT="START:KEYS:HOLD[,...]" presses KEYS (names joined by '+') at START for HOLD; times are
  * seconds since the dev host started, or fN for frame N / N frames. Applied at frame waits; works with or without
  * the window. Every change of the synthetic controller sample is logged ("xrizer dev keyboard: sample ...").
@@ -50,6 +56,7 @@
 #include <stdint.h>
 #include <time.h>
 #include "vx.h"
+#include "ui.h"
 #include "d3d11_capture.h"
 #include "xrizer_dev_host.h"
 #include "xrizer_openvr_exports.h"
@@ -132,6 +139,8 @@ static struct {
     int enabled, window;
     dk_binding map[128];
     _Atomic uint64_t keys[2], script_keys[2];         /* key codes 0..127 held in the window / by the script */
+    _Atomic int keyboard_mode;                        /* F2: keys go to the game as a Windows keyboard, not to the controllers */
+    _Atomic uint64_t game_keys[2];                    /* key codes the game has been told are down (released on leaving the mode) */
     _Atomic uint32_t yaw_bits, pitch_bits;            /* head angles (float bits, radians) */
     _Atomic int mirror;                               /* the window is on screen and its layer is ready */
     _Atomic int drag_dx_milli, drag_dy_milli;         /* unapplied mouse drag, thousandths of a point */
@@ -221,6 +230,40 @@ static int dk_parse_script(const char *s) {
     }
     return 0;
 }
+/* ---- keyboard mode: Mac key codes to the game's Windows keyboard ---- */
+enum { DK_KEY_GRAVE = 50, DK_KEY_F2 = 120 };
+static vx_window *dk_game_window(void) {
+    HANDLE h = vx_focus_window(); vx_window *w = h ? vx_window_get(h) : NULL;
+    if (!w) w = vx_window_get(vx_ui_window(0));         /* the active window, else the first visible one */
+    return w ? vx_window_top(w) : NULL;
+}
+/* One key to the game (any thread). chars: the characters it makes (WM_CHAR after WM_KEYDOWN). */
+static void dk_game_key(unsigned code, int down, int repeat, int alt, const uint16_t *chars, int n) {
+    if (code >= 128) return;
+    uint64_t bit = 1ull << (code & 63);
+    if (down) atomic_fetch_or(&dk.game_keys[code >> 6], bit); else if (!(atomic_fetch_and(&dk.game_keys[code >> 6], ~bit) & bit)) return;
+    vx_window *w = dk_game_window();
+    static unsigned logged; if (++logged <= 40) vx_log("xrizer dev keyboard: keyboard mode: %s %s (mac code %u) to %s", dk_code_name(code), down ? "down" : "up", code, w ? "the game window" : "NO game window (dropped)");
+    if (w) vx_key_event_chars(w, (int)code, down, repeat, alt, chars, n, 0);
+}
+static void dk_game_release_all(void) {
+    for (unsigned code = 0; code < 128; code++) if (atomic_load(&dk.game_keys[code >> 6]) >> (code & 63) & 1) dk_game_key(code, 0, 0, 0, NULL, 0);
+}
+static void dk_set_keyboard_mode(int on) {
+    if (atomic_exchange(&dk.keyboard_mode, on) == on) return;
+    if (on) for (unsigned i = 0; i < 2; i++) { atomic_store(&dk.keys[i], 0); atomic_store(&dk.script_keys[i], 0); }   /* no controller key stays held */
+    else dk_game_release_all();
+    vx_log("xrizer dev keyboard: %s mode", on ? "KEYBOARD (keys go to the game)" : "CONTROLLER (keys drive the synthetic controllers)");
+}
+/* The character an unshifted US key types, for key scripts (the window uses the Mac's own characters). */
+static int dk_script_char(unsigned code) {
+    const char *n = dk_code_name(code);
+    if (n[0] && !n[1]) return n[0];
+    static const struct { const char *name; int ch; } t[] = {{"grave",'`'},{"space",' '},{"return",'\r'},{"enter",'\r'},{"minus",'-'},{"equal",'='},{"comma",','},
+        {"period",'.'},{"slash",'/'},{"semicolon",';'},{"quote",'\''},{"backslash",'\\'},{"lbracket",'['},{"rbracket",']'},{"tab",'\t'},{"backspace",'\b'}};
+    for (size_t i = 0; i < sizeof t / sizeof t[0]; i++) if (!strcmp(t[i].name, n)) return t[i].ch;
+    return 0;
+}
 static void dk_key(unsigned code, int down) {
     if (code >= 128) return;
     uint64_t bit = 1ull << (code & 63);
@@ -241,6 +284,12 @@ static void dk_frame(uint64_t frame, XrTime now) {
         dk_event *e = &dk.script[i];
         if (e->done || (e->frames ? (uint64_t)e->at > frame : now - dk.start < e->at)) continue;
         e->done = 1; uint64_t bit = 1ull << (e->code & 63);
+        if (e->code == DK_KEY_F2) { if (e->down) dk_set_keyboard_mode(!atomic_load(&dk.keyboard_mode)); continue; }
+        if (atomic_load(&dk.keyboard_mode)) {
+            uint16_t ch = (uint16_t)dk_script_char(e->code);
+            dk_game_key(e->code, e->down, 0, 0, e->down && ch ? &ch : NULL, e->down && ch ? 1 : 0);
+            continue;
+        }
         if (e->down) atomic_fetch_or(&dk.script_keys[e->code >> 6], bit); else atomic_fetch_and(&dk.script_keys[e->code >> 6], ~bit);
         vx_log("xrizer dev keyboard: script %s %s at frame %llu (%.3f s)", e->down ? "press" : "release", dk_code_name(e->code),
                (unsigned long long)frame, (double)(now - dk.start) / 1e9);
@@ -337,8 +386,8 @@ static void dk_start_title_timer(void) {   /* main thread */
         if (dt <= 0) return;
         double ivn = P ? dt / P : 0;   /* mean interval between fresh pairs */
         double mx = hp->max[0] > hp->max[1] ? hp->max[0] : hp->max[1];
-        NSMutableString *title = [NSMutableString stringWithFormat:@"VXRuntime dev keyboard (click here for keys) | game %.0f fresh pairs/s | host %.0f Hz",
-                                  P / dt, W / dt];
+        NSMutableString *title = [NSMutableString stringWithFormat:@"VXRuntime dev keyboard %@ | game %.0f fresh pairs/s | host %.0f Hz",
+                                  atomic_load(&dk.keyboard_mode) ? @"[KEYBOARD mode: keys go to the game, F2 = controllers]" : @"[CONTROLLER mode, F2 = type into the game]", P / dt, W / dt];
         if (P) [title appendFormat:@" | frame avg %.1f ms worst %.1f ms", ivn * 1000, mx * 1000]; else [title appendString:@" | no fresh pair"];
         if (G) [title appendFormat:@" | copy+mirror GPU %.2f ms", (hp->gpu[0] + hp->gpu[1]) / G * 1000];
         dk_window.title = title;
@@ -401,7 +450,7 @@ static NSString *dk_head_help(void) {
 static void dk_help_update(void) {
     NSString *left = dk_hand_help(DK_LEFT), *right = dk_hand_help(DK_RIGHT);
     dk_help_left.string = left;
-    dk_help_right.string = [right stringByAppendingFormat:@"\n%@\nQUIT: Ctrl-C in the terminal, or close the Skyrim window\nF1 or ? shows/hides this help", dk_head_help()];
+    dk_help_right.string = [right stringByAppendingFormat:@"\n%@\nQUIT: Ctrl-C in the terminal, or close the Skyrim window\nF2: KEYBOARD mode (keys go to the game, e.g. ` opens its console); F2 again: controllers\n` also switches to keyboard mode\nF1 or ? shows/hides this help", dk_head_help()];
     for (CATextLayer *t in @[dk_help_left, dk_help_right]) { CGSize z = t.preferredFrameSize; t.bounds = CGRectMake(0, 0, z.width + 10, z.height + 8); }
 }
 static void dk_help_toggle(void) {
@@ -426,14 +475,31 @@ static CATextLayer *dk_help_layer(CALayer *parent, BOOL rightColumn) {
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)e { return YES; }
 - (void)keyDown:(NSEvent *)e {
-    if (e.keyCode == 122 || [e.charactersIgnoringModifiers isEqualToString:@"?"] || [e.characters isEqualToString:@"?"]) { if (!e.isARepeat) dk_help_toggle(); return; }   /* F1, ? */
-    if (!(e.modifierFlags & NSEventModifierFlagCommand)) dk_key(e.keyCode, 1);
+    int kb = atomic_load(&dk.keyboard_mode);
+    if (e.keyCode == 122 || (!kb && ([e.charactersIgnoringModifiers isEqualToString:@"?"] || [e.characters isEqualToString:@"?"]))) { if (!e.isARepeat) dk_help_toggle(); return; }   /* F1, ? (in keyboard mode only F1: ? is a game character) */
+    if (e.keyCode == DK_KEY_F2) { if (!e.isARepeat) dk_set_keyboard_mode(!kb); return; }
+    if (e.modifierFlags & NSEventModifierFlagCommand) return;
+    if (!kb && e.keyCode == DK_KEY_GRAVE) { dk_set_keyboard_mode(1); kb = 1; }   /* the console key: switch, then send it */
+    if (!kb) { dk_key(e.keyCode, 1); return; }
+    uint16_t buf[8]; int n = 0; NSString *s = e.characters;   /* the characters the Mac makes, as cocoa.m does for a game window */
+    for (NSUInteger i = 0; i < s.length && n < 8; i++) {
+        unichar c = [s characterAtIndex:i];
+        if (c >= 0xf700 && c <= 0xf8ff) continue;
+        if (c == 0x7f) c = 0x08;
+        if (c == 0x03) c = 0x0d;
+        buf[n++] = c;
+    }
+    dk_game_key(e.keyCode, 1, e.ARepeat, (e.modifierFlags & NSEventModifierFlagOption) != 0, buf, n);
 }
-- (void)keyUp:(NSEvent *)e { dk_key(e.keyCode, 0); }
+- (void)keyUp:(NSEvent *)e { dk_game_key(e.keyCode, 0, 0, 0, NULL, 0); dk_key(e.keyCode, 0); }   /* (a no-op for the game unless it saw the key go down) */
 - (void)flagsChanged:(NSEvent *)e {
     /* Which side's modifier: the device-dependent bits (NX_DEVICE*KEYMASK). */
     static const struct { unsigned short code; NSUInteger mask; } m[] = {{56,0x2},{60,0x4},{59,0x1},{62,0x2000},{58,0x20},{61,0x40}};
-    for (unsigned i = 0; i < sizeof m / sizeof m[0]; i++) if (m[i].code == e.keyCode) dk_key(e.keyCode, (e.modifierFlags & m[i].mask) != 0);
+    for (unsigned i = 0; i < sizeof m / sizeof m[0]; i++) if (m[i].code == e.keyCode) {
+        int down = (e.modifierFlags & m[i].mask) != 0, kb = atomic_load(&dk.keyboard_mode);
+        if (kb || !down) dk_game_key(e.keyCode, down, 0, 0, NULL, 0);
+        if (!kb) dk_key(e.keyCode, down);
+    }
 }
 - (void)mouseDown:(NSEvent *)e {
     if (!NSApp.isActive) [NSApp activateIgnoringOtherApps:YES];
@@ -446,11 +512,11 @@ static CATextLayer *dk_help_layer(CALayer *parent, BOOL rightColumn) {
 - (void)rightMouseDragged:(NSEvent *)e {
     atomic_fetch_add(&dk.aim_dx_milli, (int)(e.deltaX * 1000)); atomic_fetch_add(&dk.aim_dy_milli, (int)(e.deltaY * 1000));
 }
-- (void)windowDidResignKey:(NSNotification *)n { atomic_store(&dk.keys[0], 0); atomic_store(&dk.keys[1], 0); }
+- (void)windowDidResignKey:(NSNotification *)n { atomic_store(&dk.keys[0], 0); atomic_store(&dk.keys[1], 0); dk_game_release_all(); }
 - (void)windowDidChangeOcclusionState:(NSNotification *)n {
     atomic_store(&dk.mirror, (((NSWindow *)n.object).occlusionState & NSWindowOcclusionStateVisible) != 0);
 }
-- (void)windowWillClose:(NSNotification *)n { atomic_store(&dk.mirror, 0); atomic_store(&dk.keys[0], 0); atomic_store(&dk.keys[1], 0); }
+- (void)windowWillClose:(NSNotification *)n { dk_game_release_all(); atomic_store(&dk.mirror, 0); atomic_store(&dk.keys[0], 0); atomic_store(&dk.keys[1], 0); }
 @end
 static void dk_open_window(id<MTLDevice> device, unsigned width, unsigned height) {
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{

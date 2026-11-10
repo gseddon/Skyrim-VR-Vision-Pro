@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""shader_manifest_build: build the whole shader set of a game from the user's own install and a manifest, with no
+game boot (VXRuntime/VISIONOS_PORT.md, "Shaders from a manifest").
+
+    tools/shader_manifest_build --game <install dir> --manifest <file> --out <dir> [--sdk macosx|xros|xrsimulator]
+                                [--no-fill] [--tool VXRuntime/build/vxrt-shader-manifest]
+
+1. reads the manifest (VXRuntime/VISIONOS_PORT.md "Shaders from a manifest": per entry the SHA-256 of the DXBC, the stage, the variant kind and
+   its parameters, the translator revision, optionally the cache key the runtime made of it),
+2. finds each DXBC in the install: the shader packs (*.fxp) in the Data/*.bsa archives (uncompressed entries; the
+   directory is parsed and only .fxp entries are read), loose .fxp files under Data/, and the game's .exe files (a few
+   shaders are linked into them). Every candidate is a DXBC container found by its header and size, identified by the
+   SHA-256 of exactly those bytes, the hash the runtime logs,
+3. writes the wanted DXBC to <out>/dxbc/<sha256>.dxbc (derived from the game: keep <out> private),
+4. runs the translator (build/vxrt-shader-manifest, linked with dxbc.c and shader_cache.m like the replayer) for each
+   entry, which queues <out>/pending/<key>.metal and .flags through the runtime's own vx_library_cache_store,
+5. runs tools/shadercache_fill.sh <out> <sdk>, which makes <out>/<key>.metallib.
+Nothing is written to the install. Exit status: 0 when every entry was found and translated (and matches its recorded
+key), 1 otherwise; <out>/report.tsv lists each entry's outcome.
+"""
+import argparse, glob, gzip, hashlib, mmap, os, re, struct, subprocess, sys, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+
+def read_manifest(path):
+    entries, header = [], {}
+    for line in (gzip.open(path, "rt", encoding="utf-8") if path.endswith(".gz") else open(path, encoding="utf-8")):
+        line = line.rstrip("\n")
+        if not line: continue
+        if line.startswith("#"):
+            m = re.match(r"#\s*(\w+)=(\S+)", line)
+            if m: header[m.group(1)] = m.group(2)
+            continue
+        f = line.split("\t")
+        if len(f) < 5 or not re.fullmatch(r"[0-9a-f]{64}", f[0]):
+            sys.exit("manifest: bad line: %r" % line[:120])
+        entries.append(f)
+    return header, entries
+
+def bsa_entries(path):
+    """(folder, name, size, offset, compressed) for every file of a v104/v105 BSA (the directory only)."""
+    with open(path, "rb") as f:
+        magic, ver, off, flags, nfold, nfile, tfl, tnl, ff = struct.unpack("<4sIIIIIIII", f.read(36))
+        if magic != b"BSA\0" or ver not in (104, 105): return []
+        folders = [struct.unpack("<QIIQ", f.read(24)) if ver == 105 else struct.unpack("<QII", f.read(16)) for _ in range(nfold)]
+        recs = []
+        for fo in folders:
+            n = f.read(1)[0]
+            name = f.read(n).rstrip(b"\0").decode("latin1")
+            for _ in range(fo[1]):
+                h, size, o = struct.unpack("<QII", f.read(16))
+                recs.append((name, size, o))
+        names = f.read(tnl).split(b"\0")
+    out = []
+    for (d, size, o), n in zip(recs, names):
+        compressed = bool(flags & 4) != bool(size & 0x40000000)
+        out.append((d, n.decode("latin1"), size & 0x3fffffff, o, compressed))
+    return out
+
+def containers(buf):
+    """Every DXBC container in buf: (sha256 hex, offset, size)."""
+    for m in re.finditer(rb"DXBC", buf):
+        p = m.start()
+        if p + 32 > len(buf): continue
+        size = struct.unpack_from("<I", buf, p + 24)[0]
+        if size < 32 or size > (1 << 24) or p + size > len(buf): continue
+        yield hashlib.sha256(buf[p:p + size]).hexdigest(), p, size
+
+def mapped(path):
+    f = open(path, "rb")
+    try: return mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    finally: f.close()
+
+def locate(game, wanted):
+    """sha -> bytes for every wanted shader that the install holds (and where each came from, for the log)."""
+    found, where = {}, {}
+    def take(buf, origin, base=0, end=None):
+        view = memoryview(buf)
+        for sha, p, size in containers(view):
+            if sha in wanted and sha not in found:
+                found[sha] = bytes(view[p:p + size]); where[sha] = (origin, base + p, size)
+    skipped = []
+    data = os.path.join(game, "Data")
+    for bsa in sorted(glob.glob(os.path.join(data, "*.bsa"))):
+        want = [e for e in bsa_entries(bsa) if e[1].lower().endswith(".fxp")]
+        if not want: continue
+        m = mapped(bsa)
+        for d, n, size, off, comp in want:
+            if comp: skipped.append("%s: %s\\%s is compressed" % (os.path.basename(bsa), d, n)); continue
+            take(m[off:off + size], "%s:%s\\%s" % (os.path.basename(bsa), d, n), off)
+        m.close()
+    for fxp in sorted(glob.glob(os.path.join(data, "**", "*.fxp"), recursive=True)):
+        m = mapped(fxp); take(m, os.path.relpath(fxp, game)); m.close()
+    for exe in sorted(glob.glob(os.path.join(game, "*.exe"))):
+        m = mapped(exe); take(m, os.path.basename(exe)); m.close()
+    return found, where, skipped
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--game", required=True); ap.add_argument("--manifest", required=True, help="a manifest, plain or .gz"); ap.add_argument("--out", required=True)
+    ap.add_argument("--sdk", default="macosx"); ap.add_argument("--no-fill", action="store_true")
+    ap.add_argument("--tool", default=os.path.join(ROOT, "VXRuntime", "build", "vxrt-shader-manifest"))
+    a = ap.parse_args()
+    t0 = time.time()
+    header, entries = read_manifest(a.manifest)
+    wanted = {e[0] for e in entries}
+    print("manifest: %d entries, %d distinct DXBC (translator rev %s)" % (len(entries), len(wanted), header.get("translator", "?")))
+    found, where, skipped = locate(a.game, wanted)
+    for s in skipped: print("skipped:", s)
+    print("install: %d of %d DXBC found (%.1f s)" % (len(found), len(wanted), time.time() - t0))
+    by = {}
+    for o, _, _ in where.values(): by[o] = by.get(o, 0) + 1
+    for o, n in sorted(by.items()): print("  %5d from %s" % (n, o))
+    dx = os.path.join(a.out, "dxbc"); os.makedirs(dx, exist_ok=True)
+    if a.manifest.endswith(".gz"):  # the translator tool reads a plain file
+        plain = os.path.join(a.out, "manifest.tsv")
+        with gzip.open(a.manifest, "rb") as fi, open(plain, "wb") as fo: fo.write(fi.read())
+        a.manifest = plain
+    for sha, code in found.items():
+        with open(os.path.join(dx, sha + ".dxbc"), "wb") as f: f.write(code)
+    for sub in ("pending",): os.makedirs(os.path.join(a.out, sub), exist_ok=True)
+    if not os.path.exists(a.tool): sys.exit("%s not built (make -C VXRuntime build/vxrt-shader-manifest)" % a.tool)
+    r = subprocess.run([a.tool, "--manifest", a.manifest, "--dxbc", dx, "--out", a.out, "--report", os.path.join(a.out, "report.tsv")])
+    missing = len(wanted) - len(found)
+    if r.returncode or missing:
+        print("not complete: tool exit %d, %d DXBC not in the install" % (r.returncode, missing))
+    if not a.no_fill:
+        subprocess.run([os.path.join(HERE, "shadercache_fill.sh"), a.out, a.sdk], check=False)
+    sys.exit(1 if (r.returncode or missing) else 0)
+
+if __name__ == "__main__":
+    main()

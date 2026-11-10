@@ -74,6 +74,56 @@ const char *vx_shader_cache_dir(void) {
     });
     return *dir ? dir : NULL;
 }
+// ---- what the Direct3D 11 renderer asks the cache for, shared with tools/shader_manifest.m (which builds the same
+// sources and keys offline from a manifest: VISIONOS_PORT.md, "Shaders from a manifest") ------------------------------------
+// Compile options for every Direct3D 11 shader library: Metal's safe math, as d3d12.m and gpu_ir_metal.m use, so NaN,
+// infinity and signed zero behave as D3D's IEEE rules say (isnan, min/max with NaN, x/0). Default fast math may
+// assume they never occur. VXRT_D3D11_FAST_MATH=1 restores Metal's default. The cache key includes the math mode.
+MTLCompileOptions *vx_d3d11_compile_options(void) {
+    static MTLCompileOptions *options;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        options = [MTLCompileOptions new];
+        const char *e = getenv("VXRT_D3D11_FAST_MATH");
+        if (e && *e == '1') return;
+        if (@available(macOS 15.0, *)) options.mathMode = MTLMathModeSafe;
+        else options.fastMathEnabled = NO;
+    });
+    return options;
+}
+// The options a library is really made with: the above with the language version fixed to Metal 3.1, which is what the
+// offline compiler of the cache builds with, so a library made from source and one loaded from the cache are the same program.
+MTLCompileOptions *vx_d3d11_library_options(void) {
+    static MTLCompileOptions *options;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ options = [vx_d3d11_compile_options() copy]; options.languageVersion = MTLLanguageVersion3_1; });
+    return options;
+}
+// Dual-source blending (SRC1 factors) reads the pixel shader's second output as Metal's color(0) index(1): the shader
+// with o1 declared so. nil when the shader has no o1.
+NSString *vx_d3d11_dual_source(const char *msl) {
+    const char *at = msl ? strstr(msl, " o1 [[color(1)]];") : NULL;
+    if (!at) return nil;
+    return [NSString stringWithFormat:@"%.*s o1 [[color(0), index(1)]];%s", (int)(at - msl), msl, at + strlen(" o1 [[color(1)]];")];
+}
+// A vertex shader as a kernel (geometry path) reads its inputs as the input layout's formats deliver them: kinds is
+// "reg:kind,reg:kind,..." (kind 0 floats, 1 signed integers, 2 unsigned), the inputs v<reg> declared float4, int4 or uint4.
+NSString *vx_d3d11_vs_kernel_source(const char *msl_kernel, const char *kinds) {
+    NSMutableString *source = [NSMutableString stringWithUTF8String:msl_kernel ? msl_kernel : ""];
+    static const char *const types[3] = { "float4", "int4", "uint4" };
+    for (const char *p = kinds; p && *p;) {
+        unsigned reg = 0, kind = 0; int used = 0;
+        if (sscanf(p, "%u:%u%n", &reg, &kind, &used) < 2 || kind > 2) break;
+        for (int k = 0; k < 3; k++) {
+            NSString *from = [NSString stringWithFormat:@"    %s v%u [[attribute(%u)]];", types[k], reg, reg];
+            NSString *to = [NSString stringWithFormat:@"    %s v%u [[attribute(%u)]];", types[kind], reg, reg];
+            [source replaceOccurrencesOfString:from withString:to options:0 range:NSMakeRange(0, source.length)];
+        }
+        p += used;
+        if (*p == ',') p++;
+    }
+    return source;
+}
 uint64_t vx_shader_cache_key(NSString *source, MTLCompileOptions *options, int *std32, int *min_lod, int *safe) {
     const char *src = source.UTF8String;
     *std32 = options.languageVersion == MTLLanguageVersion3_2;
