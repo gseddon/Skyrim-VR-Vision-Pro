@@ -11,6 +11,9 @@
 #   tools/play_skyrim_dev.sh --seconds N     time limit (default 3600; max 3600)
 #   tools/play_skyrim_dev.sh --mute          no sound
 #   tools/play_skyrim_dev.sh --hud           Apple's Metal Performance HUD (MTL_HUD_ENABLED=1)
+#   tools/play_skyrim_dev.sh --helgen        press pad A every 4 s from 20 s to 272 s (--xinput-repeat A@20-272/4:0.3):
+#                                            through the logos and title into the Helgen cart intro (probe 1110)
+#   tools/play_skyrim_dev.sh --xrizer-debug  build and use xrizer unoptimised (default: release; debug cost ~0.6 ms a frame)
 #   tools/play_skyrim_dev.sh --trace-calls N log the first N calls per runtime function (default 0: off; tracing
 #                                            costs ~20% process CPU, measured 2026-11-10)
 #   tools/play_skyrim_dev.sh -- ARGS...      pass ARGS on to tools/vxrt_native_startup.py
@@ -24,17 +27,18 @@ B=${SKYRIM_AOT_BASE:-/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/ter
 ASSETS=${SKYRIM_ASSET_ROOT:-/Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SkyrimVR}
 VRWEB=${STEAMVR_WIN64_DLLS:-/Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SteamVR/bin/vrwebhelper/win64}
 T=${XRIZER_RUST_ROOT:-/Users/gseddon/git/VeRantyx/build/toolchains/xrizer-rust}
-SECONDS_LIMIT=3600; BUILD=1; RUN=1; MUTE=0; HUD=0; KEYSCRIPT=; TRACE_CALLS=0
+SECONDS_LIMIT=3600; BUILD=1; RUN=1; MUTE=0; HUD=0; KEYSCRIPT=; TRACE_CALLS=0; HELGEN=0; XRIZER_PROFILE=release
 while [ $# -gt 0 ]; do
   case $1 in
     --no-build) BUILD=0;; --build-only) RUN=0;; --mute) MUTE=1;; --hud) HUD=1;;
     --seconds) SECONDS_LIMIT=$2; shift;; --key-script) KEYSCRIPT=$2; shift;;
-    --trace-calls) TRACE_CALLS=$2; shift;;
+    --trace-calls) TRACE_CALLS=$2; shift;; --helgen) HELGEN=1;; --xrizer-debug) XRIZER_PROFILE=debug;;
     --) shift; break;;
-    -h|--help) sed -n 2,18p "$0"; exit 0;;
+    -h|--help) sed -n 2,21p "$0"; exit 0;;
     *) echo "unknown option $1" >&2; exit 2;;
   esac; shift
 done
+XRIZER_CARGO_PROFILE=; [ "$XRIZER_PROFILE" = release ] && XRIZER_CARGO_PROFILE=--release
 # anything after -- goes to tools/vxrt_native_startup.py as is (e.g. -- --diag-env VXRT_STATS=1)
 for f in "$B/prepared/SkyrimVR.exe" "$B/aot-splits4a" "$B/redist" "$ASSETS" "$VRWEB"; do
   [ -e "$f" ] || { echo "missing private input: $f (see SKYRIM_AOT_BASE etc. at the top of $0)" >&2; exit 2; }
@@ -72,9 +76,9 @@ if [ $BUILD = 1 ]; then
   ( export CARGO_HOME="$T/cargo" RUSTUP_HOME="$T/rustup" CARGO_TARGET_DIR="$D" XDG_STATE_HOME="$D/state" XDG_CONFIG_HOME="$D/config"
     export PATH="$CARGO_HOME/bin:$PATH"
     cd "$R/third_party/xrizer/upstream"
-    XRIZER_VERSION=${XRIZER_VERSION:-play-dev-1} cargo build --lib --no-default-features --features owned-apple-test --target aarch64-apple-darwin --locked --offline )
+    XRIZER_VERSION=${XRIZER_VERSION:-play-dev-1} cargo build --lib --no-default-features --features owned-apple-test --target aarch64-apple-darwin --locked --offline $XRIZER_CARGO_PROFILE )
 fi
-RUNTIME=$O/vxrt-arm64; DYLIB=$D/aarch64-apple-darwin/debug/libxrizer.dylib
+RUNTIME=$O/vxrt-arm64; DYLIB=$D/aarch64-apple-darwin/$XRIZER_PROFILE/libxrizer.dylib
 [ -x "$RUNTIME" ] && [ -f "$DYLIB" ] || { echo "not built yet: run without --no-build" >&2; exit 2; }
 [ $RUN = 1 ] || { echo "built: $RUNTIME $DYLIB"; exit 0; }
 
@@ -107,6 +111,7 @@ EXTRA="--trace-calls $TRACE_CALLS"
 [ -n "$KEYSCRIPT" ] && EXTRA="$EXTRA --dev-key-script $KEYSCRIPT"
 [ $MUTE = 1 ] || EXTRA="$EXTRA --audio"
 [ $HUD = 1 ] && EXTRA="$EXTRA --hud"
+[ $HELGEN = 1 ] && EXTRA="$EXTRA --xinput-repeat A@20-272/4:0.3"
 echo "output and evidence: $OUT"
 # shellcheck disable=SC2086
 exec python3 "$R/tools/vxrt_native_startup.py" --exe "$B/prepared/SkyrimVR.exe" --runtime "$RUNTIME" \
