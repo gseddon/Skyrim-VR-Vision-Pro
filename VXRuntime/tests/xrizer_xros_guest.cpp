@@ -6,6 +6,7 @@ __declspec(dllimport) void *__stdcall GetProcAddress(void *,const char *);
 __declspec(dllimport) void *__stdcall GetStdHandle(unsigned);
 __declspec(dllimport) int __stdcall WriteFile(void *,const void *,unsigned,unsigned *,void *);
 __declspec(dllimport) void __stdcall ExitProcess(unsigned);
+__declspec(dllimport) unsigned __stdcall GetEnvironmentVariableA(const char *,char *,unsigned);
 }
 static void check(bool ok,unsigned code){if(!ok)ExitProcess(code);}
 struct Desc {unsigned width,height,mips,array,format,samples,quality,usage,bind,cpu,misc;};
@@ -45,15 +46,34 @@ extern "C" void mainCRTStartup(){
  Desc desc={8,8,1,1,28,1,0,0,0x20,0,0};void *textures[2]={};
  for(unsigned eye=0;eye<2;eye++){fill(0,eye);Init data={pixels[eye],32,256};check(((create_texture_fn)table(device)[5])(device,&desc,&data,&textures[eye])==0 && textures[eye],7);}
  const vr::VRTextureBounds_t bounds={.25f,.125f,.75f,.5f};
- for(unsigned n=0;n<2;n++){
+ /* VXRT_XROS_TEST_HANDS set (simulator, opt-in): the host reports two connected Oculus Touch controllers through input
+  * host v3 instead of none; the script used is "0@r.trigger=1 r.a=1 l.stick=0.5,-0.25". */
+ char scratch[8];const bool hands=GetEnvironmentVariableA("VXRT_XROS_TEST_HANDS",scratch,sizeof scratch)!=0;
+ const unsigned frames=hands?8:2;   /* xrizer sets up its input actions and learns the interaction profile over its first frames */
+ for(unsigned n=0;n<frames;n++){
   vr::TrackedDevicePose_t pose[3]={};check(compositor->WaitGetPoses(pose,3,nullptr,0)==0,8);
-  check(pose[0].bPoseIsValid && pose[0].bDeviceIsConnected && !pose[1].bDeviceIsConnected && !pose[2].bDeviceIsConnected,9);
+  if(!hands)check(pose[0].bPoseIsValid && pose[0].bDeviceIsConnected && !pose[1].bDeviceIsConnected && !pose[2].bDeviceIsConnected,9);
+  else {
+   check(pose[0].bPoseIsValid && pose[0].bDeviceIsConnected,9);
+   if(n==frames-1){   /* by now input was synced over several frames and the controllers are current */
+    vr::TrackedDeviceIndex_t left=system->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_LeftHand),
+     right=system->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_RightHand);
+    check(left!=vr::k_unTrackedDeviceIndexInvalid && right!=vr::k_unTrackedDeviceIndexInvalid && left!=right,20);
+    check(system->IsTrackedDeviceConnected(left) && system->IsTrackedDeviceConnected(right),21);
+    check(pose[left].bDeviceIsConnected && pose[left].bPoseIsValid && pose[right].bDeviceIsConnected && pose[right].bPoseIsValid,22);
+    vr::VRControllerState_t ls={},rs={};
+    check(system->GetControllerState(left,&ls,sizeof ls) && system->GetControllerState(right,&rs,sizeof rs),23);
+    check(rs.rAxis[1].x>.99f && (rs.ulButtonPressed&(1ull<<vr::k_EButton_A)),24);   /* right trigger, A */
+    check(ls.rAxis[0].x>.49f && ls.rAxis[0].x<.51f && ls.rAxis[0].y<-.24f && ls.rAxis[0].y>-.26f,25);   /* left stick */
+    check(!(ls.ulButtonPressed&(1ull<<vr::k_EButton_A)) && ls.rAxis[1].x<.01f,26);
+   }
+  }
   for(unsigned eye=0;eye<2;eye++){
-   if(n){fill(n,eye);((update_fn)table(context)[48])(context,textures[eye],0,nullptr,pixels[eye],32,256);}
+   if(n){fill(n&1,eye);((update_fn)table(context)[48])(context,textures[eye],0,nullptr,pixels[eye],32,256);}
    vr::Texture_t image={textures[eye],vr::TextureType_DirectX,vr::ColorSpace_Linear};
    check(compositor->Submit((vr::EVREye)eye,&image,&bounds,vr::Submit_Default)==0,10+eye);
   }
-  compositor->PostPresentHandoff();check(verify(n)==0,12);
+  compositor->PostPresentHandoff();check(verify(n&1)==0,12);
  }
  for(unsigned eye=0;eye<2;eye++)((release_fn)table(textures[eye])[2])(textures[eye]);
  ((release_fn)table(context)[2])(context);((release_fn)table(device)[2])(device);check(prepare()==0,14);check(loss()==0,16);

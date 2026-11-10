@@ -34,6 +34,10 @@ typedef struct vx_xros_xrizer_platform {
     XrResult (*end)(void *, XrTime *);
     XrResult (*request_exit)(void *);
     XrResult (*sample_input)(void *, KlNativeInputSample *);
+    /* Optional (NULL keeps the version-1 disconnected-only input host): controller kind, poses and controls, input
+     * host version 3. Same context. Registered instead of sample_input; the provider has no haptic output boundary,
+     * so xrApplyHapticFeedback stays refused (logged at registration). */
+    XrResult (*sample_input3)(void *, KlNativeInputSample3 *);
 } vx_xros_xrizer_platform;
 /* Explicitly invoked opt-in; no default host is configured. The queue must
  * belong to the device. At most one host can be registered per process. */

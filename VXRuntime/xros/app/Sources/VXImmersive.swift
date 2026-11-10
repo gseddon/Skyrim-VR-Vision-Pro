@@ -85,6 +85,13 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         queue.label = "VX compositor"
     }
 
+#if XRIZER_XROS_FIXTURE
+    // Controllers feed the provider every frame; the unattached diagnostic samples at 10 Hz.
+    private static let spatialSampleInterval = 0.008
+#else
+    private static let spatialSampleInterval = 0.1
+#endif
+
     private static func seconds(_ i: LayerRenderer.Clock.Instant) -> Double {
         let c = LayerRenderer.Clock.Instant.epoch.duration(to: i).components
         return Double(c.seconds) + Double(c.attoseconds) * 1e-18
@@ -152,7 +159,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         // (no drawables: the system cancelled this frame; ending its submission would abort the app)
         guard !drawables.isEmpty else { return }
         let presentation = Self.seconds(timing.presentationTime)
-        if spatialClockCalibrated, let adapter = nativeXRTracking, presentation - lastSpatialSample >= 0.1 {
+        if spatialClockCalibrated, let adapter = nativeXRTracking, presentation - lastSpatialSample >= Self.spatialSampleInterval {
             lastSpatialSample = presentation
             Task { await adapter.collect(at: presentation) }
         }
