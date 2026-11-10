@@ -16,6 +16,7 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     VXRT_LIBDIR: "$(SRCROOT)/../../build/xros"
+    VXRT_DEFAULT_LAUNCH: ""
 targets:
   VXRuntimeHost:
     type: application

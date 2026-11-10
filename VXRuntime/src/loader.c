@@ -8,6 +8,7 @@
 // ...); otherwise to a PE file, searched in the program's directory, C:\windows\system32 and the current
 // directory. Real DLLs (a game's steam_api64.dll, openvr_api.dll, msvcp140.dll) therefore load as they are.
 #include <errno.h>
+#include <sys/sysctl.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -1626,7 +1627,17 @@ int main(int argc, char **argv, char **envp) {
     struct rlimit files;
     if (!getrlimit(RLIMIT_NOFILE, &files) && files.rlim_cur < 65536) {
         files.rlim_cur = files.rlim_max < OPEN_MAX ? files.rlim_max : OPEN_MAX;
+#if defined(VX_XROS) && VX_XROS
+        {   // visionOS: the hard limit (bounded by kern.maxfilesperproc, which setrlimit refuses to exceed)
+            struct rlimit hard; getrlimit(RLIMIT_NOFILE, &hard);
+            rlim_t want = hard.rlim_max;
+            int per = 0; size_t psz = sizeof per;
+            if (!sysctlbyname("kern.maxfilesperproc", &per, &psz, NULL, 0) && per > 0 && (rlim_t)per < want) want = (rlim_t)per;
+            if (want > files.rlim_cur && want != RLIM_INFINITY) files.rlim_cur = want;
+        }
+#endif
         setrlimit(RLIMIT_NOFILE, &files);
+        { struct rlimit now_; getrlimit(RLIMIT_NOFILE, &now_); vx_log("descriptor limit: soft %llu hard %llu", (unsigned long long)now_.rlim_cur, (unsigned long long)now_.rlim_max); }
     }
 #ifdef __aarch64__
     vx_arm64_init();                             // (the engine, before any x86 code)

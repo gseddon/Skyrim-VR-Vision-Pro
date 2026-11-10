@@ -159,9 +159,64 @@ int vx_xros_fixture_start(void *device,void *queue) {
 fail:
     pthread_mutex_lock(&lock);failed=1;pthread_cond_broadcast(&ready_cond);pthread_mutex_unlock(&lock);return -1;
 }
+/* The STAGE reference space (xrizer's standing tracking space, which Skyrim VR uses) needs a floor. ARKit's origin is not the floor
+ * and differs per launch (device runs: head at y = -1.31, then +0.73), so the stage is calibrated once, from the first tracked head
+ * sample: its origin is the head's position dropped by an assumed eye height (VXRT_STAGE_EYE_HEIGHT, default 1.6 m) and its -Z is the
+ * head's horizontal forward. Without a valid stage xrizer locates nothing in STAGE (HMD "tracking 201 valid 0", end_frame "views not
+ * presentable"; device runs 3 to 5). The Mac dev host declares its synthetic local origin the floor (VXRT_XRIZER_DEV_STAGE=1).
+ * A development calibration, not a measured floor: standing height differences show up as a height offset. */
+static int stage_ready;
+static XrPosef stage_from_local_pose;   /* local_from_stage */
+static void stage_calibrate_locked(const float q[4],const float p[3]) {
+    float eye=1.6f;
+    const char *e=getenv("VXRT_STAGE_EYE_HEIGHT");
+    if(e && *e){char *end;float v=strtof(e,&end);if(!*end && v>0.3f && v<2.5f)eye=v;}
+    /* forward = q * (0,0,-1) */
+    float ux=q[0],uy=q[1],uz=q[2],w=q[3];
+    float vx=0,vy=0,vz=-1;
+    float cx=uy*vz-uz*vy,cy=uz*vx-ux*vz,cz=ux*vy-uy*vx;                 /* u x v */
+    float dx=uy*cz-uz*cy,dy=uz*cx-ux*cz,dz=ux*cy-uy*cx;                 /* u x (u x v) */
+    float fx=vx+2*(w*cx+dx),fz=vz+2*(w*cz+dz);
+    float theta=(fx*fx+fz*fz)>1e-6f ? atan2f(-fx,-fz) : 0.f;
+    stage_from_local_pose.orientation=(XrQuaternionf){0,sinf(theta*.5f),0,cosf(theta*.5f)};
+    stage_from_local_pose.position=(XrVector3f){p[0],p[1]-eye,p[2]};
+    stage_ready=1;
+    vx_log("xrizer xros fixture: stage calibrated from the first tracked head: origin %.3f %.3f %.3f (eye height %.2f m assumed), yaw %.1f deg",
+           p[0],p[1]-eye,p[2],eye,theta*57.29578f);
+}
+/* The calibrated stage as local_from_stage: x y z, then the quaternion x y z w. 0 when not calibrated yet. */
+int vx_xros_fixture_stage(float out[7]) {
+    pthread_mutex_lock(&lock);int ok=stage_ready;
+    if(ok){out[0]=stage_from_local_pose.position.x;out[1]=stage_from_local_pose.position.y;out[2]=stage_from_local_pose.position.z;
+        out[3]=stage_from_local_pose.orientation.x;out[4]=stage_from_local_pose.orientation.y;out[5]=stage_from_local_pose.orientation.z;out[6]=stage_from_local_pose.orientation.w;}
+    pthread_mutex_unlock(&lock);return ok;
+}
 int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],const float tangents[8],double prediction,const float head[16],int tracked) {
     /* 0.25 s covers one compositor presentation. It rejects a different epoch. */
     if(!width || !height || !eyes || !tangents || !vx_xros_host_time_is_current(prediction,0.25) || prediction>(double)INT64_MAX/1e9)return -1;
+    /* Overscan: the game is told a field of view larger than the drawable's by VXRT_OVERSCAN (default 0.10 = +10% per side, in tangent
+     * space; 0 disables) and a render size larger in proportion, so a head turn during the frame's age (about 80 ms) shows rendered
+     * picture, not black edges (the standard reprojection margin). Stereo drawables only; the simulator's mono inspection keeps its
+     * exact optics. Cost: (1+o)^2 more pixels for the game. */
+    float over_tan[8]; uint32_t over_w=width,over_h=height;
+    {
+        static float overscan=-1;
+        if(overscan<0){const char *e=getenv("VXRT_OVERSCAN");char *end=NULL;float v=e&&*e?strtof(e,&end):0.f;
+            overscan=(e&&*e&&(!end||*end||v<0||v>0.5f))?0.f:v;
+            vx_log("xrizer xros fixture: overscan %.2f per side (VXRT_OVERSCAN)",overscan);}
+        float o=(vx_xros_immersive_enabled() && !immersive_mono) ? overscan : 0.f;
+        for(unsigned i=0;i<8;i++)over_tan[i]=tangents[i]*(1.f+o);
+        /* VXRT_RENDER_SCALE (default 0.8): the render size the game is asked for, as a fraction of the overscanned drawable size. Device run
+         * 11: the game drew at 2502x2374 per eye and the compositor was given a new pair only 17 times a second (presentation interval about
+         * 60 ms, the game's submit ring at its bound 89% of the time): the GPU is the limit, and pixels are the lever. */
+        static float scale=-1;
+        if(scale<0){const char *e=getenv("VXRT_RENDER_SCALE");char *end=NULL;float v=e&&*e?strtof(e,&end):0.8f;
+            scale=(e&&*e&&(!end||*end||v<0.3f||v>1.5f))?0.8f:v;
+            vx_log("xrizer xros fixture: render scale %.2f (VXRT_RENDER_SCALE)",scale);}
+        float sc=(vx_xros_immersive_enabled() && !immersive_mono) ? scale : 1.f;
+        over_w=(uint32_t)((float)width*(1.f+o)*sc+.5f);over_h=(uint32_t)((float)height*(1.f+o)*sc+.5f);
+        tangents=over_tan;width=over_w;height=over_h;
+    }
     XrTime predicted=(XrTime)(prediction*1e9);
     KlNativeViewGeometry geometry={.version=KL_NATIVE_VIEW_GEOMETRY_VERSION,.struct_size=sizeof(geometry)};
     float orientation[2][4], position[2][3], fov[2][4], head_orientation[4], head_position[3];
@@ -185,6 +240,7 @@ int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],co
         if(vx_xros_xrizer_event(host,(KlNativeSessionEvent){KL_NATIVE_SESSION_READY,event_time_locked()})) { pthread_mutex_unlock(&lock);return -1; }
         ready=1;pthread_cond_broadcast(&ready_cond);
     }
+    if(!stage_ready && tracked && (head_flags&3)==3)stage_calibrate_locked(head_orientation,head_position);
     XrTime previous=last_prediction;last_prediction=predicted;
     if(!previous) { pthread_mutex_unlock(&lock);return 0; }
     uint64_t id=++frame_id;
@@ -194,6 +250,7 @@ int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],co
         .local_from_head={.orientation={head_orientation[0],head_orientation[1],head_orientation[2],head_orientation[3]},
             .position={head_position[0],head_position[1],head_position[2]}}};
     memcpy(sample.head_from_eye,geometry.head_from_eye,sizeof sample.head_from_eye);memcpy(sample.fov,geometry.fov,sizeof sample.fov);
+    if(stage_ready){sample.stage_valid=XR_TRUE;sample.local_from_stage=stage_from_local_pose;}
     int result=vx_xros_xrizer_offer(host,&sample);
     if(!result)offered_ids[id % 1024]=id;
     if(!result && id==1) vx_log("xrizer xros fixture: head flags=%llu pos=%.4f %.4f %.4f tracked=%d",

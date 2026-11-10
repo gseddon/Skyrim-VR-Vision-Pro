@@ -22,6 +22,12 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSHandsTrackingUsageDescription</key>
 	<string>Hand tracking supplies your hand positions to VR applications.</string>
+	<key>NSWorldSensingUsageDescription</key>
+	<string>The headset's pose is the head pose VR applications render from.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Bluetooth connects spatial controllers that are paired with the headset.</string>
+	<key>VXDefaultLaunch</key>
+	<string>$(VXRT_DEFAULT_LAUNCH)</string>
 	<key>NSAccessoryTrackingUsageDescription</key>
 	<string>Accessory tracking supplies spatial controller positions to VR applications.</string>
 	<key>GCSupportedGameControllers</key>
