@@ -114,6 +114,7 @@ int vx_virtual_screen(RECT *r);                           // main display, Windo
 // user32.c, for control.c (Command Clips)
 char  *vx_ui_state(int texts);                            // the windows (and their text) as JSON (malloc'd)
 int    vx_ui_snapshot(HANDLE hwnd, const char *png);      // the client area's pixels into a PNG file
+extern int vx_snapshot_layers_only;   // 1 while a snapshot-layers request is served: the window server is not asked (control.c)
 int    vx_ui_snapshot_view(HANDLE hwnd, const char *png, char *info, size_t cap);   // what its Mac window shows (present.c)
 int    vx_ui_idle(void);                                  // every thread with windows waits for messages, nothing to paint
 HANDLE vx_ui_window(HANDLE hwnd);                         // hwnd if live; 0: the active window, else the first visible one
