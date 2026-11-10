@@ -135,7 +135,7 @@ The runtime derives from it, at start: the ordered list of mod roots (VFS), `Plu
 
 ## 6. Evidence from this session (Mac, strict AOT, Helgen, not a headset)
 
-See research doc section 9 for the table. Proof that loose files are used with no ini change: baseline P0 shows `GetFileAttributesEx(...data\TEXTURES\): error 2`; with one Skyland texture linked (P1) the game found `data\TEXTURES\`, listed `Landscape\dirt01.dds` (size 699192 = the mod's file) and later `CreateFile(...data\TEXTURES\Landscape\dirt01.dds): opened`. So no `[Archive]` ini keys were added. The lever is `--mods-dir` in `tools/play_skyrim_dev.sh` and `tools/vxrt_native_startup.py`; the tree comes from `tools/skyland_flatten.py`.
+See research doc section 9 for the tables (A/B, full-install smoke, eye crops). Proof that loose files are used with no ini change: baseline P0 shows `GetFileAttributesEx(...data\TEXTURES\): error 2`; with one Skyland texture linked (P1) the game found `data\TEXTURES\`, listed `Landscape\dirt01.dds` (size 699192 = the mod's file) and later `CreateFile(...data\TEXTURES\Landscape\dirt01.dds): opened`. So no `[Archive]` ini keys were added. The lever is `--mods-dir` in `tools/play_skyrim_dev.sh` and `tools/vxrt_native_startup.py`; the tree comes from `tools/skyland_flatten.py`.
 
 ## 7. Open decisions for the user
 
@@ -152,3 +152,30 @@ See research doc section 9 for the table. Proof that loose files are used with n
 1. M0 (2 to 4 days, Mac): extend `--mods-dir`/the flattener to carry `.esp`/`.bsa`, write `Plugins.txt` into the per-run root, clear the ESL bit in a private copy of `SkyUI_SE.esp`; run once with SkyUI + HIGGS data only and confirm with the file trace that `SkyUI_SE.bsa` and `higgs_vr.esp` open and the plugin list shows them.
 2. M1 (needs D1): the SKSE VR write-logging spike on the Mac, using the user's own SKSE VR download, to decide option A versus B for good.
 3. In parallel, the VFS index and `mods.json` reader in `files.c` plus the Mods section in `VXStartView.swift`, tested on the Mac with Skyland tiers as the first two mods.
+
+## 9. Device copy plan for the full Skyland install (written 2026-11-11, nothing run on the device)
+
+Source (Mac, private, git-ignored): `build/private/mods/skyland-aio-1k-full` in the `mods-research` worktree (2057 files, 2,632,276,741 bytes; `Data/Textures`, `Data/meshes`, two ESPs; `Plugins.txt`; `manifest.json`). Fallback if memory is tight: `skyland-aio-1k-full-lite` (no Granite Mountains, no night sky; 2049 files, 2.51 GB). HIGGS, PLANCK and SkyUI are not part of this run: they need SKSE VR, which the runtime cannot load yet.
+
+**Prerequisites.** (1) The app build contains `e0197c4` (`files.c`: the overlay's own names looked up case-insensitively; the visionOS file system is case-sensitive, so without it the game's `data\TEXTURES\...` does not find a `Textures` folder in the overlay). (2) The user's authorization for a physical-device copy and launch. (3) No other session on the device.
+
+**Where things go** (`Documents` is the app container's; `VXRT_ROOT` = `Documents/root`, the game folder `Documents/root/SkyrimVR`, overlay `Documents/root/overlay_skyrimvr`: `main.m` `skyrimvr_start`):
+
+| Source | Destination in the container |
+| --- | --- |
+| `<tree>/Data/Textures/` (1917 files) | `Documents/root/overlay_skyrimvr/Data/Textures/` |
+| `<tree>/Data/meshes/` (138 files) | `Documents/root/overlay_skyrimvr/Data/meshes/` |
+| `<tree>/Data/Lit Road Signs.esp`, `<tree>/Data/Skyland Watercolor - Slow Green-Vanilla.esp` | `Documents/root/overlay_skyrimvr/Data/` (top level of Data) |
+| `<tree>/Plugins.txt` (CRLF; `*Lit Road Signs.esp`, `*Skyland Watercolor - Slow Green-Vanilla.esp`) | `Documents/root/drive_c/users/vxrt/AppData/Local/Skyrim VR/Plugins.txt` (outside the overlay; the Mac trace shows the game opening exactly `C:\users\vxrt\AppData\Local\Skyrim VR\Plugins.txt`) |
+
+Nothing is written into `Documents/root/SkyrimVR/Data` (the game copy stays unmodified).
+
+**How.** `xcrun devicectl device copy to` copies a directory recursively ("copies a file or directory to the device, skipping files that have not been modified"; `--source` may be repeated; `--remove-existing-content` defaults to false), so no tar and no unpack step is needed, and a repeated run resumes. Per-file cost for about 2000 files is unknown; the earlier measured rate was about 40 MB/s (`VISIONOS_PORT.md:315`), so roughly 1 to 2 minutes of bulk transfer plus overhead [inferred]. Steps:
+1. List the container first: `xcrun devicectl device info files --device <id> --domain-type appDataContainer --domain-identifier <the Skyrim app's bundle id> --subdirectory Documents/root` and confirm `SkyrimVR/` and `overlay_skyrimvr/` (the bundle id in `VISIONOS_PORT.md:437` is `marimokodai.VXRuntimeHost`; use the one of the app being installed).
+2. Probe the path semantics with two small copies: `Plugins.txt` to its full destination path above (checks that missing directories are created), and `Data/meshes` (138 files) to `.../overlay_skyrimvr/Data/meshes`; list the result. If it nested wrongly (`Data/meshes/meshes`), copy to the parent (`.../overlay_skyrimvr/Data`) instead, for every directory.
+3. Copy `Data/Textures` (about 2.4 GB), then the two ESPs (each to the full file path).
+4. Verify: list `Documents/root/overlay_skyrimvr/Data` recursively and compare the file count with `manifest.json` (2057 plus `Plugins.txt`) and spot-check sizes of `Textures/Landscape/mountains/mountainslab01mask.dds` (22,369,744 bytes in the source) and one NIF.
+5. Launch the game as usual. In `Documents/vxrt.log` expect `fopen(C:\users\vxrt\AppData\Local\Skyrim VR\Plugins.txt, r): opened`, `data\TEXTURES\`: found (not error 2), both ESP names opened. If these lines show errors, stop and read the casing in the path it asked for.
+6. Watch `Documents/host_log.jsonl` `available_mb`: stop and switch to the lite tree if it falls under 400 MB. Roll back with `devicectl device copy to --remove-existing-content true` of an empty folder onto `.../overlay_skyrimvr/Data` (this deletes the shader-cache folder the overlay may hold under `Data/ShaderCache`; check with step 1 before) or, for the plugins alone, by removing `Plugins.txt`.
+
+What the device run answers (unknown today): does the case fix make the loose files resolve on a case-sensitive volume, what the memory delta is with these textures in the actual world (the Mac showed up to +250 MB and the same texture bytes in the Helgen scene), whether the load or streaming hitches, and how it looks; a human has to judge the last two.
