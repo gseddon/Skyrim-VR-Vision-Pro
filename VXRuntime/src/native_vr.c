@@ -1,4 +1,5 @@
 #include "native_vr.h"
+#include <limits.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -112,6 +113,26 @@ int vx_native_vr_acquire(vx_native_vr *q, vx_native_vr_frame *frame) {
     }
     if (!s || s->readers || q->next_lease == UINT64_MAX) { pthread_mutex_unlock(&q->lock); return -1; }
     s->readers = 1; s->lease = ++q->next_lease; *frame = s->frame; frame->lease = s->lease;
+    pthread_mutex_unlock(&q->lock); return 0;
+}
+int vx_native_vr_acquire_shared(vx_native_vr *q, vx_native_vr_frame *frame) {
+    if (!q || !frame) return -1;
+    pthread_mutex_lock(&q->lock); slot *s = NULL;
+    for (unsigned i = 0; i < 3; i++) {
+        slot *p = &q->slots[i];
+        if (p->published && !p->cancelled && p->frame.handle == q->newest_published) s = p;
+    }
+    if (!s || (!s->readers && q->next_lease == UINT64_MAX) || s->readers == UINT_MAX) { pthread_mutex_unlock(&q->lock); return -1; }
+    if (!s->readers) s->lease = ++q->next_lease;
+    ++s->readers; *frame = s->frame; frame->lease = s->lease;
+    pthread_mutex_unlock(&q->lock); return 0;
+}
+int vx_native_vr_release_shared(vx_native_vr *q, uint64_t lease) {
+    if (!q) return -1;
+    pthread_mutex_lock(&q->lock); slot *s = NULL;
+    for (unsigned i = 0; i < 3; i++) if (lease && q->slots[i].lease == lease) { s = &q->slots[i]; break; }
+    if (!s || !s->readers) { pthread_mutex_unlock(&q->lock); return -1; }
+    if (--s->readers == 0) { s->lease = 0; collect(q, s); }
     pthread_mutex_unlock(&q->lock); return 0;
 }
 int vx_native_vr_release(vx_native_vr *q, uint64_t lease) {

@@ -8,6 +8,15 @@ import Darwin
 import QuartzCore
 import simd
 
+// Latest published grip/aim positions (provider LOCAL = the accessory session's ARKit origin), for the compositor's pose audit.
+final class VXPoseAudit: @unchecked Sendable {
+    static let shared = VXPoseAudit()
+    private let lock = NSLock()
+    private var grip = [SIMD3<Float>?](repeating: nil, count: 2), aim = [SIMD3<Float>?](repeating: nil, count: 2)
+    func set(hand: Int, grip g: SIMD3<Float>?, aim a: SIMD3<Float>?) { lock.lock(); grip[hand] = g; aim[hand] = a; lock.unlock() }
+    func get() -> (grip: [SIMD3<Float>?], aim: [SIMD3<Float>?]) { lock.lock(); defer { lock.unlock() }; return (grip, aim) }
+}
+
 func vxSpatialSide(_ chirality: Accessory.Chirality) -> VXSpatialSide {
     switch chirality {
     case .left: return .left
@@ -254,6 +263,10 @@ actor VXNativeXRTracking {
             h.grip_position_tracked = c.gripPose.positionTracked ? 1 : 0
             h.aim_position_tracked = c.aimPose.positionTracked ? 1 : 0
             h.grip = VXSenseTune.correctedGrip(grip, hand: c.hand); h.aim = pose(aim)
+            // Device run 10: Skyrim's rendered controller sat a few centimetres ABOVE the real one (IMG_0029). A world-space drop (VXRT_SENSE_DROP_M, metres,
+            // default 0.04) applied to grip and aim in the provider's LOCAL space (ARKit origin, Y up); eyeballed, not measured. Klepton's own offsets are
+            // rotation-dependent (a grip-frame offset and a pivot); this is the one-number version until a measurement says otherwise.
+            h.grip.1 -= VXSenseTune.dropMeters; h.aim.1 -= VXSenseTune.dropMeters
             h.trigger = c.controls.trigger?.value ?? .nan
             h.stick_x = c.controls.stick?.x ?? .nan; h.stick_y = c.controls.stick?.y ?? .nan
             if h.stick_x.isNaN || h.stick_y.isNaN { h.stick_x = .nan; h.stick_y = .nan }
@@ -261,7 +274,9 @@ actor VXNativeXRTracking {
             h.grip_pressed = value(c.controls.grip) ? 1 : 0; h.menu = value(c.controls.menu) ? 1 : 0
             h.stick_pressed = value(c.controls.stickPress) ? 1 : 0
             hands[c.hand] = h
+            VXPoseAudit.shared.set(hand: c.hand, grip: SIMD3(h.grip.0, h.grip.1, h.grip.2), aim: SIMD3(h.aim.0, h.aim.1, h.aim.2))
         }
+        for hand in 0..<2 where hands[hand].connected == 0 { VXPoseAudit.shared.set(hand: hand, grip: nil, aim: nil) }
         var drivers: [Int: GCController] = [:]
         for o in observations where (0..<2).contains(o.canonical.hand) { drivers[o.canonical.hand] = o.controller }
         VXHapticRouter.shared.setControllers(drivers)

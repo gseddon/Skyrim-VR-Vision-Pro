@@ -23,6 +23,8 @@ int vx_xros_fixture_offer(uint32_t width, uint32_t height, const float eyes[32],
 /* One-way surface loss; no restart or re-registration in this process. */
 int vx_xros_fixture_surface_lost(void);
 int vx_xros_fixture_wait_ready(void);
+/* local_from_stage (x y z, quaternion x y z w) once calibrated from the first tracked head; 0 before. */
+int vx_xros_fixture_stage(float out[7]);
 int vx_xros_fixture_present_begin(double time);
 int vx_xros_fixture_acquire(vx_native_vr_frame *frame);
 int vx_xros_fixture_release(uint64_t lease);

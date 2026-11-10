@@ -27,6 +27,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
     private var tracking = false
     private var presentationIntervalSum = 0.0, presentationIntervalCount = 0, lastPresentationTime = 0.0
     private var fixtureMsMax = 0.0
+    private var lastHead = matrix_identity_float4x4
     private var lastReport = CACurrentMediaTime()
     private var cleared = 0
     // per-second frame diagnostics (the device kills an immersive app that stops presenting; run 2 died with no trace)
@@ -271,6 +272,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
             vxrt_jlog("frame_trace", "\"n\":\(Self.frameCount),\"drawables\":\(drawables.count),\"anchor\":\(anchor != nil),\"anchor_tracked\":\(anchor?.isTracked == true),\"input_wait_ms\":\(String(format: "%.2f", waited))")
         }
         var head = anchor?.originFromAnchorTransform ?? matrix_identity_float4x4
+        if anchor != nil { lastHead = head }
         let nativeDiagnostic = vx_xros_native_enabled() != 0
 #if XRIZER_XROS_FIXTURE
         let fixture = vx_xros_fixture_enabled() != 0
@@ -578,10 +580,30 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         cleared += 1
     }
 
+    // Once a second: the head and both controllers in the SAME frame, in the provider's local space (each from its own ARKit session) and
+    // after the stage transform, plus the controller-to-head distance (an origin mismatch between the two sessions shows as a distance
+    // no arm can make). Also teed to the console.
+    private func poseAudit(head: simd_float4x4) {
+#if XRIZER_XROS_FIXTURE
+        var st = [Float](repeating: 0, count: 7)
+        let staged = vx_xros_fixture_stage(&st) != 0
+        let q = simd_quatf(ix: st[3], iy: st[4], iz: st[5], r: st[6])
+        func toStage(_ p: SIMD3<Float>) -> SIMD3<Float> { q.inverse.act(p - SIMD3(st[0], st[1], st[2])) }
+        func f(_ v: SIMD3<Float>?) -> String { v.map { String(format: "[%.3f,%.3f,%.3f]", $0.x, $0.y, $0.z) } ?? "null" }
+        let h = SIMD3<Float>(head.columns.3.x, head.columns.3.y, head.columns.3.z)
+        let c = VXPoseAudit.shared.get()
+        func dist(_ p: SIMD3<Float>?) -> String { p.map { String(format: "%.3f", simd_length($0 - h)) } ?? "null" }
+        let line = "\"head_local\":\(f(h)),\"grip_local\":[\(f(c.grip[0])),\(f(c.grip[1]))],\"aim_local\":[\(f(c.aim[0])),\(f(c.aim[1]))],\"stage\":\(staged),\"head_stage\":\(staged ? f(toStage(h)) : "null"),\"grip_stage\":[\(staged ? f(c.grip[0].map(toStage)) : "null"),\(staged ? f(c.grip[1].map(toStage)) : "null")],\"grip_to_head_m\":[\(dist(c.grip[0])),\(dist(c.grip[1]))]"
+        vxrt_jlog("pose_audit", line)
+        print("pose_audit \(line)")
+#endif
+    }
+
     private func report() {
         let now = CACurrentMediaTime()
         guard now - lastReport >= 1 else { return }
         lastReport = now
+        poseAudit(head: lastHead)
         var buf = [CChar](repeating: 0, count: 768)
         vx_xros_vr_stats(&buf, UInt32(buf.count))
         var fields = String(cString: buf) + ",\"cleared_eyes\":\(cleared)"
