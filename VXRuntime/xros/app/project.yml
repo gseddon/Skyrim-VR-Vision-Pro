@@ -17,6 +17,8 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     VXRT_LIBDIR: "$(SRCROOT)/../../build/xros"
     VXRT_DEFAULT_LAUNCH: ""
+    VXRT_START_WINDOW: "0"
+    VXRT_DISPLAY_NAME: "VX Runtime"
 targets:
   VXRuntimeHost:
     type: application

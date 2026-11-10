@@ -180,3 +180,57 @@ The hybrid the user is asking for is worth doing, in a bounded form: **"A+" = ve
 * Cost over A: about +1 day (vendoring with minimal edits and tracking drift against the pinned `a7bad301`), for views that look and behave like the other Klepton apps and would be easy to refresh from the fork. Risk stays low. This is the recommended form of option A; B's extras can follow.
 
 Open for the user: whether "common names" means UserDefaults/Info.plist keys (cheap, recommended) or the full `KL_*` environment surface (not meaningful for most of it, see 7.2).
+
+## 8. Implementation of option A+ (2026-11-10)
+
+User answers (relayed): Klepton's UserDefaults and Info.plist key names and a familiar layout, not the KL_* env surface; VXRT_* stays canonical with KL_* aliases only for mapped user-level settings; Start window plus "Start automatically" (default off); render scale 0.5 to 1.0 step 0.05 default 0.7; latency "Lower latency" (1 pair in flight, default) or "Smoother pace"; Advanced with controller alignment, predict ms, stage eye height and log export; Skyrim branding, text only (no Bethesda or Steam art in the repo); English only; play area, controller-recovery prompt and frame-rate picker out of this phase.
+
+### 8.1 What was built (subject: owned fixture on the visionOS simulator plus Mac unit test; not the device, not the game)
+
+| Piece | File | Notes |
+| --- | --- | --- |
+| Settings store | `VXRuntime/xros/app/Sources/VXSettings.swift` | Klepton keys `klepton.renderScale` and `klepton.chroma` (JSON blob, `handMatting`), Info.plist defaults `KLRenderScaleDefault`, `KLHandMattingDefault` (our default: hidden when absent), `KLAutoBootDefault`; ours namespaced `vxrt.latency`, `vxrt.startAutomatically`, `vxrt.predictMs`, `vxrt.stageEyeHeight`. Precedence as Klepton: environment, saved, plist, built-in. Env: `VXRT_RENDER_SCALE` (alias `KL_OVRP_RENDER_SCALE`), `VXRT_SHOW_HANDS` (`KL_HAND_MATTING`), `VXRT_START_AUTOMATICALLY` (`KL_AUTOBOOT`), `VXRT_PAIRS_IN_FLIGHT`, `VXRT_PREDICT_MS`, `VXRT_STAGE_EYE_HEIGHT`; `KL_OVERLAYS`, `KL_EXIT_ON_BACKGROUND` aliases in `VXApp.swift`. |
+| Start window and settings page | `VXStartView.swift` | Title, Start, Settings, status (runtime milestones), version stamp; settings: Resolution, Latency, Your hands, Start; Advanced: controller alignment (writes `Documents/vxrt_sense.txt`, which `VXSenseTune` re-reads each second), head prediction, stage eye height, log export. 5 s countdown with Cancel when "Start automatically" is on, so settings stay reachable. |
+| Gate | `VXApp.swift`, `Info.plist` `VXStartWindow`, `main.m` `vxrt_default_launch()` | Gated only when the build asks (`XROS_START_WINDOW=1`, default on for `XROS_XRIZER_GAME=1`), the launch is the default one (no `-test`/`-game`) and `VXRT_START_WINDOW` is not 0. The display window (swap-chain host, hidden, unchanged) is opened by Start; its view starts the program (`vxrt_boot`), so `VXSettings.applyEnvironment()` (setenv with overwrite off) runs before the runtime reads anything. `vxrt_boot_fallback` is called by Start instead of at launch. |
+| Live settings | `VXApp.swift` (hands scene modifier observes `VXSettings`), `xrizer_xros_host.m` `vx_xros_set_pairs_in_flight` | Hand visibility and latency change at once; resolution, predict ms and eye height apply on the next launch. |
+| Branding | `CFBundleDisplayName` = `$(VXRT_DISPLAY_NAME)` ("Skyrim VR" for the game build), title text in the start window. | No icon artwork yet (default icon): not done. |
+| Test | `VXRuntime/tests/xros_settings_test.swift`, `make -C VXRuntime xros-settings-check` (part of `check`) | persistence, precedence, aliases, clamps, plist presets, a Klepton-written blob, gate, sense file. |
+
+Bundle id and team are unchanged (`gseddon.dev.vxrt.SkyrimVR`, YOURTEAMID).
+
+### 8.2 Verification
+
+* `make -C VXRuntime xros-settings-check`: "xros settings: ok".
+* Simulator build (`XROS_SDK=xrsimulator XROS_XRIZER_FIXTURE=1 XROS_START_WINDOW=1 XROS_DEFAULT_LAUNCH="-test xrizer_xros_guest -immersive"`, owned fixture guest): app builds. Fresh install, default launch: the log has `app_init` with `start_window:true`, then only `scene_phase`/`heartbeat`: no program started, and the start window is on screen (screenshots under `/tmp/claude/perf/klepton-frontend/start2.png`, `settings1.png`: title, Start/Settings, version stamp; settings with Resolution 70%, Latency, Your hands off, Start). With defaults written for the app (`klepton.renderScale` 0.85, `vxrt.latency` smoother, `vxrt.startAutomatically` true): 5.4 s after launch `settings_applied` logs `VXRT_RENDER_SCALE=0.85 VXRT_PAIRS_IN_FLIGHT=0`, the runtime log shows "render scale 0.85 (VXRT_RENDER_SCALE)" and the fixture guest passes ("OpenVR geometry, two D3D pairs and provider readback passed"). The simulator was shut down; the app was uninstalled.
+* Not verified: any tap interaction (no tool for touch/gaze input on the simulator; the slider, toggle and Start button were exercised only through the stored values and the countdown path), the physical device (not touched), the real game, the live latency gate on a running game, the live hand toggle.
+
+### 8.3 Start while loading: boot timeline and decision
+
+Measured from an existing Mac run of the actual game rather than a new one (the Mac GPU was busy with the foveation agent's replays; the run is the cold `--helgen` boot `build/play-105948/startup.log`, main checkout, harness start 10:59:52.1; analysis notes in `/tmp/claude/perf/boot/STATUS.md`). Timestamps are the runtime's own (`VXRT_LOG_TIME`), seconds after the first line:
+
+| Step | Cold run | Warm runs (same notes) |
+| --- | --- | --- |
+| AOT modules mapped | +0.6 | 0.04 s load |
+| xrizer `VR_Init` (native Init) and first `IVRSystem` call | +1.0 | |
+| `GetRecommendedRenderTargetSize` (System019 slot 7) | +1.0 (the same millisecond group as Init) | |
+| XAudio2 created | +2.7 | |
+| `IVRCompositor` interface, first `WaitGetPoses` (first frame) | +6.5 | first fresh pair 5.3 s |
+| Loading menus | 6 to 69 s | loading to about 17 s |
+| Main menu | +78 to 86 s | |
+| Cart/title visible | +100 s | |
+
+Shader cache: warm per-user Metal cache; the cold run compiled for 66 s with no fresh pair until +66.3 s. Shader-set mapping on the device is a separate cost (the device uses the embedded set; no device timeline was measured here).
+
+Result by the coordinator's rule: the render-size request is at about +1 s of a 17 s (warm) to 80 s (cold) boot, so most of the boot comes AFTER it. Option 1 (hold at the render-size request) would preload only about 1 s, so **option 2 (hold at the first frame or later) is the one that pays**, at the cost of the render scale being fixed at that point (changing it then needs an app restart, since the guest is one per process).
+
+Why it was not implemented in this change (blocked by structure, not by time): on the device the xrizer host is created only when the immersive space opens (`VXImmersiveRenderer.start` -> `vx_xros_fixture_start`, `xrizer_xros_fixture.m:149`), and the loader waits for it before anything else (`loader.c:1682`, `vx_xros_fixture_wait_ready`, 30 s then `exit(1)`: "compositor geometry unavailable; refusing startup"), i.e. before the AOT modules are even opened (the "render scale" line is the fourth line of the runtime log, before the first `aot:` line). So with the space held closed, the game is held at its very first instruction, and nothing is preloaded. Preloading needs: (1) the xrizer host created before the space (device and queue from `MTLCreateSystemDefaultDevice`, not from the layer); (2) view geometry (FOV tangents, recommended size) answered without a layer, from values persisted by the previous run, which is wrong on a first run or after a geometry change; (3) a hold in the provider's `wait_frame`/`xrBeginSession` until Start, with the game silent (audio muted) and drawing nothing; (4) re-binding the compositor to the already running host when the space opens (the layer-reopen path `VXImmersiveRenderer.previous` already does this for an invalidated layer, so there is a precedent); (5) timeouts: `vx_xros_mailbox_wait(..., 2000)` in `wait_frame` and the 30 s ready wait both need to be longer than a user's dwell in the start window, and the device watchdog behaviour for an app with a window but no presenting immersive space must be checked on the device. None of it can be tested without the headset, and it changes the path that works. Recommendation: do it as its own piece after the foveation work has released the device, hold at the first frame (about 6.5 s cold-mac, 5.3 s warm) as the first cut and at "menu loaded" later (the runtime already reads the menu stack with `diag-rtti-array`), keep "Start automatically" as no hold. The Settings page already marks resolution as "applies the next time".
+
+The latency gate is now live (`vx_xros_set_pairs_in_flight`), as requested; the game is not silenced or held because it is not started before Start.
+
+### 8.4 For AVP Play (not wired)
+
+The design leaves AVP Play room to prepare and install the game later (AOT module frameworks, shader set, game files) and launch with preset settings: it can write the same Info.plist keys (`KLRenderScaleDefault`, `KLHandMattingDefault`, `KLAutoBootDefault`, `VXLatencyDefault`, `VXStartWindow`), UserDefaults keys, or pass `VXRT_*` environment variables through `devicectl --environment-variables` (env beats saved beats plist, so a preset launch is never overridden by what the window saved). `XROS_START_WINDOW` and `XROS_DISPLAY_NAME` are Makefile variables for the build. Nothing in AVP Play was changed.
+
+### 8.5 Deferred (user, 2026-11-10): preload while the start window is up
+
+Start-while-loading (hold the booted game at its first frame or at "menu loaded", release on Start) is deferred; the user will take it up later. Notes for then: the numbers in 8.3 are from a cold Mac boot (before the shader cache merge) and must be re-timed from a warm boot (Mac `build/private/shadercache`; the headset has the embedded 10,807-shader set) before judging whether decoupling the xrizer host from the compositor (8.3, items 1 to 5) pays; keep the deferral if the warm gain is a few seconds. Record first fresh pair, main menu ready and audio start. "Start automatically" never holds. Nothing in this change prevents it: the gate is Swift-side (display window opened by Start), the latency gate is already live.

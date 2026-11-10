@@ -235,7 +235,14 @@ build/native_vr_present_test: tests/native_vr_present.m src/native_vr_present.m 
 native-vr-gpu-check: build/native_vr_present_test
 	build/native_vr_present_test
 
-check: native-vr-unit-check
+# The app's settings store (xros/app/Sources/VXSettings.swift): persistence, precedence, the VXRT_* mapping, the launch gate.
+xros-settings-check: tests/xros_settings_test.swift xros/app/Sources/VXSettings.swift
+	@mkdir -p build
+	swiftc -parse-as-library -o build/xros_settings_test xros/app/Sources/VXSettings.swift tests/xros_settings_test.swift
+	build/xros_settings_test
+
+check: native-vr-unit-check xros-settings-check
+.PHONY: xros-settings-check
 
 native-vr-check: build/vxrt build/vxrt-arm64 build/vxrt-aot build/native_vr_d3d11.exe build/native_vr_test
 	build/native_vr_test
@@ -357,7 +364,11 @@ XROS_FIXTURE_BUNDLE_ID ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),gseddon.dev.vxrt.
 # XROS_XRIZER_GAME=1: the app starts Skyrim VR by itself (Info.plist VXDefaultLaunch; a launch argument -game/-test overrides it).
 XROS_DEFAULT_LAUNCH ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),-game skyrimvr -xrizer -immersive)
 # XROS_SHADER_SET=<dir of <key>.metallib files>: embedded as bundle/shadercache (embed_aot_frameworks.sh).
-XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) $(if $(XROS_SHADER_SET),'VXRT_SHADER_SET=$(abspath $(XROS_SHADER_SET))') 'VXRT_DEFAULT_LAUNCH=$(XROS_DEFAULT_LAUNCH)' SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
+# The Klepton-style start window (xros/app/Sources/VXStartView.swift) gates the default launch: on for the Skyrim app, XROS_START_WINDOW=1 to try it
+# with another default launch (the simulator smoke test uses the owned guest). The app's name on the Home View.
+XROS_START_WINDOW ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),1,0)
+XROS_DISPLAY_NAME ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),Skyrim VR,VX Runtime)
+XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) 'VXRT_START_WINDOW=$(XROS_START_WINDOW)' 'VXRT_DISPLAY_NAME=$(XROS_DISPLAY_NAME)' $(if $(XROS_SHADER_SET),'VXRT_SHADER_SET=$(abspath $(XROS_SHADER_SET))') 'VXRT_DEFAULT_LAUNCH=$(XROS_DEFAULT_LAUNCH)' SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
 .PHONY: xros-shader-set
 xros-app: $(XROS_SHADER_SET_PREREQ)
 # xros-shader-set: the whole shader set for $(XROS_SDK) into $(XROS_SHADER_DIR), from XROS_SHADER_MANIFEST and the install
