@@ -1,7 +1,6 @@
 #!/bin/sh
 set -eu
-: "${XRIZER_RUST_ROOT:?set XRIZER_RUST_ROOT to the repository-local toolchain directory}"
-case "$XRIZER_RUST_ROOT" in /*) ;; *) echo 'XRIZER_RUST_ROOT must be absolute' >&2; exit 2;; esac
+XRIZER_ENV_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/." && pwd); . "$XRIZER_ENV_DIR/rust-env.sh"
 case "${1:-}" in
     sim) target=aarch64-apple-visionos-sim; sdk=xrsimulator; clang_target=arm64-apple-xros26.0-simulator ;;
     device) target=aarch64-apple-visionos; sdk=xros; clang_target=arm64-apple-xros26.0 ;;

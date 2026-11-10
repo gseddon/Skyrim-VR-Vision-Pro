@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-: "${XRIZER_RUST_ROOT:?set XRIZER_RUST_ROOT to repository-local toolchain directory}"
+XRIZER_ENV_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../xrizer" && pwd); . "$XRIZER_ENV_DIR/rust-env.sh"
 mode=${XRIZER_FRONTEND_MODE:-missing-views}
 case "$mode" in missing-views|views-no-ready|ready-bootstrap|missing-geometry|invalid-geometry|geometry-error) ;; *) echo 'unsupported XRIZER_FRONTEND_MODE' >&2;exit 2;;esac
 fixture=${XRIZER_NATIVE_FIXTURE:-frontend}
