@@ -14,6 +14,7 @@ struct VXRuntimeApp: App {
         vxrt_jlog("app_init", nil)
         vxrt_boot_fallback()
         VXLifecycle.observeApplication()
+        _ = VXImmersiveController.shared   // the app-level owner of the immersive space exists before any view
         // Main-thread heartbeat every 0.5 s: the last one before a system kill says when the app stopped being alive, and
         // the frame counter says whether the compositor loop was still presenting.
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
@@ -56,6 +57,43 @@ struct VXRuntimeApp: App {
 // cannot be resumed, so a crown press (the layer invalidated, then the scene inactive) or the system backgrounding
 // the app exits, and every launch is a first launch. Only for the xrizer immersive build; VXRT_EXIT_ON_BACKGROUND=0
 // keeps the process (a debugging session with the headset off).
+// The app-level owner of Skyrim's immersive space (the views only reflect `needsResume` and hand over the scene's open action). Opening happens
+// ONCE per launch from here, whichever view instance appears first or how often SwiftUI rebuilds the window content (device log 2026-11-10 20:52:
+// two display_view and two window events 20 ms apart; g_booted in main.m already keeps the program to one start). Single-flight and the retries
+// live in VXLifecycle.openSpace; each attempt uses the NEWEST action handed over, since the first instance's action can fail while its view is
+// being replaced. `needsResume` drives the Resume window.
+final class VXImmersiveController: ObservableObject {
+    static let shared = VXImmersiveController()
+    @Published var needsResume = false
+    nonisolated(unsafe) private var opener: (() async -> OpenImmersiveSpaceAction.Result)?
+    nonisolated(unsafe) private var afterLaunchOpened: (() -> Void)?
+    nonisolated(unsafe) private var launched = false
+    nonisolated(unsafe) private(set) var attachCount = 0
+    init() {
+        NotificationCenter.default.addObserver(forName: .vxReopenImmersive, object: nil, queue: .main) { [weak self] _ in
+            Task { await self?.reopen() }
+        }
+    }
+    func setNeedsResume(_ v: Bool) { DispatchQueue.main.async { if self.needsResume != v { self.needsResume = v; vxrt_jlog("resume_ui", "\"shown\":\(v)") } } }
+    // Called by every display view instance as it appears; only the first one starts the launch open.
+    @MainActor func attach(instance: Int, open: @escaping () async -> OpenImmersiveSpaceAction.Result, afterOpened: @escaping () -> Void) {
+        attachCount += 1
+        opener = open; afterLaunchOpened = afterOpened
+        vxrt_jlog("controller_attach", "\"instance\":\(instance),\"attach\":\(attachCount),\"launched\":\(launched),\"app_state\":\(UIApplication.shared.applicationState.rawValue)")
+        guard !launched, vxrt_present_vr() != 0 else { return }
+        launched = true
+        Task {
+            vxrt_jlog("immersive_open_request", "\"app_state\":\(UIApplication.shared.applicationState.rawValue)")
+            if await VXLifecycle.openSpace(attempts: 3, watchdog: 30, tag: "launch") { self.afterLaunchOpened?() }
+        }
+    }
+    func reopen() async {
+        vxrt_jlog("immersive_reopen_request", "\"app_state\":\(await UIApplication.shared.applicationState.rawValue),\"reopen\":\(VXLifecycle.reopens)")
+        _ = await VXLifecycle.openSpace(attempts: 3, watchdog: 10, tag: "reopen")
+    }
+    func openNow() async -> OpenImmersiveSpaceAction.Result { guard let o = opener else { return .error }; return await o() }
+}
+
 enum VXLifecycle {
     nonisolated(unsafe) static var outputEnded = false
     // The compositor layer was invalidated by the system (a pause of the immersive space we did not ask for: device run 6 at 71 s, with no
@@ -68,16 +106,14 @@ enum VXLifecycle {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { dumpSystemLog("layer_invalidated+2s", seconds: 4) }
 #if XRIZER_XROS_FIXTURE
         guard vx_xros_immersive_enabled() != 0, ProcessInfo.processInfo.environment["VXRT_REOPEN"] != "0" else { return false }
-        if reopens >= 5 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                vxrt_jlog("lifecycle_exit", "\"phase\":\"layer_invalidated\",\"reopens\":\(reopens)")
-                fflush(nil)
-                exit(0)
-            }
-            return false
-        }
+        // Pause and resume, not exit (the old budget of five reopens ended the process; c41b5f1 adapted that from Klepton). The game, the
+        // provider and ARKit stay alive: with no layer, no sample reaches the provider and xrWaitFrame times out every 2 s (the game idles at 0.5
+        // fps, no spin). The system takes the space away (headset off, crown, a notification); asking for it back is answered only once the
+        // app is active again (device run 14: 172 s), so ask now with a growing delay, and show the Resume window meanwhile.
         reopens += 1
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { NotificationCenter.default.post(name: .vxReopenImmersive, object: nil) }
+        VXImmersiveController.shared.setNeedsResume(true)
+        let delay = min(0.7 * Double(reopens), 5)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { NotificationCenter.default.post(name: .vxReopenImmersive, object: nil) }
         return true
 #else
         return false
@@ -114,14 +150,23 @@ enum VXLifecycle {
             guard let store = try? OSLogStore(scope: .currentProcessIdentifier) else { vxrt_jlog("syslog", "\"why\":\"\(why)\",\"error\":\"no store\""); return }
             let position = store.position(date: Date().addingTimeInterval(-seconds))
             guard let entries = try? store.getEntries(at: position) else { return }
-            var n = 0
-            for case let e as OSLogEntryLog in entries where e.level.rawValue >= OSLogEntryLog.Level.notice.rawValue {
+            // The store ignores the start position for a process-scoped read (the first dump held launch-time entries): filter by date, and keep
+            // the LAST 150 lines, not the first.
+            let cutoff = Date().addingTimeInterval(-seconds)
+            var kept: [OSLogEntryLog] = []
+            for case let e as OSLogEntryLog in entries where e.date >= cutoff && e.level.rawValue >= OSLogEntryLog.Level.notice.rawValue {
                 let sub = e.subsystem
-                guard sub.contains("CompositorServices") || sub.contains("FrontBoard") || sub.contains("RunningBoard") || sub.contains("UIKit") || sub.contains("SwiftUI") || sub.contains("backboard") || sub.contains("SpringBoard") || sub.contains("RealityKit") || sub.contains("ARKit") || sub.contains("com.apple.xr") || sub.isEmpty else { continue }
+                guard sub.contains("CompositorServices") || sub.contains("FrontBoard") || sub.contains("RunningBoard") || sub.contains("UIKit") || sub.contains("SwiftUI") || sub.contains("backboard") || sub.contains("SpringBoard") || sub.contains("RealityKit") || sub.contains("ARKit") || sub.contains("MRUI") || sub.contains("com.apple.xr") || sub.isEmpty else { continue }
+                if e.composedMessage.hasPrefix("Realizing settings extension") || e.composedMessage.hasPrefix("Ingesting properties") { continue }
+                kept.append(e)
+            }
+            var n = 0
+            for e in kept.suffix(150) {
+                let sub = e.subsystem
                 let msg = e.composedMessage.prefix(300).map { c -> String in
                     switch c { case "\"": return "\\\""; case "\\": return "\\\\"; case "\n", "\r", "\t": return " "; default: return String(c) } }.joined()
                 vxrt_jlog("syslog", "\"why\":\"\(why)\",\"at\":\(String(format: "%.3f", e.date.timeIntervalSince1970)),\"sub\":\"\(sub)\",\"cat\":\"\(e.category)\",\"msg\":\"\(msg)\"")
-                n += 1; if n >= 150 { break }
+                n += 1
             }
             vxrt_jlog("syslog_done", "\"why\":\"\(why)\",\"lines\":\(n)")
         }
@@ -150,7 +195,7 @@ enum VXLifecycle {
     }
     // Opens the immersive space, retrying a refused open (.error / .userCancelled) up to `attempts` times a second apart while the app is
     // not backgrounded. Every attempt logs its result and the app state. `watchdog` seconds without ever opening ends the run with a reason.
-    static func openSpace(attempts: Int, watchdog: Double, tag: String, _ open: @escaping () async -> OpenImmersiveSpaceAction.Result) async -> Bool {
+    static func openSpace(attempts: Int, watchdog: Double, tag: String) async -> Bool {
         // The first instance's open can fail because its view is being replaced (device log: request 1 "error" at +60 ms, request 2 "opened"
         // at +130 ms), so a late caller waits for the one in flight and opens itself only if the space is still closed.
         if openInFlight {
@@ -169,7 +214,7 @@ enum VXLifecycle {
         for attempt in 1...max(1, attempts) {
             if spaceOpen { reopenPending = false; return true }
             openInFlight = true
-            let result = await open()
+            let result = await VXImmersiveController.shared.openNow()
             openInFlight = false
             let text: String
             switch result {
@@ -179,22 +224,22 @@ enum VXLifecycle {
             @unknown default: text = "unknown"
             }
             vxrt_jlog("immersive_space", "\"result\":\"\(text)\",\"tag\":\"\(tag)\",\"attempt\":\(attempt),\"reopen\":\(reopens),\"app_state\":\(UIApplication.shared.applicationState.rawValue)")
-            if result == .opened { spaceOpen = true; reopenPending = false; return true }
-            if spaceOpen { reopenPending = false; return true }
+            if result == .opened { spaceOpen = true; reopenPending = false; VXImmersiveController.shared.setNeedsResume(false); return true }
+            if spaceOpen { reopenPending = false; VXImmersiveController.shared.setNeedsResume(false); return true }
             if attempt < attempts { try? await Task.sleep(nanoseconds: 1_000_000_000) }
         }
         reopenPending = false
+        VXImmersiveController.shared.setNeedsResume(true)
         return false
     }
+    // Backgrounding pauses; it no longer ends the process. VXRT_BG_EXIT_S=<s> (observeApplication) is the test-sweep exit, and
+    // VXRT_EXIT_ON_BACKGROUND=1 restores the old immediate exit (Klepton's policy).
     static func scenePhaseChanged(to phase: ScenePhase) {
 #if XRIZER_XROS_FIXTURE
-        guard vx_xros_immersive_enabled() != 0,
-              ProcessInfo.processInfo.environment["VXRT_EXIT_ON_BACKGROUND"] != "0" else { return }
-        if (phase == .inactive && outputEnded) || phase == .background {
-            dumpSystemLog("exit_scene_\(phase)", seconds: 20, waitUpTo: 1.5)   // the process is about to end: the system's words first
-            vxrt_jlog("lifecycle_exit", "\"phase\":\"\(phase)\",\"output_ended\":\(outputEnded)")
-            fflush(nil)
-            exit(0)
+        guard vx_xros_immersive_enabled() != 0 else { return }
+        if phase == .background || (phase == .inactive && outputEnded) {
+            VXImmersiveController.shared.setNeedsResume(true)
+            if ProcessInfo.processInfo.environment["VXRT_EXIT_ON_BACKGROUND"] == "1" { exitNow("scene_\(phase)") }
         }
 #endif
     }
@@ -223,7 +268,10 @@ struct VXRootControllerView: UIViewControllerRepresentable {
 struct VXDisplayView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissWindow) private var dismissWindow
-    @State private var opened = false
+    @ObservedObject private var space = VXImmersiveController.shared
+    // Which instance this is (SwiftUI rebuilt the content at launch: see VXImmersiveController).
+    private let instance: Int = { VXDisplayView.counter += 1; vxrt_jlog("display_view_init", "\"instance\":\(VXDisplayView.counter)"); return VXDisplayView.counter }()
+    nonisolated(unsafe) static var counter = 0
     private static var hideFlatWindow: Bool {
 #if XRIZER_XROS_FIXTURE
         return vx_xros_immersive_enabled() != 0 && ProcessInfo.processInfo.environment["VXRT_SHOW_WINDOW"] != "1"
@@ -233,6 +281,21 @@ struct VXDisplayView: View {
     }
 
     var body: some View {
+        ZStack {
+            display
+            if space.needsResume && Self.hideFlatWindow {
+                // The immersive space was taken away (headset off, crown, a notification) or could not be opened: the game is paused, not gone.
+                VStack(spacing: 16) {
+                    Text("Skyrim VR is paused").font(.title2)
+                    Button("Resume") { NotificationCenter.default.post(name: .vxReopenImmersive, object: nil) }
+                }
+                .padding(32)
+                .glassBackgroundEffect()
+            }
+        }
+    }
+
+    private var display: some View {
         VXRootControllerView()
             // xrizer immersive: the game's pairs are in the immersive space, and the runtime's flat display of the game's window
             // (one eye, the desktop back buffer: what device run 5 showed) must not sit in front of them. The view stays in the
@@ -246,26 +309,12 @@ struct VXDisplayView: View {
             // dismissWindow()). Closing detaches the swap chain's host view: untested whether the game keeps presenting, so a lever.
             .glassBackgroundEffect(displayMode: Self.hideFlatWindow ? .never : .always)
             .persistentSystemOverlays(Self.hideFlatWindow ? .hidden : .automatic)
-            .onAppear { vxrt_jlog("display_view", nil) }
-            // The system ended the compositor layer (VXLifecycle.layerInvalidated): open the immersive space again; the new
-            // CompositorLayer closure rebinds the running provider (VXImmersiveRenderer.start).
-            .onReceive(NotificationCenter.default.publisher(for: .vxReopenImmersive)) { _ in
-                Task {
-                    vxrt_jlog("immersive_reopen_request", "\"app_state\":\(UIApplication.shared.applicationState.rawValue),\"reopen\":\(VXLifecycle.reopens)")
-                    _ = await VXLifecycle.openSpace(attempts: 3, watchdog: 10, tag: "reopen") { await openImmersiveSpace(id: "vr") }
-                }
-            }
-            .task {
-                guard !opened, vxrt_present_vr() != 0 else { return }
-                opened = true
-                vxrt_jlog("immersive_open_request", "\"app_state\":\(UIApplication.shared.applicationState.rawValue)")
-                let ok = await VXLifecycle.openSpace(attempts: 3, watchdog: 30, tag: "launch") { await openImmersiveSpace(id: "vr") }
-                let result: OpenImmersiveSpaceAction.Result = ok ? .opened : .error
-                if result == .opened, Self.hideFlatWindow, ProcessInfo.processInfo.environment["VXRT_DISMISS_WINDOW"] == "1" {
-                    try? await Task.sleep(nanoseconds: 1_500_000_000)
-                    dismissWindow(id: "display")
-                    vxrt_jlog("window_dismissed", nil)
-                }
+            .onAppear {
+                vxrt_jlog("display_view", "\"instance\":\(instance)")
+                VXImmersiveController.shared.attach(instance: instance, open: { await openImmersiveSpace(id: "vr") }, afterOpened: {
+                    guard Self.hideFlatWindow, ProcessInfo.processInfo.environment["VXRT_DISMISS_WINDOW"] == "1" else { return }
+                    Task { try? await Task.sleep(nanoseconds: 1_500_000_000); dismissWindow(id: "display"); vxrt_jlog("window_dismissed", nil) }
+                })
             }
     }
 }

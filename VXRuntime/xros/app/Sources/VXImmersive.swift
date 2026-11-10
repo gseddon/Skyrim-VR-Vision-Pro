@@ -34,6 +34,10 @@ final class VXImmersiveRenderer: @unchecked Sendable {
     private var presentationIntervalSum = 0.0, presentationIntervalCount = 0, lastPresentationTime = 0.0
     private var fixtureMsMax = 0.0
     private var lastHead = matrix_identity_float4x4
+    // After a pause or a reopen: log the first frames' head (ARKit anchor), the stage-relative head and each eye's view offset, to compare the
+    // pose the game and the compositor see before and after (L3 2026-11-10: the wearer reported a lower position after the resume while the
+    // game's HMD height was 1.60 m before and after).
+    private var resumeFramesToLog = 0
     // Head-pose prediction for the game: the pose handed to the game is the device anchor at (presentation + horizon), the horizon being the measured
     // delay between that offer and the moment the game's pair is shown (device run 11: pair age about 150 ms at 17 game frames/s, so the picture
     // was rendered for a head 150 ms in the past and lagged a turn by tens of degrees). VXRT_PREDICT_MS fixes it ('0' off); otherwise it follows
@@ -83,6 +87,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         let r = VXImmersiveRenderer(layerRenderer, q, previous: prior)
         previous = r
         if prior != nil {
+            r.resumeFramesToLog = 12
             vxrt_jlog("vr_rebind", "\"what\":\"new compositor layer on the running session\",\"tracking\":\(r.tracking),\"fixture_started\":\(r.fixtureStartedForLog)")
             let thread = Thread { r.loop() }
             thread.name = "VX compositor"
@@ -251,6 +256,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                 vxrt_jlog("vr_pause", "\"frames\":\(Self.frameCount)")
                 layerRenderer.waitUntilRunning()
                 vxrt_jlog("vr_resume", "\"frames\":\(Self.frameCount)")
+                resumeFramesToLog = 12
                 continue
             default:
                 autoreleasepool { frame() }
@@ -293,6 +299,12 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         }
         var head = anchor?.originFromAnchorTransform ?? matrix_identity_float4x4
         if anchor != nil { lastHead = head }
+        if resumeFramesToLog > 0 {
+            resumeFramesToLog -= 1
+            let t = head.columns.3
+            let l = drawables[0].views.first?.transform.columns.3 ?? .zero, r = drawables[0].views.last?.transform.columns.3 ?? .zero
+            vxrt_jlog("resume_frame", "\"left\":\(resumeFramesToLog),\"anchor\":\(anchor != nil),\"tracked\":\(anchor?.isTracked == true),\"head\":[\(t.x),\(t.y),\(t.z)],\"eyeL\":[\(l.x),\(l.y),\(l.z)],\"eyeR\":[\(r.x),\(r.y),\(r.z)]")
+        }
         // the head pose and time the GAME is given (predicted ahead by the measured pipeline delay); the drawable keeps the real anchor
         var predictedHead = head
         var predictedTime = presentation
