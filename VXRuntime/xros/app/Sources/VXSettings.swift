@@ -82,6 +82,10 @@ final class VXSettings: ObservableObject {
     // Latency: the pair gate, read per frame, so it applies at once.
     @Published var latency: VXLatency { didSet { if !suppress { defaults.set(latency.rawValue, forKey: Self.latencyKey); Self.latencyHook?(latency) } } }
     // Whether the wearer's real hands and arms show over the game. Live: the immersive scene observes it (VXApp.swift).
+    // While the keyboard window is open (VXKeyboard.swift) the wearer's hands are shown whatever the setting says, so the fingers can be
+    // seen typing; not saved, and off again when the keyboard closes. The scene shows the hands when `handsVisible`.
+    @Published var keyboardHands = false
+    var handsVisible: Bool { showHands || keyboardHands }
     @Published var showHands: Bool {
         didSet { if !suppress, let d = try? JSONEncoder().encode(VXHandsBlob(handMatting: showHands)) { defaults.set(d, forKey: Self.handsKey) } }
     }

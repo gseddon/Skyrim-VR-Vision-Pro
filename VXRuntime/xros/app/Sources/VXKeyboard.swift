@@ -40,15 +40,20 @@ final class VXKeyboardController: ObservableObject {
             vx_xrizer_guest_keyboard_complete(text, 0)
             return
         }
-        VXLifecycle.keyboardOpen = true
+        VXLifecycle.keyboardOpen = true; setHands(true)
         request = Request(id: nextID, prompt: prompt, text: text, maxChars: maxChars, singleLine: singleLine); nextID += 1
         vxrt_jlog("keyboard", "\"event\":\"open\",\"prompt\":\"\(prompt)\",\"max\":\(maxChars)")
         open()
     }
+    /// The real hands show through the game while the keyboard is up (the "Hands" setting is restored afterwards).
+    private func setHands(_ on: Bool) {
+        VXSettings.shared.keyboardHands = on
+        vxrt_jlog("keyboard_hands", "\"on\":\(on),\"setting\":\(VXSettings.shared.showHands)")
+    }
     /// The wearer finished. `text` nil = cancelled.
     func finish(_ id: Int, text: String?) {
         guard let r = request, r.id == id else { return }
-        request = nil; VXLifecycle.keyboardOpen = false
+        request = nil; VXLifecycle.keyboardOpen = false; setHands(false)
         vxrt_jlog("keyboard", "\"event\":\"\(text == nil ? "cancel" : "done")\",\"chars\":\(text?.count ?? 0)")
         if let text { vx_xrizer_guest_keyboard_complete(text, 1) } else { vx_xrizer_guest_keyboard_complete(r.text, 0) }
         closeAction?()
@@ -56,7 +61,7 @@ final class VXKeyboardController: ObservableObject {
     /// The game hid the keyboard (HideKeyboard) before the wearer finished.
     private func dismiss() {
         guard request != nil else { return }
-        request = nil; VXLifecycle.keyboardOpen = false
+        request = nil; VXLifecycle.keyboardOpen = false; setHands(false)
         vxrt_jlog("keyboard", "\"event\":\"hidden_by_game\"")
         closeAction?()
     }

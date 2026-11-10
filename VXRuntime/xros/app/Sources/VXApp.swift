@@ -74,7 +74,7 @@ struct VXRuntimeApp: App {
         // The wearer's real hands and arms are not shown "punched through" the game's picture (the user's choice, 2026-11-10): the same
         // scene modifier Klepton uses (KleptonApp.swift .upperLimbVisibility). VXRT_SHOW_HANDS=1 shows them; a Klepton frontend setting later
         // (default: hidden).
-        .upperLimbVisibility(settings.showHands ? .visible : .hidden)
+        .upperLimbVisibility(settings.handsVisible ? .visible : .hidden)
     }
 }
 
