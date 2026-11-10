@@ -12,16 +12,16 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         // defaults: 0.7, lower latency (1 in flight), hands hidden, no automatic start, nothing else exported
         var d = fresh()
         var s = VXSettings(defaults: d, info: [:], environment: [:])
-        check(s.renderScale == 0.7 && s.latency == .lower && !s.showHands && !s.startAutomatically && s.predictMs == nil && s.stageEyeHeight == nil, "defaults")
-        check(map(s) == ["VXRT_RENDER_SCALE": "0.70", "VXRT_PAIRS_IN_FLIGHT": "1"], "default exports \(map(s))")
+        check(s.renderScale == 0.55 && s.latency == .smart && s.upscale == .metalfx && !s.showHands && !s.startAutomatically && s.predictMs == nil && s.stageEyeHeight == nil, "defaults")
+        check(map(s) == ["VXRT_RENDER_SCALE": "0.55", "VXRT_UPSCALE": "metalfx", "VXRT_GATE": "smart"], "default exports \(map(s))")
 
         // persistence under Klepton's keys, read back by a new store
-        s.renderScale = 0.85; s.latency = .smoother; s.showHands = true; s.startAutomatically = true; s.predictMs = 40; s.stageEyeHeight = 1.2
+        s.renderScale = 0.85; s.latency = .throughput; s.upscale = .bilinear; s.showHands = true; s.startAutomatically = true; s.predictMs = 40; s.stageEyeHeight = 1.2
         check(d.double(forKey: "klepton.renderScale") == 0.85, "klepton.renderScale stored")
         check(d.data(forKey: "klepton.chroma").flatMap { try? JSONDecoder().decode(VXHandsBlob.self, from: $0) }?.handMatting == true, "klepton.chroma blob stored")
         let s2 = VXSettings(defaults: d, info: [:], environment: [:])
-        check(s2.renderScale == 0.85 && s2.latency == .smoother && s2.showHands && s2.startAutomatically && s2.predictMs == 40 && s2.stageEyeHeight == 1.2, "persisted values read back")
-        check(map(s2) == ["VXRT_RENDER_SCALE": "0.85", "VXRT_PAIRS_IN_FLIGHT": "0", "VXRT_PREDICT_MS": "40", "VXRT_STAGE_EYE_HEIGHT": "1.20"], "exports \(map(s2))")
+        check(s2.renderScale == 0.85 && s2.latency == .throughput && s2.upscale == .bilinear && s2.showHands && s2.startAutomatically && s2.predictMs == 40 && s2.stageEyeHeight == 1.2, "persisted values read back")
+        check(map(s2) == ["VXRT_RENDER_SCALE": "0.85", "VXRT_UPSCALE": "bilinear", "VXRT_GATE": "off", "VXRT_PREDICT_MS": "40", "VXRT_STAGE_EYE_HEIGHT": "1.20"], "exports \(map(s2))")
         s2.predictMs = nil; s2.stageEyeHeight = nil
         check(d.object(forKey: "vxrt.predictMs") == nil && d.object(forKey: "vxrt.stageEyeHeight") == nil, "auto removes the stored value")
 
@@ -32,9 +32,9 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
 
         // Info.plist defaults (AVP Play's presets), below the saved value
         d = fresh()
-        let info: [String: Any] = ["KLRenderScaleDefault": "0.9", "KLHandMattingDefault": "1", "KLAutoBootDefault": "1", "VXLatencyDefault": "smoother"]
+        let info: [String: Any] = ["KLRenderScaleDefault": "0.9", "KLHandMattingDefault": "1", "KLAutoBootDefault": "1", "VXLatencyDefault": "smoother", "VXUpscaleDefault": "bilinear"]
         s = VXSettings(defaults: d, info: info, environment: [:])
-        check(s.renderScale == 0.9 && s.showHands && s.startAutomatically && s.latency == .smoother, "plist defaults")
+        check(s.renderScale == 0.9 && s.showHands && s.startAutomatically && s.latency == .throughput && s.upscale == .bilinear, "plist defaults")
         check(VXSettings(defaults: d, info: ["KLHandMattingDefault": "0"], environment: [:]).showHands == false, "KLHandMattingDefault 0 hides")
         s.renderScale = 0.6
         check(VXSettings(defaults: d, info: info, environment: [:]).renderScale == 0.6, "saved beats plist")
@@ -42,7 +42,7 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         // environment beats saved; VXRT_* canonical, KL_* aliases for the mapped user-level settings
         let env: VXEnvironment = ["VXRT_RENDER_SCALE": "0.55", "VXRT_SHOW_HANDS": "0", "VXRT_PAIRS_IN_FLIGHT": "0", "KL_AUTOBOOT": "0"]
         s = VXSettings(defaults: d, info: info, environment: env)
-        check(s.renderScale == 0.55 && !s.showHands && s.latency == .smoother && !s.startAutomatically, "env beats saved/plist")
+        check(s.renderScale == 0.55 && !s.showHands && s.latency == .throughput && !s.startAutomatically, "env beats saved/plist")
         s = VXSettings(defaults: fresh(), info: [:], environment: ["KL_OVRP_RENDER_SCALE": "0.8", "KL_HAND_MATTING": "1", "KL_AUTOBOOT": "1"])
         check(s.renderScale == 0.8 && s.showHands && s.startAutomatically, "KL_* aliases")
         s = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_RENDER_SCALE": "0.6", "KL_OVRP_RENDER_SCALE": "0.9"])
@@ -55,11 +55,11 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         check(!VXSettings(defaults: d, info: [:], environment: [:]).showHands, "broken blob falls back to the default")
 
         // applying: never replaces a variable the launch set
-        setenv("VXRT_PAIRS_IN_FLIGHT", "3", 1); unsetenv("VXRT_RENDER_SCALE")
+        setenv("VXRT_GATE", "one", 1); unsetenv("VXRT_RENDER_SCALE")
         s = VXSettings(defaults: fresh(), info: [:], environment: [:])
         let r = s.applyEnvironment()
-        check(getenv("VXRT_RENDER_SCALE").map { String(cString: $0) } == "0.70" && String(cString: getenv("VXRT_PAIRS_IN_FLIGHT")) == "3", "applyEnvironment keeps launch env")
-        check(r.kept == ["VXRT_PAIRS_IN_FLIGHT"], "kept list \(r.kept)")
+        check(getenv("VXRT_RENDER_SCALE").map { String(cString: $0) } == "0.55" && String(cString: getenv("VXRT_GATE")) == "one", "applyEnvironment keeps launch env")
+        check(r.kept == ["VXRT_GATE"], "kept list \(r.kept)")
 
         // the launch gate
         check(VXLaunchGate.enabled(info: ["VXStartWindow": "1"], environment: [:], defaultLaunch: true), "gate on")

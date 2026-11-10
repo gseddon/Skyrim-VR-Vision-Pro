@@ -16,7 +16,7 @@ struct VXRuntimeApp: App {
                                             defaultLaunch: vxrt_default_launch() != 0)
     init() {
 #if XRIZER_XROS_FIXTURE
-        VXSettings.latencyHook = { vx_xros_set_pairs_in_flight(Int32($0.pairsInFlight)) }
+        VXSettings.latencyHook = { vx_xros_set_gate_mode(Int32($0.gateMode)) }
 #endif
         vxrt_jlog("app_init", "\"start_window\":\(Self.gated)")
         if !Self.gated { vxrt_boot_fallback() }

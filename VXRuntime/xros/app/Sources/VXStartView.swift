@@ -141,18 +141,28 @@ struct VXSettingsPage: View {
                                        in: VXSettings.renderScaleRange, step: 0.05)
                                 Text(String(format: "%.0f%%", settings.renderScale * 100)).font(.system(.body, design: .monospaced)).frame(width: 70)
                             }
-                            note("The size the game draws each eye at, as a share of the display's. Lower is smoother on a busy scene; higher is sharper. 70% is the default.")
+                            note("The size the game draws each eye at, as a share of the display's. Lower is smoother on a busy scene; higher is sharper. 55% with MetalFX is the default.")
+                            Picker("Upscaling", selection: $settings.upscale) {
+                                Text("MetalFX").tag(VXUpscale.metalfx)
+                                Text("Bilinear").tag(VXUpscale.bilinear)
+                            }.pickerStyle(.segmented)
+                            note(settings.upscale == .metalfx
+                                 ? "Apple's MetalFX spatial upscaler brings the game's picture up to the display's size: sharper than plain scaling."
+                                 : "The display's own sampler stretches the picture: softer, with no extra work.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                     GroupBox("Latency") {
                         VStack(alignment: .leading, spacing: 10) {
                             Picker("Latency", selection: $settings.latency) {
+                                Text("Smart").tag(VXLatency.smart)
                                 Text("Lower latency").tag(VXLatency.lower)
-                                Text("Smoother pace").tag(VXLatency.smoother)
+                                Text("Max throughput").tag(VXLatency.throughput)
                             }.pickerStyle(.segmented).labelsHidden()
-                            note(settings.latency == .lower
-                                 ? "The game starts a frame only once its previous one is on its way to the display, so the picture is built from a fresher head pose. About 25 game frames a second where the game is the limit."
-                                 : "The game runs ahead freely: a little more game frames a second, but each picture is built from an older head pose.")
+                            note(settings.latency == .smart
+                                 ? "The default. The game starts each frame as the display frees up, so the display stays fed: the most frames a second without older head poses."
+                                 : settings.latency == .lower
+                                 ? "The game starts a frame only once its previous one is on its way to the display, so the picture is built from a fresher head pose, at fewer game frames a second."
+                                 : "The game runs ahead freely: the most game frames a second, but each picture is built from an older head pose.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                     GroupBox("Your hands") {
@@ -167,8 +177,8 @@ struct VXSettingsPage: View {
                             note("Off: this window waits for Start. On: the game starts \(VXSettings.autoStartDelay) seconds after the app opens, and this window stays open until then so you can cancel or change settings.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    Label(launcher.started ? "The game is running: resolution applies the next time you open the app."
-                                           : "Resolution applies when you press Start; latency, hand visibility and controller alignment apply at once.",
+                    Label(launcher.started ? "The game is running: resolution and upscaling apply the next time you open the app."
+                                           : "Resolution and upscaling apply when you press Start; latency, hand visibility and controller alignment apply at once.",
                           systemImage: "info.circle").font(.callout).foregroundStyle(.secondary)
                     DisclosureGroup("Advanced", isExpanded: $advancedOpen) {
                         VStack(alignment: .leading, spacing: 14) { advanced }.padding(.top, 10)

@@ -32,10 +32,22 @@ struct VXHandsBlob: Codable, Equatable {
     }
 }
 
+// Latency choice, mapped to the runtime's pair gate VXRT_GATE: smart (default), lower latency = one, max throughput = off.
 enum VXLatency: String, CaseIterable, Identifiable {
-    case lower, smoother      // lower latency: one pair in flight (default); smoother pace: the game's frames are not held back
+    case smart, lower, throughput
     var id: String { rawValue }
-    var pairsInFlight: Int { self == .lower ? 1 : 0 }
+    var gate: String { self == .smart ? "smart" : self == .lower ? "one" : "off" }
+    var gateMode: Int { self == .smart ? 2 : self == .lower ? 1 : 0 }   // vx_xros_set_gate_mode
+    init?(stored: String) {
+        if stored == "smoother" { self = .throughput; return }   // an older build's name for "off"
+        self.init(rawValue: stored)
+    }
+}
+
+// Upscaling: MetalFX spatial (default) or the presenter's bilinear sampler. VXRT_UPSCALE.
+enum VXUpscale: String, CaseIterable, Identifiable {
+    case metalfx, bilinear
+    var id: String { rawValue }
 }
 
 final class VXSettings: ObservableObject {
@@ -47,12 +59,13 @@ final class VXSettings: ObservableObject {
     static let renderScaleKey = "klepton.renderScale"
     static let handsKey = "klepton.chroma"
     static let latencyKey = "vxrt.latency"
+    static let upscaleKey = "vxrt.upscale"
     static let autoStartKey = "vxrt.startAutomatically"
     static let predictKey = "vxrt.predictMs"
     static let eyeHeightKey = "vxrt.stageEyeHeight"
 
     static let renderScaleRange = 0.5...1.0
-    static let renderScaleBuiltIn = 0.7
+    static let renderScaleBuiltIn = 0.55
     static let eyeHeightRange = 1.0...2.2
     static let eyeHeightBuiltIn = 1.6
     static let predictRange = 0.0...140.0
@@ -64,7 +77,9 @@ final class VXSettings: ObservableObject {
 
     // Picture: the size the game renders at, as a fraction of the drawable (next launch).
     @Published var renderScale: Double { didSet { if !suppress { defaults.set(renderScale, forKey: Self.renderScaleKey) } } }
-    // Latency: the pairs-in-flight gate, read per frame, so it applies at once.
+    // Upscaling of the game's eye to the display (next launch).
+    @Published var upscale: VXUpscale { didSet { if !suppress { defaults.set(upscale.rawValue, forKey: Self.upscaleKey) } } }
+    // Latency: the pair gate, read per frame, so it applies at once.
     @Published var latency: VXLatency { didSet { if !suppress { defaults.set(latency.rawValue, forKey: Self.latencyKey); Self.latencyHook?(latency) } } }
     // Whether the wearer's real hands and arms show over the game. Live: the immersive scene observes it (VXApp.swift).
     @Published var showHands: Bool {
@@ -108,10 +123,16 @@ final class VXSettings: ObservableObject {
         if let v = Self.flag(environment["VXRT_SHOW_HANDS"] ?? environment["KL_HAND_MATTING"]) { hands = v }
         showHands = hands
 
-        var lat: VXLatency = (info["VXLatencyDefault"] as? String).flatMap(VXLatency.init(rawValue:)) ?? .lower
-        if let s = defaults.string(forKey: Self.latencyKey), let l = VXLatency(rawValue: s) { lat = l }
-        if let p = environment["VXRT_PAIRS_IN_FLIGHT"].flatMap(Int.init) { lat = p == 0 ? .smoother : .lower }
+        var lat: VXLatency = (info["VXLatencyDefault"] as? String).flatMap(VXLatency.init(stored:)) ?? .smart
+        if let s = defaults.string(forKey: Self.latencyKey), let l = VXLatency(stored: s) { lat = l }
+        if let p = environment["VXRT_PAIRS_IN_FLIGHT"].flatMap(Int.init) { lat = p == 0 ? .throughput : .lower }
+        if let g = environment["VXRT_GATE"] { lat = g == "off" ? .throughput : g == "one" ? .lower : g == "smart" ? .smart : lat }
         latency = lat
+
+        var up: VXUpscale = (info["VXUpscaleDefault"] as? String).flatMap(VXUpscale.init(rawValue:)) ?? .metalfx
+        if let s = defaults.string(forKey: Self.upscaleKey), let u = VXUpscale(rawValue: s) { up = u }
+        if let u = environment["VXRT_UPSCALE"].flatMap(VXUpscale.init(rawValue:)) { up = u }
+        upscale = up
 
         var auto = (info["KLAutoBootDefault"] as? String).map { $0 == "1" } ?? false
         if let v = defaults.object(forKey: Self.autoStartKey) as? Bool { auto = v }
@@ -128,7 +149,8 @@ final class VXSettings: ObservableObject {
     func exports() -> [(name: String, value: String)] {
         var out: [(String, String)] = [
             ("VXRT_RENDER_SCALE", String(format: "%.2f", renderScale)),
-            ("VXRT_PAIRS_IN_FLIGHT", String(latency.pairsInFlight)),
+            ("VXRT_UPSCALE", upscale.rawValue),
+            ("VXRT_GATE", latency.gate),
         ]
         if let p = predictMs { out.append(("VXRT_PREDICT_MS", String(format: "%.0f", min(max(p, Self.predictRange.lowerBound), Self.predictRange.upperBound)))) }
         if let h = stageEyeHeight { out.append(("VXRT_STAGE_EYE_HEIGHT", String(format: "%.2f", min(max(h, Self.eyeHeightRange.lowerBound), Self.eyeHeightRange.upperBound)))) }
