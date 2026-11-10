@@ -340,7 +340,8 @@ endif
 XROS_FIXTURE_BUNDLE_ID ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),gseddon.dev.vxrt.SkyrimVR,gseddon.dev.vxrt.VXRuntimeHost.XrizerOffscreen)
 # XROS_XRIZER_GAME=1: the app starts Skyrim VR by itself (Info.plist VXDefaultLaunch; a launch argument -game/-test overrides it).
 XROS_DEFAULT_LAUNCH ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),-game skyrimvr -xrizer -immersive)
-XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) 'VXRT_DEFAULT_LAUNCH=$(XROS_DEFAULT_LAUNCH)' SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
+# XROS_SHADER_SET=<dir of <key>.metallib files>: embedded as bundle/shadercache (embed_aot_frameworks.sh).
+XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) $(if $(XROS_SHADER_SET),'VXRT_SHADER_SET=$(abspath $(XROS_SHADER_SET))') 'VXRT_DEFAULT_LAUNCH=$(XROS_DEFAULT_LAUNCH)' SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
 xros-app: xros-lib xros-aot-tests
 ifeq ($(XROS_XRIZER_FIXTURE),1)
 	@test "$(XROS_SDK)" != xrsimulator -o "$(XROS_CODE_SIGNING)" = NO || { echo 'the simulator xrizer fixture/immersive build requires XROS_CODE_SIGNING=NO' >&2; exit 2; }
