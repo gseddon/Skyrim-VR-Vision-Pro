@@ -1004,6 +1004,7 @@ int vx_x86_stack_words(uint64_t *out, int n, uint64_t lo, uint64_t hi);
 static void *vx_x86_return_address(void) { return __builtin_return_address(0); }
 static int vx_x86_stack_words(uint64_t *out, int n, uint64_t lo, uint64_t hi) { (void)out; (void)n; (void)lo; (void)hi; return 0; }
 #endif
+static int clear_trace_draws(void) { static int on = -1; if (on < 0) on = getenv("VXRT_TRACE_DRAWS") != NULL; return on; }
 static WINAPI void ctx_clear_rtv(void *this, d3d_view *v, const float color[4]) {
     static int traced;
     if (vx_draw_trace_active && v && v->resource->kind == K_TEXTURE) {   // (VXRT_TRACE_DRAWS is logging: every clear, by texture identity)
@@ -1020,7 +1021,7 @@ static WINAPI void ctx_clear_rtv(void *this, d3d_view *v, const float color[4]) 
         vx_log("clear rtv @%05lx %ux%u f%u to (%g, %g, %g, %g) from %p (colour at %p)", (unsigned long)((uintptr_t)v->resource >> 4 & 0xfffff), ((d3d_texture *)v->resource)->desc[TD_WIDTH],
                ((d3d_texture *)v->resource)->desc[TD_HEIGHT], v->format, color[0], color[1], color[2], color[3], vx_x86_return_address(), (const void *)color);
     }
-    else if (getenv("VXRT_TRACE_DRAWS") && v && v->resource->kind == K_TEXTURE && ((d3d_texture *)v->resource)->desc[TD_WIDTH] != 2048 && traced++ < 40)
+    else if (clear_trace_draws() && v && v->resource->kind == K_TEXTURE && ((d3d_texture *)v->resource)->desc[TD_WIDTH] != 2048 && traced++ < 40)
         vx_log("ClearRenderTargetView %ux%u to (%g, %g, %g, %g)", ((d3d_texture *)v->resource)->desc[TD_WIDTH], ((d3d_texture *)v->resource)->desc[TD_HEIGHT], color[0], color[1], color[2], color[3]);
     if (v && v->resource->kind == K_TEXTURE) clear_later(this, v, color, 0, 0, 0, 0);
 }
