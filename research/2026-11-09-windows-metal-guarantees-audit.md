@@ -170,6 +170,36 @@ From the delegated shader audit; spot-checked here for fast math, `[[position]]`
 - **`GlobalReAlloc`** (`extras.c:810-812`) and **`LocalReAlloc`** (`services.c:580`) ignore `GMEM_ZEROINIT`/`LMEM_ZEROINIT` (0x40) when growing.
 - **Fixes:** a per-thread generation sweep for TLS/FLS, keeping the requested size for ReAlloc, and honouring 0x40.
 
+### 19. Windows API gaps seen in Skyrim's run logs (parked tasks)
+
+These come from the run logs, not from static analysis. Each line appears in a Mac play log (`build/play-034735/startup.log`, 2026-11-10) and in the visionOS simulator start-up log (`/tmp/claude/sim/run2/vxrt.log`). The game runs past all of them on the Mac. Add a row when a log shows a new gap. Remove one only after a run shows it's gone.
+
+| Gap | Log line | Effect | Status |
+|---|---|---|---|
+| XAudio2 2.7 reverb and effect chains | `CoCreateInstance: class {6A93130E-1D53-41D1-A9CF-E758800BB179} is not available` (this is `CLSID_AudioReverb`); `IXAudio2Voice::SetEffectChain (effects) is not implemented yet` | Probably no reverb in interiors or caves (not checked by ear). Skyrim creates a 2-channel 48 kHz submix voice with an effect chain. | Parked (2026-11-10). Task below. |
+| 6 unimplemented imports in `SkyrimVR.exe` | `6 imported functions are not implemented yet (stubs stop the program if called)` | None seen: none was called on the Mac. | Not investigated. The next step is to list the six from the loader's summary. |
+
+**XAudio2 effects task (parked).**
+1. Log what Skyrim requests:
+   - each `SetEffectChain` call: the voice, the effect count, each XAPO and its CLSID;
+   - the XAPO creation calls (`CoCreateInstance` `CLSID_AudioReverb` / `CLSID_AudioVolumeMeter` from xaudio2_7, and `XAudio2CreateReverb`/`CreateFX` if used);
+   - the `SetEffectParameters` payloads (`XAUDIO2FX_REVERB_PARAMETERS`, I3DL2 conversion);
+   - whether the game uses custom XAPOs of its own. Those run as guest code and need the generated guest ABI stubs, not native function pointers.
+2. Implement what's used:
+   - `SetEffectChain`/`EnableEffect`/`DisableEffect`/`Set`/`GetEffectParameters`, processed in the voice render path (`VXRuntime/src/xaudio2.m`);
+   - the built-in reverb, following Microsoft's documented parameter semantics, with the DSP written by us from published algorithms (Schroeder/Freeverb or FDN);
+   - the volume meter, if Skyrim uses it.
+
+   Adapting third-party code such as FAudio's zlib FAudioFX needs a download and the user's approval first. Wine and ReactOS terms are as in `AGENTS.md`.
+3. Add an off switch `VXRT_XAUDIO2_NO_EFFECTS=1` and log once which effects are active.
+4. Tests:
+   - an impulse gives a decaying tail with an RT60 near `DecayTime`;
+   - wet/dry mix;
+   - a disabled effect is a bit-exact passthrough;
+   - no NaN or denormal blow-up;
+   - an owned CPU-cost benchmark (for reference, the WMA decoder costs about 0.12 s of CPU per 185 s track);
+   - a live run, with output clips with and without effects saved privately so the user can listen.
+
 ---
 
 ## OK: verified in code
