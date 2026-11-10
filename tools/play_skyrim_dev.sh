@@ -11,6 +11,8 @@
 #   tools/play_skyrim_dev.sh --seconds N     time limit (default 3600; max 3600)
 #   tools/play_skyrim_dev.sh --mute          no sound
 #   tools/play_skyrim_dev.sh --hud           Apple's Metal Performance HUD (MTL_HUD_ENABLED=1)
+#   tools/play_skyrim_dev.sh --trace-calls N log the first N calls per runtime function (default 0: off; tracing
+#                                            costs ~20% process CPU, measured 2026-11-10)
 #   tools/play_skyrim_dev.sh -- ARGS...      pass ARGS on to tools/vxrt_native_startup.py
 #   tools/play_skyrim_dev.sh --key-script S  extra: VXRT_XRIZER_DEV_KEY_SCRIPT (START:KEYS:HOLD,...), for checks
 # Diagnostic development host, not a SteamVR session and not a physical-headset claim.
@@ -22,13 +24,14 @@ B=${SKYRIM_AOT_BASE:-/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/ter
 ASSETS=${SKYRIM_ASSET_ROOT:-/Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SkyrimVR}
 VRWEB=${STEAMVR_WIN64_DLLS:-/Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SteamVR/bin/vrwebhelper/win64}
 T=${XRIZER_RUST_ROOT:-/Users/gseddon/git/VeRantyx/build/toolchains/xrizer-rust}
-SECONDS_LIMIT=3600; BUILD=1; RUN=1; MUTE=0; HUD=0; KEYSCRIPT=
+SECONDS_LIMIT=3600; BUILD=1; RUN=1; MUTE=0; HUD=0; KEYSCRIPT=; TRACE_CALLS=0
 while [ $# -gt 0 ]; do
   case $1 in
     --no-build) BUILD=0;; --build-only) RUN=0;; --mute) MUTE=1;; --hud) HUD=1;;
     --seconds) SECONDS_LIMIT=$2; shift;; --key-script) KEYSCRIPT=$2; shift;;
+    --trace-calls) TRACE_CALLS=$2; shift;;
     --) shift; break;;
-    -h|--help) sed -n 2,16p "$0"; exit 0;;
+    -h|--help) sed -n 2,18p "$0"; exit 0;;
     *) echo "unknown option $1" >&2; exit 2;;
   esac; shift
 done
@@ -100,8 +103,8 @@ Quit: Ctrl-C in this terminal, or close the Skyrim VR window.
 This table and the notes: docs/dev-keyboard.md
 ==============================================================================================================
 TAIL
-EXTRA=
-[ -n "$KEYSCRIPT" ] && EXTRA="--dev-key-script $KEYSCRIPT"
+EXTRA="--trace-calls $TRACE_CALLS"
+[ -n "$KEYSCRIPT" ] && EXTRA="$EXTRA --dev-key-script $KEYSCRIPT"
 [ $MUTE = 1 ] || EXTRA="$EXTRA --audio"
 [ $HUD = 1 ] && EXTRA="$EXTRA --hud"
 echo "output and evidence: $OUT"
