@@ -79,7 +79,7 @@ int main(void) {
         queue.fail=NO; assert(publish_pair(h,&pair)==XR_SUCCESS && queue.last.blit.copies==2);
         assert(vx_xros_xrizer_acquire(h,&frame)==0 && frame.pose.frame_id==10 && frame.pose.pose_id==20 &&
                frame.eye[0].width==4 && frame.eye[0].height==3 && frame.eye[1].width==4 && frame.eye[1].height==3 &&
-               frame.eye[0].color_space==VX_NATIVE_VR_COLOR_LINEAR && frame.eye[1].color_space==VX_NATIVE_VR_COLOR_LINEAR &&
+               frame.eye[0].color_space==VX_NATIVE_VR_COLOR_SRGB && frame.eye[1].color_space==VX_NATIVE_VR_COLOR_SRGB &&
                frame.eye[0].u_min==0 && frame.eye[0].v_min==0 && frame.eye[0].u_max==1 && frame.eye[0].v_max==1);
         uint64_t lease=frame.lease;
         assert(vx_xros_xrizer_acquire(h,&frame)==-1);
