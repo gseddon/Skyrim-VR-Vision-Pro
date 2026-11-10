@@ -162,9 +162,16 @@ def capture(args):
     callback_limit = getattr(args, 'callback_depth_limit', None)
     if callback_limit is not None and not 2 <= callback_limit <= 256:
         raise ValueError('callback depth limit must be from 2 to 256')
+    # Call tracing (src/calltrace.c) puts a logging trampoline on every Windows call into the runtime for the whole
+    # run: about 20% more process CPU on Skyrim (2026-11-10 A/B). Default 3 for probes; play passes 0 (off).
+    trace_calls = getattr(args, 'trace_calls', 3)
+    if trace_calls < 0:
+        raise ValueError('--trace-calls must be 0 (off) or more')
     ring_at = getattr(args, 'trace_call_ring', None)
     if ring_at is not None and not 1 <= ring_at < args.seconds:
         raise ValueError('call ring time must be at least 1 second and before the timeout')
+    if ring_at is not None and trace_calls == 0:
+        raise ValueError('--trace-call-ring needs call tracing (--trace-calls N, N > 0)')
     xrizer_path = getattr(args, 'xrizer_dylib', None)
     if bool(getattr(args, 'experimental_xrizer', False)) != bool(xrizer_path):
         raise ValueError('experimental xrizer requires an explicit xrizer dylib, and vice versa')
@@ -252,7 +259,7 @@ def capture(args):
         env.update(VXRT_ROOT=str(root), VXRT_OVERLAY=f'{source}:{overlay}', VXRT_AOT_DIR=str(directory),
                    VXRT_AOT_STRICT='1', VXRT_NO_WINE='1', VXRT_STEAM_BRIDGE='0', VXRT_MESSAGEBOX='auto',
                    VXRT_NO_ACTIVATE='1', VXRT_MUTE='1', VERANTYX_AUDIO='0', TMPDIR=str(temp),
-                   VXRT_LOG_TIME='1', VXRT_TRACE_CALLS='3')
+                   VXRT_LOG_TIME='1', VXRT_TRACE_CALLS=str(trace_calls))
         if getattr(args, 'audio', False):
             env['VXRT_MUTE'] = '0'; env['VERANTYX_AUDIO'] = '1'
             result.setdefault('diagnostic', {})['audio'] = 'unmuted: XAudio2/WASAPI output to the Mac default output device'
@@ -439,6 +446,7 @@ def main():
     ap.add_argument('--d3d11-capture-eye-frames', type=int, default=None, metavar='N', help='diagnostic only: with --d3d11-capture, stop the capture after the VR frame with id N')
     ap.add_argument('--wait-dump', default=None, help='diagnostic only: VXRT_WAIT_DUMP seconds list, e.g. 30,50: log threads blocked in waits, with their guest return addresses')
     ap.add_argument('--fault-objects', action='store_true', help='diagnostic only: at an unhandled fault, log what each register points at (VXRT_FAULT_OBJECTS=1)')
+    ap.add_argument('--trace-calls', type=int, default=3, metavar='N', help='VXRT_TRACE_CALLS: log the first N calls per runtime function (default 3; 0: off, no trampolines; costs CPU on every call)')
     ap.add_argument('--trace-files', action='store_true', help='diagnostic only: log guest file opens that fail, with the path (VXRT_TRACE_FILES=1)')
     ap.add_argument('--trace-all-opens', action='store_true', help='diagnostic only: with --trace-files, log every guest file open (VXRT_TRACE_FILES=2)')
     ap.add_argument('--trace-call-ring', type=int, metavar='SECONDS', help='diagnostic only: dump each thread\'s last runtime calls after this many seconds, before the timeout')
