@@ -194,19 +194,27 @@ int vx_xros_fixture_stage(float out[7]) {
 int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],const float tangents[8],double prediction,const float head[16],int tracked) {
     /* 0.25 s covers one compositor presentation. It rejects a different epoch. */
     if(!width || !height || !eyes || !tangents || !vx_xros_host_time_is_current(prediction,0.25) || prediction>(double)INT64_MAX/1e9)return -1;
-    /* Overscan: the game is told a field of view larger than the drawable's by VXRT_OVERSCAN (default 0.12 = +12% per side, in tangent
+    /* Overscan: the game is told a field of view larger than the drawable's by VXRT_OVERSCAN (default 0.10 = +10% per side, in tangent
      * space; 0 disables) and a render size larger in proportion, so a head turn during the frame's age (about 80 ms) shows rendered
      * picture, not black edges (the standard reprojection margin). Stereo drawables only; the simulator's mono inspection keeps its
      * exact optics. Cost: (1+o)^2 more pixels for the game. */
     float over_tan[8]; uint32_t over_w=width,over_h=height;
     {
         static float overscan=-1;
-        if(overscan<0){const char *e=getenv("VXRT_OVERSCAN");char *end=NULL;float v=e&&*e?strtof(e,&end):0.12f;
-            overscan=(e&&*e&&(!end||*end||v<0||v>0.5f))?0.12f:v;
+        if(overscan<0){const char *e=getenv("VXRT_OVERSCAN");char *end=NULL;float v=e&&*e?strtof(e,&end):0.10f;
+            overscan=(e&&*e&&(!end||*end||v<0||v>0.5f))?0.10f:v;
             vx_log("xrizer xros fixture: overscan %.2f per side (VXRT_OVERSCAN)",overscan);}
         float o=(vx_xros_immersive_enabled() && !immersive_mono) ? overscan : 0.f;
         for(unsigned i=0;i<8;i++)over_tan[i]=tangents[i]*(1.f+o);
-        over_w=(uint32_t)((float)width*(1.f+o)+.5f);over_h=(uint32_t)((float)height*(1.f+o)+.5f);
+        /* VXRT_RENDER_SCALE (default 0.8): the render size the game is asked for, as a fraction of the overscanned drawable size. Device run
+         * 11: the game drew at 2502x2374 per eye and the compositor was given a new pair only 17 times a second (presentation interval about
+         * 60 ms, the game's submit ring at its bound 89% of the time): the GPU is the limit, and pixels are the lever. */
+        static float scale=-1;
+        if(scale<0){const char *e=getenv("VXRT_RENDER_SCALE");char *end=NULL;float v=e&&*e?strtof(e,&end):0.8f;
+            scale=(e&&*e&&(!end||*end||v<0.3f||v>1.5f))?0.8f:v;
+            vx_log("xrizer xros fixture: render scale %.2f (VXRT_RENDER_SCALE)",scale);}
+        float sc=(vx_xros_immersive_enabled() && !immersive_mono) ? scale : 1.f;
+        over_w=(uint32_t)((float)width*(1.f+o)*sc+.5f);over_h=(uint32_t)((float)height*(1.f+o)*sc+.5f);
         tangents=over_tan;width=over_w;height=over_h;
     }
     XrTime predicted=(XrTime)(prediction*1e9);
