@@ -141,7 +141,7 @@ static HRESULT query(void *this, const GUID *iid, void **out, const GUID *iface)
 // works on many at once, and a game creating thousands while it loads would otherwise wait for each in turn; the
 // first draw (or dispatch) that needs one waits for it.
 // so: a geometry shader made with stream output (so_layout), else NULL.
-typedef struct { d3d_object base; dxbc_shader info; void *function, *compute; gpu_ir_pipeline *compute_ir; uint32_t id, hash; volatile int ready; void *dual; int dual_tried; void *variant; int variant_tried; void *so; } d3d_shader;   // hash: as in VXRT_DUMP_SHADERS names
+typedef struct { d3d_object base; dxbc_shader info; void *function, *compute; gpu_ir_pipeline *compute_ir; uint32_t id, hash; unsigned char sha[32]; volatile int ready; void *dual; int dual_tried; void *variant; int variant_tried; void *so; } d3d_shader;   // hash: as in VXRT_DUMP_SHADERS names
 // Stream output (stream 0): which output register components go where in the target buffers. An entry copies
 // count components from register reg, component comp on, to dword dword of each vertex's record in buffer slot.
 typedef struct { uint32_t reg, comp, count, slot_dword; } so_entry;   // slot_dword: slot << 24 | dword
@@ -153,6 +153,22 @@ static pthread_cond_t g_compiled = PTHREAD_COND_INITIALIZER;
 static pthread_mutex_t g_variant_lock = PTHREAD_MUTEX_INITIALIZER;
 // Dual-source blending (SRC1 factors) reads the pixel shader's second output as Metal's color(0) index(1): a
 // variant of the shader with o1 declared so, made the first time a blend state asks for it.
+// VXRT_SHADER_VARIANT_LOG=<file>: one line per MSL source a shader asks the library layer for, with the sha-256 of the
+// DXBC it came from, the stage, the kind of variant (base, pass-through, vs-kernel, dual-source) and what else went
+// into it, for counting the variants per shader (tab separated: dxbc sha256, stage, kind, fnv-1a of the MSL, extra).
+static void variant_log(const d3d_shader *s, const char *kind, const char *msl, const char *extra) {
+    static FILE *f; static int init; static pthread_mutex_t lk = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&lk);
+    if (!init) { init = 1; const char *p = getenv("VXRT_SHADER_VARIANT_LOG"); if (p && *p) f = fopen(p, "a"); }
+    if (f) {
+        uint64_t h = 0xcbf29ce484222325ull;
+        for (const uint8_t *q = (const uint8_t *)msl; msl && *q; q++) { h ^= *q; h *= 0x100000001b3ull; }
+        for (int i = 0; i < 32; i++) fprintf(f, "%02x", s->sha[i]);
+        fprintf(f, "\t%d\t%s\t%016llx\t%s\n", s->info.type, kind, (unsigned long long)h, extra ? extra : "");
+        fflush(f);
+    }
+    pthread_mutex_unlock(&lk);
+}
 static id<MTLFunction> dual_source_function(d3d_device *dev, d3d_shader *s) {
     pthread_mutex_lock(&g_variant_lock);
     if (!s->dual_tried) {
@@ -161,6 +177,7 @@ static id<MTLFunction> dual_source_function(d3d_device *dev, d3d_shader *s) {
         if (at) {
             NSString *source = [NSString stringWithFormat:@"%.*s o1 [[color(0), index(1)]];%s", (int)(at - msl), msl, at + strlen(" o1 [[color(1)]];")];
             NSError *err = nil;
+            variant_log(s, "dual-source", source.UTF8String, "");
             id<MTLLibrary> lib = d3d11_library((__bridge id<MTLDevice>)dev->mtl, source, &err);
             id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"vx_main"] : nil;
             if (fn) s->dual = (void *)CFBridgingRetain(fn);
@@ -249,11 +266,13 @@ static HRESULT create_shader(d3d_device *dev, const void *code, size_t size, int
     dump(&s->info, code, size);
     unsigned char digest[CC_SHA256_DIGEST_LENGTH];
     CC_SHA256(code, (CC_LONG)size, digest);
+    memcpy(s->sha, digest, 32);
     s->hash = (uint32_t)digest[0] << 24 | (uint32_t)digest[1] << 16 | (uint32_t)digest[2] << 8 | digest[3];
     if (!out) { d3d_release(&s->base); return S_FALSE; }   // only checking: translated is enough
     s->id = __sync_fetch_and_add(&g_next_id, 1);
     uint64_t t1 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     NSString *source = @(s->info.msl);
+    variant_log(s, "base", s->info.msl, "");
     static int sync = -1;                              // VXRT_SYNC_SHADERS=1: compile before returning, as before
     if (sync < 0) sync = getenv("VXRT_SYNC_SHADERS") != NULL;
     d3d_addref(&s->base);                              // kept until its compile is done
@@ -1151,6 +1170,7 @@ static id<MTLFunction> shader_variant(d3d_device *dev, d3d_shader *s, const char
     if (!s->variant_tried && msl) {
         s->variant_tried = 1;
         NSError *err = nil;
+        variant_log(s, what, msl, "");
         id<MTLLibrary> lib = d3d11_library((__bridge id<MTLDevice>)dev->mtl, @(msl), &err);
         id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"vx_main"] : nil;
         if (fn) s->variant = (void *)CFBridgingRetain(fn);
@@ -2443,6 +2463,7 @@ static id<MTLComputePipelineState> vs_kernel_pipeline(d3d_context *c, d3d_draw_s
         }
     }
     NSError *err = nil;
+    if (source.length) variant_log(vs, "vs-kernel", source.UTF8String, key.UTF8String);
     id<MTLLibrary> lib = source.length ? d3d11_library((__bridge id<MTLDevice>)c->base.dev->mtl, source, &err) : nil;
     id<MTLFunction> fn = lib ? [lib newFunctionWithName:@"vx_main"] : nil;
     id<MTLComputePipelineState> pso = nil;
