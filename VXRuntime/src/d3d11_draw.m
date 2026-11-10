@@ -518,6 +518,9 @@ static void *make_sampler(id<MTLDevice> dev, const uint32_t *d) {
     sd.lodMinClamp = min_lod < 0 ? 0 : min_lod;
     sd.lodMaxClamp = max_lod > 1000 ? FLT_MAX : max_lod;
     sd.supportArgumentBuffers = NO;
+    static int trace = -1;                             // VXRT_TRACE_SAMPLERS=1: each sampler a program creates (what MipLODBias, filter and anisotropy it asks for)
+    if (trace < 0) trace = getenv("VXRT_TRACE_SAMPLERS") != NULL;
+    if (trace) vx_log("sampler: filter 0x%x address %u,%u,%u mip bias %g aniso %u compare %u lod %g..%g", filter, d[1], d[2], d[3], (double)*(const float *)&d[4], d[5], d[6], (double)min_lod, (double)max_lod);
     return (void *)CFBridgingRetain([dev newSamplerStateWithDescriptor:sd]);
 }
 static WINAPI HRESULT device_create_sampler(void *this, const uint32_t *desc, void **out) {
@@ -1332,6 +1335,11 @@ static id<MTLRenderPipelineState> pipeline(d3d_context *c, d3d_draw_state *s, id
         pd.depthAttachmentPixelFormat = depth.pixelFormat;
         if (depth.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) pd.stencilAttachmentPixelFormat = depth.pixelFormat;
         if (!ncolors) pd.rasterSampleCount = depth.sampleCount;
+    }
+    {   // VXRT_TRACE_A2C=1: each pipeline that asks for alpha-to-coverage, with its sample count (1 = no multisampling, so coverage is a dither/threshold)
+        static int a2c = -1;
+        if (a2c < 0) a2c = getenv("VXRT_TRACE_A2C") != NULL;
+        if (a2c && pd.alphaToCoverageEnabled) vx_log("a2c pipeline: ps %08x raster samples %lu", ps ? ps->hash : 0, (unsigned long)pd.rasterSampleCount);
     }
     NSError *err = nil;
     uint64_t t0 = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);

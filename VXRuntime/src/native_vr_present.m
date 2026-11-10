@@ -222,6 +222,16 @@ static NSString *const g_native_shader = @
 " if (mr.y>.5) { float2 g=guv; float lx=mi.x, rx=1-mi.y, ty=mi.z, by=1-mi.w; float2 hc=float2((lx+rx)*.5,(ty+by)*.5), he=float2((rx-lx)*.5,(by-ty)*.5);\n"
 "  float r=mr.x*min(he.x,he.y); float2 qq=abs(g-hc)-he+r; float sd=length(max(qq,0.))+min(max(qq.x,qq.y),0.)-r; if (abs(sd)<.0016) c=float3(1,0,1); }\n"
 " return c; }\n"
+/* VXRT_REPROJ_FILTER=bicubic: Catmull-Rom (the 5-tap form: four bilinear taps around the centre plus the centre) instead of bilinear. A bilinear
+ * resample at a fractional offset low-passes the picture (a half-texel shift keeps about 56% of the fine-detail energy, a whole texel 100%), and the
+ * reprojected repeats of a pair sit at a different fraction every compositor frame: the sharpness pulses, which reads as shimmer on foliage. */
+"float4 catmull(texture2d<float> img, sampler smp, float2 uv) {\n"
+" float2 sz=float2(img.get_width(),img.get_height()); float2 tc=uv*sz; float2 p1=floor(tc-.5)+.5; float2 f=tc-p1;\n"
+" float2 w0=f*(-.5+f*(1.-.5*f)); float2 w1=1.+f*f*(-2.5+1.5*f); float2 w2=f*(.5+f*(2.-1.5*f)); float2 w3=f*f*(-.5+.5*f);\n"
+" float2 w12=w1+w2; float2 p12=(p1+w2/w12)/sz; float2 p0=(p1-1.)/sz; float2 p3=(p1+2.)/sz;\n"
+" float4 c=img.sample(smp,float2(p12.x,p0.y))*(w12.x*w0.y)+img.sample(smp,float2(p0.x,p12.y))*(w0.x*w12.y)+img.sample(smp,p12)*(w12.x*w12.y)\n"
+"  +img.sample(smp,float2(p3.x,p12.y))*(w3.x*w12.y)+img.sample(smp,float2(p12.x,p3.y))*(w12.x*w3.y);\n"
+" float wsum=w12.x*w0.y+w0.x*w12.y+w12.x*w12.y+w3.x*w12.y+w12.x*w3.y; return max(c/wsum,0.); }\n"
 "fragment float4 nf(V v [[stage_in]], texture2d<float> img [[texture(0)]], constant P &p [[buffer(0)]]) {\n"
 " float2 t=float2(mix(-p.dst.x,p.dst.y,v.uv.x),mix(p.dst.z,-p.dst.w,v.uv.y));\n"
 " float3 d=float3(t,-1); float3 s=float3(dot(p.r[0].xyz,d),dot(p.r[1].xyz,d),dot(p.r[2].xyz,d));\n"
@@ -229,7 +239,9 @@ static NSString *const g_native_shader = @
 " float2 uv=float2((q.x-p.src.x)/(p.src.y-p.src.x),(q.y-p.src.z)/(p.src.w-p.src.z));\n"
 " bool inside = okd && !(any(uv<0) || any(uv>1));\n"
 " constexpr sampler smp(coord::normalized,filter::linear,address::clamp_to_edge);\n"
-" float4 game = inside ? img.sample(smp,mix(p.bounds.xy,p.bounds.zw,uv)) : float4(0,0,0,1);\n"
+" float4 game = float4(0,0,0,1);\n"
+" if (inside) { float2 tu=mix(p.bounds.xy,p.bounds.zw,uv);\n"
+"  if (p.probe.y>.5) game=catmull(img,smp,tu); else game=img.sample(smp,tu); }\n"
 " if (p.probe.x>.5) { float3 pc=probe(t,p.dst,uv,p.maskins,p.maskrad); if (p.probe.x>1.5) { bool ink=any(abs(pc-float3(.05,.05,.07))>.02); return ink?float4(pc,1):game; } return float4(pc,1); }\n"
 " return game; }\n";
 
@@ -288,6 +300,10 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
         for (int k=0; k<3; k++) p.rot[r*4+c] += source[r*4+k] * view[k*4+c];
     memcpy(p.src, g_native_frame.pose.frustum[eye], sizeof p.src);
     memcpy(p.dst, tan, sizeof p.dst);
+    {   static int bicubic = -1;                 // VXRT_REPROJ_FILTER=bicubic|bilinear (default bilinear)
+        if (bicubic < 0) { const char *f = getenv("VXRT_REPROJ_FILTER"); bicubic = f && !strcmp(f, "bicubic"); if (bicubic) vx_log("reprojection filter: Catmull-Rom (VXRT_REPROJ_FILTER=bicubic)"); }
+        p.probe[1] = bicubic ? 1.f : 0.f;
+    }
     p.bounds[0]=e->u_min; p.bounds[1]=e->v_min; p.bounds[2]=e->u_max; p.bounds[3]=e->v_max;
     {   /* VXRT_VISMASK_PROBE: the calibration pattern (see vismask_shape.h) */
         static int mode = -1;
