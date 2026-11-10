@@ -252,3 +252,46 @@ Smallest first milestones, in order:
 2. Static replay on the Mac: apply that diff to a private copy of the PE, AOT the patched exe plus the SKSE and HIGGS DLLs plus a stub module, run strict AOT: HIGGS logs its load line, zero fallback, no runtime code writes.
 3. A fixture round-trip for the OpenVR calls HIGGS makes (role lookup, connected, pose velocities, haptic pulse) through the generated guest stubs against xrizer, with the Sense fixture.
 4. Only then add VRIK (capture first), then PLANCK; then a physical-headset session for feel, grip offsets and frame cost.
+
+## 8. Findings from the user's downloads (2026-11-11): HIGGS 1.10.10, PLANCK 0.8.2, SkyUI
+
+Subject: static reading of the zip files in `~/Downloads` (listed and parsed in memory by `python3 -I` scripts kept outside the repo; nothing extracted or run). Complements section 7, which read the source. Combined plan: [plans/2026-11-11-skyrim-mods-combined.md](../plans/2026-11-11-skyrim-mods-combined.md).
+
+### 8.1 HIGGS 1.10.10 and PLANCK 0.8.2 [measured]
+
+| | HIGGS 1.10.10 | PLANCK 0.8.2 |
+| --- | --- | --- |
+| Archive | `HIGGS 1.10.10-43930-1-10-10-1768263289.zip`, 11 entries | `PLANCK 0.8.2 66025 ... .zip`, 10 entries |
+| DLL | `SKSE/Plugins/higgs_vr.dll`, 877,568 bytes, x64, PE time stamp 2026-01-13 | `SKSE/Plugins/activeragdoll.dll`, 736,768 bytes, x64, time stamp 2026-10-12 |
+| Exports | `SKSEPlugin_Query`, `SKSEPlugin_Load` (old SKSE plugin API, so SKSE VR 2.0.12 style; no `SKSEPlugin_Version`) | same |
+| Imports | KERNEL32 (112), USER32 (`MessageBoxA`), SHELL32 (`SHGetFolderPathA`), WINMM (`timeGetTime`, `timeBeginPeriod`, `timeGetDevCaps`). No OpenVR, no Address Library DLL | KERNEL32 (98), same others |
+| Notable kernel32 | `VirtualProtect/Alloc/Free/Query`, `GetModuleHandleA/W/ExW`, `GetProcAddress`, `LoadLibraryExW`, `RtlVirtualUnwind`, `SetUnhandledExceptionFilter`, `CreateThread/ExitThread/FreeLibraryAndExitThread`, `GetPrivateProfileStringA` | same minus the thread functions |
+| Data files | `higgs_vr.esp` (TES4, form 44, not ESL, masters Skyrim.esm and Update.esm), `Scripts/HiggsVR.pex` (+ `.psc`), `higgs_vr.ini` (593 lines), a 17.5 MB `.pdb` | `Scripts/planck.pex` (+ `.psc`), `activeragdoll.ini` (758 lines), a 17.5 MB `.pdb`; **no ESP** |
+| Needs | SKSE VR (messages, task and Papyrus interfaces; "Couldn't get SKSE VR interface. You probably have an outdated SKSE version"); the ESP active; VRIK optional | SKSE VR; HIGGS (interface and minimum version); a branch trampoline **and a code-generation buffer** from SKSE (both fatal when missing) |
+| Log files | via `Data\SKSE\Plugins\higgs_vr.ini` for settings | `\My Games\Skyrim VR\SKSE\activeragdoll.log` |
+
+Strings in the release builds match the source reading of section 7: HIGGS reports hooks such as "PlayerCharacter::Update pre-vrik hook complete", "Actor::Jump bhkCharacterController::SetJumping hook complete", "ArrowProjectile::AddImpact bhkCollisionObject::GetRigidBody hook complete", "Adding listeners and collision to new havok world", Papyrus events for grab, pull, drop, stash, consume and two-handing; PLANCK has hook functions such as `BSLookAtModifier_modify_Hook`, `ahkpCharacterProxy_updateManifold_Hook`, `ActorProcess_ExitFurniture_ResetRagdoll_Hook` and RTTI of `hkbRagdollDriver`, `hkpContactListener`. This confirms the hook families; the exact byte sites of these two versions still need the Mac capture (the source I read in section 7 is a later push than the HIGGS build date: the API showed 2026-05-15 for HIGGS, the DLL is 2026-01-13, so the site list could differ by version) [inferred].
+
+### 8.2 What our runtime needs to load them
+
+1. **A Plugins.txt and ESP layer.** HIGGS stops if its ESP is not active. In the Mac trace the game tried `C:\users\vxrt\AppData\Local\Skyrim VR\Plugins.txt` and failed to open it [measured]; nothing writes it. M0 of the combined plan.
+2. **An in-process SKSE VR.** The loader (`skse_loader.exe`) starts the game suspended and injects `sksevr_1_4_15.dll`; neither step exists for us (`posix_spawn` refused on visionOS, `VISIONOS_PORT.md:308`; no remote thread). The core DLL then patches the exe (Papyrus registration, game-start and save/load hooks, Scaleform, messaging). Under strict AOT the translated exe never reads its own code bytes, so those writes must be captured and baked in (option A), or the exe translated with patch slots (option B/catalog).
+3. **AOT of the plugin DLLs** with the same pipeline as the game DLLs (`tools/skyrim_aot_pipeline.py`); both are plain x64 DLLs with a small import set, no TLS callbacks were checked [unverified: `.tls` directory and static constructors need a look when the DLL is first translated].
+4. **The generated stubs**: HIGGS and PLANCK write Xbyak code into the SKSE codegen buffer at load; capture it on the Mac and ship it as an extra AOT module whose addresses match (fixed base).
+5. **Address Library**: not needed by these two. Needed only by other plugins.
+6. **Havok, player character, controller input**: all inside the exe at fixed offsets (called or hooked); controller input is the game's cached `IVRSystem` pose array and role lookups, which xrizer implements (section 7.3). No new OpenVR hook.
+7. **A guest ABI check** for the calls HIGGS and PLANCK make through the game's `IVRSystem` (haptics, velocities), per `AGENTS.md`.
+
+### 8.3 SkyUI package [measured]
+
+`SkyUI-12604-6-11-1778020881.zip`: two entries. `SkyUI_SE.esp` (2433 bytes, TES4 flags 0x200 = **ESL**, form version 44, HEDR 1.70, master Skyrim.esm, SNAM "SkyUI SE 6.0") and `SkyUI_SE.bsa` (2.9 MB, v105, flags 0x3, uncompressed; 71 files: 47 SWF, 12 PEX, 11 text, 1 DDS). The SWFs replace vanilla menus (inventory, magic, barter, container, gift, favorites, crafting, map, quest journal, start menu, HUD, loading, message box, ...) and add `skyui/` panels, icon sets and MCM (`configpanel.swf`, `mcm_splash.swf`). The scripts are `ski_main`, `ski_configbase`, `ski_configmanager`, `ski_configmenu`, `ski_favoritesmanager`, `ski_settingsmanager`, `ski_widgetbase`, `ski_widgetmanager`, `ski_activeeffectswidget`, `ski_questbase`, `ski_qf_configmanagerinstance`, `ski_playerloadgamealias`. There is no `*vr*` file name; whether this is the VR-usable build is for the user to confirm on the Nexus page [unverified].
+
+SKSE dependency, measured in the data: `SKI_Main.pex` has the error constants `ERR_SKSE_MISSING`, `ERR_SKSE_VERSION_RT`, `ERR_SKSE_VERSION_SCPT`, `ERR_SKSE_BROKEN`, `MinSKSERelease` and the messages "The Skyrim Script Extender (SKSE64) is not running", "SKSE64 is outdated", with `GetVersionRelease`; 15 SWFs contain the `skse` identifier (inventory 12, magic 12, container 12, map 11, configpanel 11, crafting 10, barter 10, gift 10, favorites 9, inventorylists 9, mapfinderpanel 9, bottombar 5, itemcard 5, widgetloader 2, activeeffects 3, plus single references in start menu, message box and quest journal); the Papyrus uses `UI.Invoke`, `InvokeBool/Int/String/...A`, `RegisterForModEvent`, `SendModEvent`, `RegisterForMenu`. So: without SKSE the SWFs may load but the menus lose their extended data, and `SKI_Main` shows its error box. They do not work usefully without SKSE; they need from the SKSE core only (a) the Papyrus natives `SKSE`, `UI`, `ModEvent`, menu registration, (b) the Scaleform `skse` object and `ExtendData` hooks. Both live in the SKSE core DLL, no per-game-site patches of SkyUI's own.
+
+### 8.4 SkyUI, data side through `--mods-dir`
+
+The BSA loads automatically because its name matches the ESP (`SkyUI_SE.esp`/`.bsa`) when the ESP is active [community]; both files are top-level entries of `Data/`, which `--mods-dir` already links as symlinks (the lever links any top-level entry; `tools/skyland_flatten.py` refuses `.esp/.bsa` on purpose, so a general flattener is needed, M0). Needs: `Plugins.txt` with `*SkyUI_SE.esp`; the ESL flag solved (the VR exe has no light-plugin support [community]: either the "Skyrim VR ESL Support" plugin or a private copy of the ESP with bit 0x200 of the TES4 flags cleared; check the record list first); the game's `Interface/Translations` lookups find `skyui_se_english.txt` inside the BSA. Scaleform rendering of the extra SWFs is the game's own code path (the vanilla `interface` BSA is already used), so no new renderer work is expected [inferred]; the VR menus are drawn on the game's own VR UI quad.
+
+### 8.5 Phasing of SkyUI (also in the combined plan)
+
+After the data layer (M0) and the SKSE core (M1/M2), before HIGGS: SkyUI needs no exe patches of its own, so it is the cheapest consumer of the SKSE bootstrap and the first end-to-end proof of Papyrus natives and Scaleform extension. Acceptance: Mac strict AOT, no `ERR_SKSE_*` box, MCM page opens and saves a setting to the overlay; the headset check is a human opening the menu with the Sense controllers and reading it.
