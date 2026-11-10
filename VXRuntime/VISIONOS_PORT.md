@@ -31,6 +31,7 @@ The answer, with evidence, and a plan for each wall.
   size in points: 1280×720 by default); each top-level window is a subview at its rectangle (UIKit's y runs down as
   Windows' does, so no flipping); GDI pictures are layer contents as on the Mac; a swap chain gets a `CAMetalLayer`
   sublayer filling the window (`drawableSize` = bounds × display scale). Touches are the left mouse button.
+- **Host log per launch**: each launch writes `Documents/host_log-<launch unix s>.jsonl` (a new name every session, so a devicectl pull cannot return a cached prefix of a growing file); `Documents/host_log.jsonl` is a symlink to the current one for Mac/simulator readers. Pull the newest with `tools/pull_host_log.sh <dest>`. The oldest sessions are deleted beyond `VXRT_LOG_KEEP_MB` (default 50) or 40 files; an older build's plain `host_log.jsonl` is archived at the first launch. `VXRT_LOG_APPEND=1` keeps the old single appended `host_log.jsonl` (tools/device_scale_sweep.sh sets it).
 - **Logs**: `Documents/host_log.jsonl` (launch, arena, exe-base and address-space probes, a Metal capability probe,
   `os_proc_available_memory()` and the footprint every 2 s, the program's start) and `Documents/vxrt.log` (the
   runtime's stderr for that launch). `tools/xros_device_run.sh` launches each test and copies both back.

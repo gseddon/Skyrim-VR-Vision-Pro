@@ -13,6 +13,7 @@
 #import <Metal/Metal.h>
 #include <crt_externs.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <mach/mach.h>
 #include <os/proc.h>
 #include <pthread.h>
@@ -200,6 +201,46 @@ static void *tee_thread(void *arg) {
     return NULL;
 }
 
+
+// One host_log file per launch, named host_log-<launch unix s>.jsonl: the name changes every session, so a pull (devicectl copy) can never hand
+// back a cached prefix of a file that is still growing (device 2026-11-10 22:30: host_log.jsonl was 25 MB, the copy returned a stale 19-20 MB prefix
+// whose last event was an old session). Documents/host_log.jsonl stays as a symlink to the current session for readers on the Mac and the simulator;
+// a pull from the device lists Documents and takes the newest host_log-*.jsonl (tools/pull_host_log.sh). A plain host_log.jsonl left by an older
+// build is archived under its last-write time. The oldest files are deleted until all of them together fit in VXRT_LOG_KEEP_MB (default 50) and at
+// most 40 remain; the current session is never limited by older ones. VXRT_LOG_APPEND=1 is the old behaviour: one host_log.jsonl, appended.
+static void session_host_log(char *path, size_t cap) {
+    char legacy[1300]; snprintf(legacy, sizeof legacy, "%s/host_log.jsonl", g_docs);
+    const char *ap = getenv("VXRT_LOG_APPEND");
+    if (ap && !strcmp(ap, "1")) { snprintf(path, cap, "%s", legacy); return; }
+    snprintf(path, cap, "%s/host_log-%lld.jsonl", g_docs, (long long)t0);
+    struct stat st;
+    if (lstat(legacy, &st) == 0) {
+        if (S_ISLNK(st.st_mode) || st.st_size == 0) unlink(legacy);
+        else { char arch[1300]; snprintf(arch, sizeof arch, "%s/host_log-%lld.jsonl", g_docs, (long long)st.st_mtimespec.tv_sec); rename(legacy, arch); }
+    }
+    symlink(strrchr(path, '/') + 1, legacy);
+    const char *e = getenv("VXRT_LOG_KEEP_MB");
+    long long keep = (e && *e ? atoll(e) : 50) * 1024 * 1024;
+    struct item { char name[300]; time_t t; off_t size; } items[256]; int n = 0;
+    DIR *d = opendir(g_docs);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d)) && n < 256) {
+        if (strncmp(de->d_name, "host_log-", 9) || !strstr(de->d_name, ".jsonl")) continue;
+        char f[1500]; snprintf(f, sizeof f, "%s/%s", g_docs, de->d_name);
+        struct stat s2; if (stat(f, &s2)) continue;
+        snprintf(items[n].name, sizeof items[n].name, "%s", de->d_name); items[n].t = s2.st_mtimespec.tv_sec; items[n].size = s2.st_size; n++;
+    }
+    closedir(d);
+    for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) if (items[j].t > items[i].t) { struct item x = items[i]; items[i] = items[j]; items[j] = x; }
+    long long total = 0;
+    for (int i = 0; i < n; i++) {
+        total += items[i].size;
+        if (strcmp(items[i].name, strrchr(path, '/') + 1) == 0) continue;   // the current session stays
+        if (i >= 40 || (i > 0 && total > keep)) { char f[1500]; snprintf(f, sizeof f, "%s/%s", g_docs, items[i].name); unlink(f); }
+    }
+}
+
 // Before anything else maps memory (a constructor, before main): the modules' arena, then what the address space and
 // the memory limit look like. (On the Mac the runtime starts itself again until the arena is free; an app cannot.)
 __attribute__((constructor)) static void early(void) {
@@ -208,7 +249,7 @@ __attribute__((constructor)) static void early(void) {
     snprintf(g_docs, sizeof g_docs, "%s/Documents", home ? home : ".");
     mkdir(g_docs, 0755);
     char p[1200];
-    snprintf(p, sizeof p, "%s/host_log.jsonl", g_docs);
+    session_host_log(p, sizeof p);
     g_log = open(p, O_WRONLY | O_CREAT | O_APPEND, 0644);
     snprintf(p, sizeof p, "%s/vxrt.log", g_docs);
     int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0644);
