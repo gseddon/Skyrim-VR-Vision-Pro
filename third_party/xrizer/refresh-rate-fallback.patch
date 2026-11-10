@@ -1,0 +1,23 @@
+diff --git a/src/openxr_data.rs b/src/openxr_data.rs
+index cb49192..221d9cb 100644
+--- a/src/openxr_data.rs
++++ b/src/openxr_data.rs
+@@ -398,14 +398,16 @@ impl<C: Compositor> OpenXrData<C> {
+     }
+ 
+     pub fn get_refresh_rate(&self) -> f32 {
++        // Local fix: the display period in seconds is not a rate; the rate is its reciprocal (Hz).
+         let get_fallback_rate = || {
+-            Duration::from_nanos(
++            let period = Duration::from_nanos(
+                 self.display_period_nanos
+                     .load(Ordering::Relaxed)
+                     .try_into()
+                     .unwrap(),
+             )
+-            .as_secs_f32()
++            .as_secs_f32();
++            if period > 0.0 { 1.0 / period } else { 0.0 }
+         };
+         if !self.enabled_extensions.fb_display_refresh_rate {
+             return get_fallback_rate();
