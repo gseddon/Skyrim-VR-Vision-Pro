@@ -50,6 +50,21 @@ static int start_connect(SOCKET s, WSAEVENT ev, const struct sockaddr *a, int le
     return connect(s, a, len) ? WSAGetLastError() : 0;
 }
 
+// accept() on the listening socket, which WSAEventSelect made non-blocking: a connect() that has returned (loopback
+// included) does not mean the connection is in the accept queue yet, and accept then fails with WSAEWOULDBLOCK until
+// FD_ACCEPT, on Windows as here. The Winsock rule is to wait for FD_ACCEPT and accept again (this was 1 failure in 60
+// runs: the accept in part 5 returned INVALID_SOCKET and the next send failed with WSAENOTSOCK).
+static SOCKET accept_when_ready(SOCKET l, WSAEVENT lev) {
+    DWORD t0 = GetTickCount();
+    for (;;) {
+        SOCKET a = accept(l, NULL, NULL);
+        if (a != INVALID_SOCKET || WSAGetLastError() != WSAEWOULDBLOCK || GetTickCount() - t0 > 3000) return a;
+        WSAWaitForMultipleEvents(1, &lev, FALSE, 100, FALSE);
+        WSANETWORKEVENTS ne;
+        WSAEnumNetworkEvents(l, lev, &ne);
+    }
+}
+
 int main(void) {
     WSADATA wsa;
     CHECK(WSAStartup(MAKEWORD(2, 2), &wsa) == 0);
@@ -96,7 +111,7 @@ int main(void) {
     got = wait_for(l, lev, FD_ACCEPT, &ne, 3000);
     if (got != FD_ACCEPT) printf("net_events: listening socket: events %#lx\n", got);
     CHECK(got == FD_ACCEPT);
-    SOCKET acc = accept(l, NULL, NULL);
+    SOCKET acc = accept_when_ready(l, lev);
     CHECK(acc != INVALID_SOCKET);
     CHECK(send(c, "hello", 5, 0) == 5);
     got = wait_for(acc, lev, FD_READ, &ne, 3000);                  // (on the listening socket's event: inherited)
@@ -118,7 +133,7 @@ int main(void) {
     c = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     CHECK(connect(c, (struct sockaddr *)&a4, sizeof a4) == 0);
     WSAEnumNetworkEvents(l, lev, &ne);
-    acc = accept(l, NULL, NULL);
+    acc = accept_when_ready(l, lev);
     CHECK(acc != INVALID_SOCKET);
     aev = WSACreateEvent();
     CHECK(WSAEventSelect(acc, aev, FD_READ | FD_CLOSE) == 0);
@@ -143,7 +158,8 @@ int main(void) {
     if (n == INVALID_SOCKET) { n = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP); printf("net_events: no socket got number %llu again\n", (unsigned long long)old); }
     CHECK(connect(n, (struct sockaddr *)&a4, sizeof a4) == 0);
     CHECK(send(n, "x", 1, 0) == 1);
-    SOCKET acc2 = accept(l, NULL, NULL);
+    SOCKET acc2 = accept_when_ready(l, lev);
+    CHECK(acc2 != INVALID_SOCKET);
     CHECK(send(acc2, "y", 1, 0) == 1);
     CHECK(WSAWaitForMultipleEvents(1, &aev, FALSE, 300, FALSE) == WSA_WAIT_TIMEOUT);
     closesocket(n); closesocket(acc2); closesocket(l);

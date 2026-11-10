@@ -593,7 +593,7 @@ int vx_cocoa_snapshot_view(vx_window *w, const char *png, char *info, size_t cap
     });
     const char *source = "layers";
     CGImageRef img = NULL;
-    if (visible && number) {
+    if (visible && number && !vx_snapshot_layers_only) {
         usleep((useconds_t)(3 * vx_cocoa_refresh_period() * 1e6));   // (the window server shows the transaction a frame later)
         CGImageRef full = window_server_image(number);
         if (full && frame_w > 0) {

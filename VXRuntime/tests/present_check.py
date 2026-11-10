@@ -66,6 +66,17 @@ FACE, BACK, MOVED = (180, 90, 60), (40, 80, 150), (60, 150, 60)
 ERASE = [((4, 4), FACE), ((20, 20), BACK), ((44, 20), FACE), ((60, 20), BACK), ((60, 50), FACE),
          ((100, 20), MOVED), ((100, 56), BACK), ((4, 56), FACE)]
 
+# Two readings of every window. "snapshot-layers" is Core Animation's rendering of what was committed: exact (tolerance 0).
+# "snapshot-view" is the window server's pixels, which went through the display the window is on: the window lands on
+# whichever display the Mac chooses, and a 1x monitor with its own profile and a gamut smaller than sRGB's pushes
+# saturated colors by 10 to 30 and the gradients by up to 7 (this check failed in 1 run in 30 when the window opened on
+# such a display, "scale 1" where the other displays are 2). So the window server's picture is held to a loose
+# tolerance: it must show this picture at this place and size, not these exact values (the layers check does that).
+WS_TOL, WS_DRIFT = 48, 14
+CMD = "snapshot-layers"
+def snap(hwnd, png): return c_ask(f"{CMD} {hwnd} {png}")
+def tol_of(source): return WS_TOL if source == "window-server" else 0
+
 def near(got, want, tol):
     return all(abs(a - b) <= tol for a, b in zip(got, want))
 
@@ -73,7 +84,9 @@ def at(rows, scale, x, y):
     s = int(scale)
     return rows[y * s + s // 2][x * s + s // 2]
 
+c_ask = None
 def main():
+    global CMD, c_ask
     runtime = sys.argv[1] if len(sys.argv) > 1 else "build/vxrt"
     tmp = tempfile.mkdtemp(prefix="vxpresent")
     sock = os.path.join(tmp, "c.sock")
@@ -81,6 +94,7 @@ def main():
     t0 = time.time()
     try:
         c = Clip.wait_for(sock, 20)
+        c_ask = c.ask
         idle = c.wait_idle(20000)
         check(idle["idle"], f"idle after drawing: {idle}")
         wins = {w["title"]: w for w in c.state()["windows"]}
@@ -105,7 +119,7 @@ def main():
         # Mac may lag more, so a capture that does not match yet is taken again, twice at most.)
         def main_view():
             png, bad = os.path.join(tmp, "main_view.png"), []
-            r = c.ask(f"snapshot-view {main_w['hwnd']} {png}")
+            r = snap(main_w["hwnd"], png)
             if not r.get("ok"): return r, [f"snapshot-view: {r}"]
             scale, source = r.get("scale", 1), r.get("source")
             if source not in ("window-server", "layers"): bad.append(f"snapshot-view source: {r}")
@@ -114,7 +128,7 @@ def main():
             if (w, h) != (320 * scale, 240 * scale): return r, bad + [f"view PNG {w}x{h} at scale {scale}"]
             # (the window server's pixels went to the display's 8-bit color space and back to sRGB: a few values off,
             # more for saturated colors near the gamut's edges)
-            tol = 8 if source == "window-server" else 0
+            tol = tol_of(source)
             for (x, y), want in EXPECT + CHILD:                    # the committed picture with the child in front
                 got = at(rows, scale, x, y)
                 if not (near(got[:3], want, tol) and got[3] == 255): bad.append(f"view ({x}, {y}): {got}, not {want}")
@@ -127,50 +141,55 @@ def main():
             far = sum(1 for y in range(64) for x in range(64) if not near(block(x, y)[0][:3], grad(x, y), tol))
             cols = [abs(sum(block(x, y)[0][0] for y in range(64)) / 64 - 4 * x) for x in range(64)]
             lines = [abs(sum(block(x, y)[0][1] for x in range(64)) / 64 - 4 * y) for y in range(64)]
-            if not (mixed == 0 and far == 0 and max(cols) <= 2 and max(lines) <= 2):
+            if not (mixed == 0 and far == 0 and max(cols) <= (WS_DRIFT if tol else 2) and max(lines) <= (WS_DRIFT if tol else 2)):
                 bad.append(f"tile A on the screen: {mixed} mixed blocks, {far} pixels off, columns off by up to {max(cols):.2f}, rows by {max(lines):.2f}")
             return r, bad
         def alpha_view():
             png = os.path.join(tmp, "alpha.png")
-            r = c.ask(f"snapshot-view {alpha_w['hwnd']} {png}")         # per-pixel alpha (UpdateLayeredWindow)
+            r = snap(alpha_w["hwnd"], png)         # per-pixel alpha (UpdateLayeredWindow)
             if not (r.get("ok") and r.get("opaque") is False and abs(r.get("window_alpha", 0) - 1) < 1e-3): return r, [f"layered alpha window: {r}"]
-            tol, scale = (8 if r["source"] == "window-server" else 0), r["scale"]
+            tol, scale = tol_of(r["source"]), r["scale"]
             w, h, rows = read_png(png)
             left, right = at(rows, scale, 10, 30), at(rows, scale, 50, 30)
             return r, ([] if near(left, (255, 0, 0, 255), tol) else [f"opaque half: {left}"]) + \
-                      ([] if abs(right[3] - 128) <= 2 and right[1] >= 245 and right[0] <= 4 * tol else [f"half-alpha half: {right}"])   # (unpremultiplied: errors doubled)
+                      ([] if abs(right[3] - 128) <= 2 and right[1] >= (245 if not tol else 200) and right[0] <= (4 if not tol else 96) else [f"half-alpha half: {right}"])   # (unpremultiplied: errors doubled)
         def key_view():
             png = os.path.join(tmp, "key.png")
-            r = c.ask(f"snapshot-view {key_w['hwnd']} {png}")           # color key and constant alpha (SetLayeredWindowAttributes)
+            r = snap(key_w["hwnd"], png)           # color key and constant alpha (SetLayeredWindowAttributes)
             if not (r.get("ok") and r.get("opaque") is False and abs(r.get("window_alpha", 0) - 128 / 255) < 1e-2): return r, [f"color-key window: {r}"]
             ws, scale = r["source"] == "window-server", r["scale"]
             w, h, rows = read_png(png)
             # (the window server's picture carries the window's own alpha, 128: Core Animation's layers do not)
             blue, key, a = at(rows, scale, 4, 4), at(rows, scale, 24, 24), 128 if ws else 255
-            return r, ([] if near(blue[:3], (0, 0, 255), 8 if ws else 0) and abs(blue[3] - a) <= 2 else [f"color-key window, blue: {blue}"]) + \
+            return r, ([] if near(blue[:3], (0, 0, 255), WS_TOL if ws else 0) and abs(blue[3] - a) <= 2 else [f"color-key window, blue: {blue}"]) + \
                       ([] if key[3] == 0 else [f"color-key window, the key: {key}"])
         def perf_view():
             png = os.path.join(tmp, "perf.png")
-            r = c.ask(f"snapshot-view {perf_w['hwnd']} {png}")          # the last of 120 frames is what the screen shows
+            r = snap(perf_w["hwnd"], png)          # the last of 120 frames is what the screen shows
             if not r.get("ok"): return r, [f"perf window: {r}"]
             w, h, rows = read_png(png)
             got = at(rows, r["scale"], 500, 300)
-            return r, [] if near(got[:3], (119, 0x20, 136), 8 if r["source"] == "window-server" else 0) else [f"perf window shows {got}"]
+            return r, [] if near(got[:3], (119, 0x20, 136), tol_of(r["source"])) else [f"perf window shows {got}"]
         def erase_view():
             png = os.path.join(tmp, "erase.png")
-            r = c.ask(f"snapshot-view {erase_w['hwnd']} {png}")
+            r = snap(erase_w["hwnd"], png)
             if not (r.get("ok") and r.get("opaque") is True): return r, [f"erase window: {r}"]
-            tol, scale = (8 if r["source"] == "window-server" else 0), r["scale"]
+            tol, scale = tol_of(r["source"]), r["scale"]
             w, h, rows = read_png(png)
             return r, [f"erase window ({x}, {y}): {at(rows, scale, x, y)}, not {want}" for (x, y), want in ERASE
                        if not near(at(rows, scale, x, y)[:3], want, tol)]
-        for view in (main_view, alpha_view, key_view, perf_view, erase_view):
-            for attempt in range(3):
-                r, bad = view()
-                if not bad: break
-                time.sleep(0.5)
-            for b in bad: check(False, b)
-            if view is main_view: scale, source = r.get("scale"), r.get("source")
+        sources = {}
+        for CMD in ("snapshot-layers", "snapshot-view"):
+            for view in (main_view, alpha_view, key_view, perf_view, erase_view):
+                for attempt in range(3):
+                    r, bad = view()
+                    if not bad: break
+                    time.sleep(0.5)
+                for b in bad: check(False, f"{CMD}: {b}")
+                if view is main_view:
+                    scale, source = r.get("scale"), r.get("source")
+                    sources[CMD] = (source, scale)
+            if CMD == "snapshot-layers": check(sources[CMD][0] == "layers", f"snapshot-layers answered from {sources[CMD]}")
         c.close(main_w["hwnd"])
         out, _ = p.communicate(timeout=30)
         last = out.strip().splitlines()[-1] if out.strip() else ""
@@ -180,7 +199,7 @@ def main():
         failures.append(repr(e)); print("present:", repr(e))
         p.kill()
         print(p.communicate()[0][-2000:])
-    print(f"present_check: windows read through snapshot-view ({locals().get('source', '?')}, scale {locals().get('scale', '?')}) "
+    print(f"present_check: windows read through snapshot-layers and snapshot-view ({locals().get('sources', '?')}) "
           f"({(time.time() - t0) * 1e3:.0f} ms): {len(failures)} failed checks -> {'ok' if not failures else 'FAILED'}")
     sys.exit(1 if failures else 0)
 

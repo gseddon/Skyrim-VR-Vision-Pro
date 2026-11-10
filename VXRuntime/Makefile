@@ -58,6 +58,22 @@ XROS_XRIZER_GAME ?= 0
 ifeq ($(XROS_XRIZER_GAME),1)
 XROS_XRIZER_FIXTURE := 1
 endif
+# The headset shader set of Skyrim VR: <key>.metallib files built offline from the user's own install and a manifest of DXBC
+# hashes (tools/shader_manifest_build; "Shaders from a manifest" in VISIONOS_PORT.md), embedded by xros-app as
+# bundle/shadercache. Default for the Skyrim app (XROS_XRIZER_GAME=1): `make xros-shader-set` builds it (once per manifest).
+# XROS_SHADER_SET=<dir> on the command line overrides it with a set you built another way (e.g. from a Mac game boot's
+# pending/ with tools/shadercache_fill.sh <dir> xros); XROS_SHADER_SET= (empty) embeds nothing.
+# The manifest: the committed tools/shader_manifests/skyrimvr-611670.tsv.gz (hashes and parameters only), unless a private
+# build/private/skyrim-shader-manifest.tsv exists (a newer or larger one, for example one extended by a later game run).
+XROS_SHADER_MANIFEST ?= $(firstword $(wildcard $(abspath ../build/private/skyrim-shader-manifest.tsv)) $(abspath ../tools/shader_manifests/skyrimvr-611670.tsv.gz))
+XROS_SHADER_GAME ?= $(or $(SKYRIM_ASSET_ROOT),$(HOME)/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SkyrimVR)
+XROS_SHADER_DIR ?= $(abspath ../build/private/shadercache-$(XROS_SDK)-manifest)
+ifeq ($(origin XROS_SHADER_SET),undefined)
+ifeq ($(XROS_XRIZER_GAME),1)
+XROS_SHADER_SET := $(XROS_SHADER_DIR)
+XROS_SHADER_SET_PREREQ := xros-shader-set
+endif
+endif
 # Explicit simulator-only experimental fixture; normal builds retain their defaults.
 XROS_XRIZER_FIXTURE ?= 0
 XROS_DIR = build/$(XROS_SDK)$(if $(filter 1,$(XROS_XRIZER_FIXTURE)),-xrizer-fixture)
@@ -342,6 +358,21 @@ XROS_FIXTURE_BUNDLE_ID ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),gseddon.dev.vxrt.
 XROS_DEFAULT_LAUNCH ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),-game skyrimvr -xrizer -immersive)
 # XROS_SHADER_SET=<dir of <key>.metallib files>: embedded as bundle/shadercache (embed_aot_frameworks.sh).
 XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) $(if $(XROS_SHADER_SET),'VXRT_SHADER_SET=$(abspath $(XROS_SHADER_SET))') 'VXRT_DEFAULT_LAUNCH=$(XROS_DEFAULT_LAUNCH)' SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
+.PHONY: xros-shader-set
+xros-app: $(XROS_SHADER_SET_PREREQ)
+# xros-shader-set: the whole shader set for $(XROS_SDK) into $(XROS_SHADER_DIR), from XROS_SHADER_MANIFEST and the install
+# XROS_SHADER_GAME (read only). Private (derived from the game): never committed. Rebuilt when the manifest is newer.
+xros-shader-set: build/vxrt-shader-manifest
+	@test -f "$(XROS_SHADER_MANIFEST)" || { printf '%s\n' \
+	  'xros-shader-set: no shader manifest at $(XROS_SHADER_MANIFEST) (set XROS_SHADER_MANIFEST=<file>).' \
+	  'The committed one is tools/shader_manifests/skyrimvr-611670.tsv.gz. To make a new one, run the game on the Mac on an empty shader cache:  VXRT_SHADER_MANIFEST=$(XROS_SHADER_MANIFEST) tools/play_skyrim_dev.sh' \
+	  'or by replaying a capture with an empty cache:  VXRT_SHADER_CACHE=<empty dir> VXRT_SHADER_MANIFEST=$(XROS_SHADER_MANIFEST) build/vxrt-d3d11-replay <capture>   (VISIONOS_PORT.md, "Shaders from a manifest").' \
+	  'Or set XROS_SHADER_SET=<dir of .metallib files> to use a set built another way.' >&2; exit 2; }
+	@test -d "$(XROS_SHADER_GAME)/Data" || { echo 'xros-shader-set: no Skyrim VR install at $(XROS_SHADER_GAME) (set XROS_SHADER_GAME or SKYRIM_ASSET_ROOT)' >&2; exit 2; }
+	@if [ "$(XROS_SHADER_DIR)/.complete" -nt "$(XROS_SHADER_MANIFEST)" ]; then echo "xros-shader-set: $(XROS_SHADER_DIR) is up to date"; else \
+	  ../tools/shader_manifest_build --game "$(XROS_SHADER_GAME)" --manifest "$(XROS_SHADER_MANIFEST)" --out "$(XROS_SHADER_DIR)" --sdk $(XROS_SDK) \
+	  && touch "$(XROS_SHADER_DIR)/.complete" \
+	  || { echo 'xros-shader-set: incomplete (see $(XROS_SHADER_DIR)/report.tsv)' >&2; exit 1; }; fi
 xros-app: xros-lib xros-aot-tests
 ifeq ($(XROS_XRIZER_FIXTURE),1)
 	@test "$(XROS_SDK)" != xrsimulator -o "$(XROS_CODE_SIGNING)" = NO || { echo 'the simulator xrizer fixture/immersive build requires XROS_CODE_SIGNING=NO' >&2; exit 2; }
@@ -373,7 +404,7 @@ $(VXRT_ARM64_TARGET): src/native_vr.h src/native_openvr.h $(ARM64_SRC) src/npu_i
 
 tests: build/hello_k32.exe build/hello_crt.exe build/threads.exe build/cxx_exceptions.exe build/hw_exceptions.exe build/seh_try.exe build/unwind.exe build/breakpoint.exe build/child_stdout.exe \
        build/files.exe build/ini.exe build/dll_test.exe build/vxplugin.dll build/dllprobe.exe \
-       build/window.exe build/winsta.exe build/scm.exe build/net.exe build/winhttp.exe build/winhttp_proxy.exe build/iphlp.exe build/winsock_nsp.exe build/midi.exe build/directinput.exe build/msvc_eh.exe build/com.exe build/msxml.exe build/vxcom.dll build/iocp.exe build/d3d11.exe build/egl_host.exe build/gl.exe build/hlslc.exe build/dxbc2msl build/draw.exe build/compute.exe build/d3d12.exe build/d3d12_engine.exe build/d3d12_fxc.exe build/d3d11on12.exe build/input.exe build/xinput_script.exe build/audio.exe build/xaudio2.exe build/xaudio2_27.exe build/dwrite.exe build/dxbcscan build/pipes.exe build/ipc.exe build/shared.exe build/steam.exe build/smc.exe build/order.exe build/lowmem.exe build/clip.exe build/shoplist.exe build/vulkan_win.exe build/vulkan_features.exe build/vulkan_shaders.exe build/game_imports.exe build/ucrt_extra.exe build/kernelx.exe build/jobs.exe build/security.exe \
+       build/window.exe build/winsta.exe build/scm.exe build/net.exe build/winhttp.exe build/winhttp_proxy.exe build/iphlp.exe build/winsock_nsp.exe build/midi.exe build/directinput.exe build/msvc_eh.exe build/com.exe build/msxml.exe build/vxcom.dll build/iocp.exe build/d3d11.exe build/egl_host.exe build/gl.exe build/hlslc.exe build/dxbc2msl build/vxrt-shader-manifest build/draw.exe build/compute.exe build/d3d12.exe build/d3d12_engine.exe build/d3d12_fxc.exe build/d3d11on12.exe build/input.exe build/xinput_script.exe build/audio.exe build/xaudio2.exe build/xaudio2_27.exe build/dwrite.exe build/dxbcscan build/pipes.exe build/ipc.exe build/shared.exe build/steam.exe build/smc.exe build/order.exe build/lowmem.exe build/clip.exe build/shoplist.exe build/vulkan_win.exe build/vulkan_features.exe build/vulkan_shaders.exe build/game_imports.exe build/ucrt_extra.exe build/kernelx.exe build/jobs.exe build/security.exe \
        build/sysdlls.exe build/dbghelp.exe build/crypt32.exe build/webhelper_apis.exe build/steam_client_ui.exe build/handle_xfer.exe build/open_thread.exe build/version_info.exe build/section_access.exe build/dbfiles.exe build/updater_files.exe build/shlock.exe build/net_events.exe build/regwait.exe build/tcptable.exe build/winprops.exe build/a11y.exe build/gdi_xform.exe build/view_align.exe \
        build/client_imports.exe build/hello32.exe build/clipboard.exe build/input_route.exe build/name_reuse.exe
 
@@ -804,6 +835,14 @@ build/vxrt-d3d11-replay: tools/d3d11_replay.m tools/d3d11_replay_stubs.c $(REPLA
 	$(CC) -arch arm64 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -mmacosx-version-min=14.0 -Ibuild/d3d11-replay -Isrc -Ithird_party/vulkan -fobjc-arc \
 	  -o $@ tools/d3d11_replay.m tools/d3d11_replay_stubs.c $(REPLAY_D3D_SRC) -framework Foundation -framework Metal -framework MetalFX -framework QuartzCore \
 	  -framework CoreGraphics -framework ImageIO -framework IOSurface -framework Cocoa
+
+# The offline shader manifest tool (tools/shader_manifest.m; run by ../tools/shader_manifest_build): the translator and the
+# runtime's own shader cache writer, so the sources and keys it makes are the ones a game run makes.
+build/vxrt-shader-manifest: tools/shader_manifest.m src/shader_cache.m src/dxbc.c src/dxbc.h src/d3d_common.h src/vx.h
+	@mkdir -p build/shader-manifest/thunks
+	@for f in shader_cache.m dxbc.c; do : > build/shader-manifest/thunks/$$f.inc; done
+	$(CC) -arch arm64 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -mmacosx-version-min=14.0 -Ibuild/shader-manifest -Isrc -fobjc-arc \
+	  -o $@ tools/shader_manifest.m src/shader_cache.m src/dxbc.c -framework Foundation -framework Metal
 
 # DXIL (Shader Model 6, Direct3D 12): src/dxil.c reads the container and its LLVM bitcode.
 build/dxildump: tools/dxildump.c src/dxil.c src/dxil.h
@@ -1761,7 +1800,7 @@ runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d1
 	$(VXRT) build/winprops.exe
 	$(VXRT) build/a11y.exe
 	$(VXRT) build/client_imports.exe build/hello32.exe
-	VXRT_PASTEBOARD=vxrt-check $(VXRT) build/clipboard.exe
+	VXRT_PASTEBOARD=vxrt-check-$$$$-$(notdir $(VXRT)) VXRT_PASTEBOARD_TEMP=1 $(VXRT) build/clipboard.exe
 	$(VXRT) build/gdi_xform.exe
 	$(VXRT) build/view_align.exe
 	$(VXRT) build/winhttp.exe
@@ -1804,6 +1843,7 @@ runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d1
 	$(VXRT) build/draw.exe
 	python3 tests/d3d11_capture_check.py $(VXRT)
 	python3 tests/shader_cache_check.py $(VXRT)
+	python3 tests/shader_manifest_check.py
 	$(VXRT) build/compute.exe
 	$(VXRT) build/d3d12.exe
 	$(VXRT) build/d3d12_engine.exe
