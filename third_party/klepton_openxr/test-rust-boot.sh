@@ -1,7 +1,6 @@
 #!/bin/sh
 set -eu
-: "${XRIZER_RUST_ROOT:?set XRIZER_RUST_ROOT to the repository-local toolchain}"
-case "$XRIZER_RUST_ROOT" in /*) ;; *) echo 'XRIZER_RUST_ROOT must be absolute' >&2; exit 2;; esac
+XRIZER_ENV_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../xrizer" && pwd); . "$XRIZER_ENV_DIR/rust-env.sh"
 component=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export CARGO_HOME="$XRIZER_RUST_ROOT/cargo"
 export RUSTUP_HOME="$XRIZER_RUST_ROOT/rustup"

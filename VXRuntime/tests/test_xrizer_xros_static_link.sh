@@ -7,8 +7,7 @@ case "$sdk" in
  xros) rust_target=aarch64-apple-visionos; clang_target=arm64-apple-xros26.0; suffix="-device" ;;
  *) echo "XROS_PROBE_SDK must be xrsimulator or xros" >&2; exit 2 ;;
 esac
-: "${XRIZER_RUST_ROOT:?set XRIZER_RUST_ROOT to repository-local toolchain}"
-case "$XRIZER_RUST_ROOT" in /*) ;; *) echo 'XRIZER_RUST_ROOT must be absolute' >&2; exit 2;; esac
+XRIZER_ENV_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../../third_party/xrizer" && pwd); . "$XRIZER_ENV_DIR/rust-env.sh"
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cache="$repo/build/xros-host-static$suffix"
 mkdir -p "$cache/target"
