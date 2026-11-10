@@ -82,7 +82,7 @@ def main():
     checks = {
         'exit_zero': rc == 0 and not timed_out,
         'guest_verdict': 'xrizer_guest_keys: scripted dev keyboard through real xrizer and guest ABI -> ok' in log,
-        'diagnostic_label': 'xrizer dev keyboard: scripted only (no window), 26 keys bound, key map override x=right.trigger, 32 scripted key events; diagnostic, not physical input' in log,
+        'diagnostic_label': 'xrizer dev keyboard: scripted only (no window), 30 keys bound, key map override x=right.trigger, 32 scripted key events; diagnostic, not physical input' in log,
         'implied_touch': 'xrizer dev host: synthetic stationary controllers (oculus/touch_controller profile), diagnostic, not physical input' in log,
         'profiles_changed': all(f'/user/hand/{h} interaction profile changed: /interaction_profiles/oculus/touch_controller' in xlog for h in ('left', 'right')),
         'script_applied': len(script_events) == len(EXPECTED_EVENTS) and all(
