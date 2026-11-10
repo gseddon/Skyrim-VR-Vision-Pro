@@ -129,7 +129,18 @@ enum VXLifecycle {
         // fps, no spin). The system takes the space away (headset off, crown, a notification); asking for it back is answered only once the
         // app is active again (device run 14: 172 s), so ask now with a growing delay, and show the Resume window meanwhile.
         reopens += 1
-        VXImmersiveController.shared.setNeedsResume(true)
+        invalidatedAt = CACurrentMediaTime()
+        // The Crown ends the app (the wearer's wish, 2026-11-10): the layer is invalidated AND the app leaves (resigns active) within a short
+        // window of it, in either order. A headset off only pauses the layer (device L2-L4: resign_active, background, vr_pause, no invalidation)
+        // and keeps the pause/resume behaviour. The Resume panel is no longer shown here: only a failed open while active shows it.
+        if crownQuitEnabled {
+            if !appIsActive() { crownQuit("invalidated_while_inactive") }
+            else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + crownWindow) {
+                    if !appIsActive() { crownQuit("invalidated_then_left") }
+                }
+            }
+        }
         let delay = min(0.7 * Double(reopens), 5)
         // The layer is gone: if the app is already leaving (Crown, doff), that is the signature of a Crown press; do not fight it.
         let activeNow = appIsActive()
@@ -161,6 +172,20 @@ enum VXLifecycle {
     // while the app is not active; the open that was wanted is remembered (`reopenWanted`) and done when the wearer brings the app back
     // (didBecomeActive), or by an explicit tap on Resume. A real launch's first open is exempt.
     nonisolated(unsafe) static var reopenWanted = false
+    nonisolated(unsafe) static var invalidatedAt: CFTimeInterval = 0
+    nonisolated(unsafe) static var resignedAt: CFTimeInterval = 0
+    nonisolated(unsafe) static var quitting = false
+    static let crownWindow = 1.5   // s: invalidation and leaving the app this close together (either order) are a Crown press
+    static var crownQuitEnabled: Bool { ProcessInfo.processInfo.environment["VXRT_CROWN_QUIT"] != "0" }
+    // Crown: quit cleanly. Logs which signal fired and the timings behind it (the next device run shows whether the rule separates a Crown press
+    // from a headset off), flushes the logs, and exits 0.
+    static func crownQuit(_ signal: String) {
+        if quitting { return }
+        quitting = true
+        let now = CACurrentMediaTime()
+        vxrt_jlog("crown_quit", "\"signal\":\"\(signal)\",\"since_invalidated_s\":\(invalidatedAt > 0 ? String(format: "%.3f", now - invalidatedAt) : "null"),\"since_resign_s\":\(resignedAt > 0 ? String(format: "%.3f", now - resignedAt) : "null"),\"phase\":\"\(scenePhaseNow)\",\"app_active\":\(appActive),\"frames\":\(VXImmersiveRenderer.frameCount)")
+        exitNow("crown_quit")
+    }
     nonisolated(unsafe) static var scenePhaseNow: ScenePhase = .active
     // Cached from UIApplication's notifications (no main-thread hop: callers include the compositor thread and main itself).
     nonisolated(unsafe) static var appActive = false
@@ -212,7 +237,9 @@ enum VXLifecycle {
     static func observeApplication() {
         let nc = NotificationCenter.default
         func state() -> String { "\"app_state\":\(UIApplication.shared.applicationState.rawValue),\"frames\":\(VXImmersiveRenderer.frameCount),\"space_open\":\(spaceOpen),\"reopen_pending\":\(reopenPending)" }
-        nc.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in appActive = false; vxrt_jlog("app_resign_active", state()); dumpSystemLog("resign_active", seconds: 10) }
+        nc.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in appActive = false; resignedAt = CACurrentMediaTime(); vxrt_jlog("app_resign_active", state());
+            if crownQuitEnabled, invalidatedAt > 0, CACurrentMediaTime() - invalidatedAt < crownWindow { crownQuit("left_after_invalidated") }
+            dumpSystemLog("resign_active", seconds: 10) }
         nc.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
             appActive = true
             vxrt_jlog("app_become_active", state())
