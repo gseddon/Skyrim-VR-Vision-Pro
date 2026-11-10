@@ -63,7 +63,9 @@ endif
 # bundle/shadercache. Default for the Skyrim app (XROS_XRIZER_GAME=1): `make xros-shader-set` builds it (once per manifest).
 # XROS_SHADER_SET=<dir> on the command line overrides it with a set you built another way (e.g. from a Mac game boot's
 # pending/ with tools/shadercache_fill.sh <dir> xros); XROS_SHADER_SET= (empty) embeds nothing.
-XROS_SHADER_MANIFEST ?= $(abspath ../build/private/skyrim-shader-manifest.tsv)
+# The manifest: the committed tools/shader_manifests/skyrimvr-611670.tsv.gz (hashes and parameters only), unless a private
+# build/private/skyrim-shader-manifest.tsv exists (a newer or larger one, for example one extended by a later game run).
+XROS_SHADER_MANIFEST ?= $(firstword $(wildcard $(abspath ../build/private/skyrim-shader-manifest.tsv)) $(abspath ../tools/shader_manifests/skyrimvr-611670.tsv.gz))
 XROS_SHADER_GAME ?= $(or $(SKYRIM_ASSET_ROOT),$(HOME)/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SkyrimVR)
 XROS_SHADER_DIR ?= $(abspath ../build/private/shadercache-$(XROS_SDK)-manifest)
 ifeq ($(origin XROS_SHADER_SET),undefined)
@@ -356,10 +358,10 @@ xros-app: $(XROS_SHADER_SET_PREREQ)
 # XROS_SHADER_GAME (read only). Private (derived from the game): never committed. Rebuilt when the manifest is newer.
 xros-shader-set: build/vxrt-shader-manifest
 	@test -f "$(XROS_SHADER_MANIFEST)" || { printf '%s\n' \
-	  'xros-shader-set: no shader manifest at $(XROS_SHADER_MANIFEST) (a list of DXBC hashes, private).' \
-	  'Make one with a Mac run of the game on an empty shader cache:  VXRT_SHADER_MANIFEST=$(XROS_SHADER_MANIFEST) tools/play_skyrim_dev.sh' \
+	  'xros-shader-set: no shader manifest at $(XROS_SHADER_MANIFEST) (set XROS_SHADER_MANIFEST=<file>).' \
+	  'The committed one is tools/shader_manifests/skyrimvr-611670.tsv.gz. To make a new one, run the game on the Mac on an empty shader cache:  VXRT_SHADER_MANIFEST=$(XROS_SHADER_MANIFEST) tools/play_skyrim_dev.sh' \
 	  'or by replaying a capture with an empty cache:  VXRT_SHADER_CACHE=<empty dir> VXRT_SHADER_MANIFEST=$(XROS_SHADER_MANIFEST) build/vxrt-d3d11-replay <capture>   (VISIONOS_PORT.md, "Shaders from a manifest").' \
-	  'Or set XROS_SHADER_MANIFEST=<file>, or XROS_SHADER_SET=<dir of .metallib files> to use a set built another way.' >&2; exit 2; }
+	  'Or set XROS_SHADER_SET=<dir of .metallib files> to use a set built another way.' >&2; exit 2; }
 	@test -d "$(XROS_SHADER_GAME)/Data" || { echo 'xros-shader-set: no Skyrim VR install at $(XROS_SHADER_GAME) (set XROS_SHADER_GAME or SKYRIM_ASSET_ROOT)' >&2; exit 2; }
 	@if [ "$(XROS_SHADER_DIR)/.complete" -nt "$(XROS_SHADER_MANIFEST)" ]; then echo "xros-shader-set: $(XROS_SHADER_DIR) is up to date"; else \
 	  ../tools/shader_manifest_build --game "$(XROS_SHADER_GAME)" --manifest "$(XROS_SHADER_MANIFEST)" --out "$(XROS_SHADER_DIR)" --sdk $(XROS_SDK) \
