@@ -20,7 +20,7 @@
 #   tools/play_skyrim_dev.sh --key-script S  extra: VXRT_XRIZER_DEV_KEY_SCRIPT (START:KEYS:HOLD,...), for checks
 # Diagnostic development host, not a SteamVR session and not a physical-headset claim.
 # Private inputs (override with the environment variables): SKYRIM_AOT_BASE = directory holding prepared/SkyrimVR.exe,
-# aot-splits4a/ and redist/ (read-only); SKYRIM_ASSET_ROOT; STEAMVR_WIN64_DLLS; XRIZER_RUST_ROOT.
+# aot-splits4a/ and redist/ (read-only); SKYRIM_AOT_DIR = a module directory to use instead of aot-splits4a; SKYRIM_ASSET_ROOT; STEAMVR_WIN64_DLLS; XRIZER_RUST_ROOT.
 set -eu
 R=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 B=${SKYRIM_AOT_BASE:-/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/terra-skyrim-aot/build/private/skyrimvr/6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971}
@@ -115,6 +115,6 @@ EXTRA="--trace-calls $TRACE_CALLS"
 echo "output and evidence: $OUT"
 # shellcheck disable=SC2086
 exec python3 "$R/tools/vxrt_native_startup.py" --exe "$B/prepared/SkyrimVR.exe" --runtime "$RUNTIME" \
-  --aot-dir "$B/aot-splits4a" --asset-root "$ASSETS" --dll-dir "$B/redist" --dll-dir "$VRWEB" --appid 611670 \
+  --aot-dir "${SKYRIM_AOT_DIR:-$B/aot-splits4a}" --asset-root "$ASSETS" --dll-dir "$B/redist" --dll-dir "$VRWEB" --appid 611670 \
   --out "$OUT" --seconds "$SECONDS_LIMIT" --experimental-xrizer --dev-synthetic-stage --xrizer-dylib "$DYLIB" \
   --dev-keyboard 1 --stay-active $EXTRA "$@"
