@@ -3,8 +3,8 @@
 // in an immersive space (CompositorServices, both eyes warped from the game's frame: VXImmersive.swift,
 // src/xros_vr.m), or with -present flat only in the window (debug).
 //
-//   xcrun devicectl device process launch --device <id> marimokodai.VXRuntimeHost -test d3d12 [-present flat]
-//   xcrun devicectl device process launch --device <id> marimokodai.VXRuntimeHost -game cyberpunk   (game_start below)
+//   xcrun devicectl device process launch --device <id> gseddon.dev.vxrt.VXRuntimeHost -test d3d12 [-present flat]
+//   xcrun devicectl device process launch --device <id> gseddon.dev.vxrt.VXRuntimeHost -game cyberpunk   (game_start below)
 //
 // Tests (bundle/exe): xros_clear (a swap chain cleared through the hues, 10 s), d3d12 (default), suite, hello_crt, seh_try, unwind, cxx_exceptions (stops: one address has no
 // module), none (only the memory and address-space probes). Documents/host_log.jsonl gets the probes, the
@@ -174,6 +174,15 @@ static void va_range_make(void) {
     jlog("va_range_extended", "\"range\":\"%s\"", v);
 }
 
+// The log tee (-console): reads what the runtime writes to stdout/stderr, writes it to Documents/vxrt.log and to the
+// launch's own stderr.
+static int g_tee[3];   // pipe read end, the file, the launch's stderr
+static void *tee_thread(void *arg) {
+    char buf[4096]; ssize_t n;
+    while ((n = read(g_tee[0], buf, sizeof buf)) > 0) { write(g_tee[1], buf, (size_t)n); write(g_tee[2], buf, (size_t)n); }
+    return NULL;
+}
+
 // Before anything else maps memory (a constructor, before main): the modules' arena, then what the address space and
 // the memory limit look like. (On the Mac the runtime starts itself again until the arena is free; an app cannot.)
 __attribute__((constructor)) static void early(void) {
@@ -186,15 +195,42 @@ __attribute__((constructor)) static void early(void) {
     g_log = open(p, O_WRONLY | O_CREAT | O_APPEND, 0644);
     snprintf(p, sizeof p, "%s/vxrt.log", g_docs);
     int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd >= 0) { dup2(fd, 2); dup2(fd, 1); close(fd); }
-    setvbuf(stdout, NULL, _IOLBF, 0);
     int argc = *_NSGetArgc(); char **argv = *_NSGetArgv();
+    // -console (or VXRT_LOG_TEE=1): the runtime's log also goes to the launch's own stderr, so that
+    // `xcrun devicectl device process launch --console ... -console` (or simctl launch --console-pty) streams it.
+    // Documents/vxrt.log is written either way. A pipe and a thread copy the log; off by default (no change).
+    int tee = getenv("VXRT_LOG_TEE") && !strcmp(getenv("VXRT_LOG_TEE"), "1");
+    for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "-console")) tee = 1;
+    int console = tee ? dup(2) : -1, pfd[2] = { -1, -1 };
+    if (fd >= 0 && console >= 0 && !pipe(pfd)) {
+        g_tee[0] = pfd[0]; g_tee[1] = fd; g_tee[2] = console;
+        dup2(pfd[1], 2); dup2(pfd[1], 1); close(pfd[1]);
+        pthread_t th;
+        pthread_create(&th, NULL, tee_thread, NULL);
+        pthread_detach(th);
+    } else if (fd >= 0) { dup2(fd, 2); dup2(fd, 1); close(fd); }
+    setvbuf(stdout, NULL, _IOLBF, 0);
     for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "-test")) snprintf(g_test, sizeof g_test, "%s", argv[i + 1]);
     for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "-game")) { snprintf(g_test, sizeof g_test, "%s", argv[i + 1]); g_game = 1; }
     // -game skyrimvr -xrizer: use xrizer as the game's OpenVR (the XROS_XRIZER_GAME=1 build: the fixture's host, offscreen
     // pair shown side by side in the simulator's one view). Opt-in by that argument; in any other build, or without it,
     // these variables are not set (and in a build without the fixture they would be inert).
-    if (g_game && !strcmp(g_test, "skyrimvr"))
+    // -immersive (with -xrizer, or with -test xrizer_xros_guest): the pairs xrizer's OpenVR gets from the game are presented
+    // in the immersive space through Compositor Services (VXImmersive.swift: stereo into a two-view drawable on the
+    // headset; side by side in the simulator's one view, with injected optics) and the provider's frames are paced by
+    // the compositor's timing. It replaces the fixture's offscreen/inspection variables: the path is chosen from the
+    // drawable the compositor gives. Needs the build with XROS_XRIZER_FIXTURE=1 (simulator or device; VISIONOS_PORT.md).
+    int immersive = 0;
+    for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "-immersive")) immersive = 1;
+    if (immersive && ((g_game && !strcmp(g_test, "skyrimvr")) || !strcmp(g_test, "xrizer_xros_guest"))) {
+        int xrizer = !strcmp(g_test, "xrizer_xros_guest");
+        for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "-xrizer")) xrizer = 1;
+        if (xrizer) {
+            setenv("VXRT_XRIZER_XROS_IMMERSIVE", "1", 0);
+            setenv("VXRT_XRIZER_XROS_FIXTURE", "1", 0);
+        }
+    }
+    if (!immersive && g_game && !strcmp(g_test, "skyrimvr"))
         for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "-xrizer")) {
             setenv("VXRT_XRIZER_XROS_FIXTURE", "1", 0);
             setenv("VXRT_XRIZER_XROS_OFFSCREEN", "1", 0);

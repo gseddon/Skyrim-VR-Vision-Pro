@@ -1,10 +1,16 @@
 #!/bin/bash
-# Build-only, default-off simulator static-link probe. Never launches an app.
+# Build-only, default-off static-link probe (visionOS simulator by default; XROS_PROBE_SDK=xros for the device). Never launches an app.
 set -euo pipefail
+sdk=${XROS_PROBE_SDK:-xrsimulator}
+case "$sdk" in
+ xrsimulator) rust_target=aarch64-apple-visionos-sim; clang_target=arm64-apple-xros26.0-simulator; suffix="" ;;
+ xros) rust_target=aarch64-apple-visionos; clang_target=arm64-apple-xros26.0; suffix="-device" ;;
+ *) echo "XROS_PROBE_SDK must be xrsimulator or xros" >&2; exit 2 ;;
+esac
 : "${XRIZER_RUST_ROOT:?set XRIZER_RUST_ROOT to repository-local toolchain}"
 case "$XRIZER_RUST_ROOT" in /*) ;; *) echo 'XRIZER_RUST_ROOT must be absolute' >&2; exit 2;; esac
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-cache="$repo/build/xros-host-static"
+cache="$repo/build/xros-host-static$suffix"
 mkdir -p "$cache/target"
 build=$(mktemp -d "$cache/probe-XXXXXX")
 mkdir -p "$build/state" "$build/config"
@@ -20,21 +26,21 @@ manifest={str(p.relative_to(repo)):hashlib.sha256(p.read_bytes()).hexdigest() fo
 PYMANIFEST
 export CARGO_HOME="$XRIZER_RUST_ROOT/cargo" RUSTUP_HOME="$XRIZER_RUST_ROOT/rustup"
 export CARGO_TARGET_DIR="$cache/target" XDG_STATE_HOME="$build/state" XDG_CONFIG_HOME="$build/config"
-export PATH="$CARGO_HOME/bin:$PATH" SDKROOT="$(xcrun --sdk xrsimulator --show-sdk-path)"
-export BINDGEN_EXTRA_CLANG_ARGS=--target=arm64-apple-xros26.0-simulator
-cargo build --manifest-path "$repo/third_party/xrizer/upstream/Cargo.toml" --lib --no-default-features --features owned-apple-test --target aarch64-apple-visionos-sim --offline --locked > "$build/rust-build.log" 2>&1
+export PATH="$CARGO_HOME/bin:$PATH" SDKROOT="$(xcrun --sdk "$sdk" --show-sdk-path)"
+export BINDGEN_EXTRA_CLANG_ARGS="--target=$clang_target"
+cargo build --manifest-path "$repo/third_party/xrizer/upstream/Cargo.toml" --lib --no-default-features --features owned-apple-test --target "$rust_target" --offline --locked > "$build/rust-build.log" 2>&1
 incs=(-I "$repo/VXRuntime/src" -I "$repo/third_party/klepton_openxr/include" -I "$repo/third_party/klepton_openxr/src" -I "$repo/third_party/xrizer/include")
-flags=(-target arm64-apple-xros26.0-simulator -isysroot "$SDKROOT" -std=c11 -fobjc-arc -Wall -Wextra -Werror -DKL_NATIVE_TEST_METAL_PARTIAL)
+flags=(-target "$clang_target" -isysroot "$SDKROOT" -std=c11 -fobjc-arc -Wall -Wextra -Werror -DKL_NATIVE_TEST_METAL_PARTIAL)
 sources=(VXRuntime/src/xrizer_xros_host.m VXRuntime/src/xrizer_xros_mailbox.c VXRuntime/src/native_vr.c third_party/klepton_openxr/src/core.c third_party/klepton_openxr/src/pose_math.c third_party/klepton_openxr/src/metal_host.m)
 objects=()
 for i in "${!sources[@]}"; do
- obj="$build/host-$i.o"; xcrun --sdk xrsimulator clang "${flags[@]}" "${incs[@]}" -c "$repo/${sources[$i]}" -o "$obj"; objects+=("$obj")
+ obj="$build/host-$i.o"; xcrun --sdk "$sdk" clang "${flags[@]}" "${incs[@]}" -c "$repo/${sources[$i]}" -o "$obj"; objects+=("$obj")
 done
-xcrun --sdk xrsimulator clang "${flags[@]}" "${incs[@]}" -c "$repo/VXRuntime/tests/xrizer_xros_static_link.c" -o "$build/probe.o"
-xcrun --sdk xrsimulator libtool -static -o "$build/libklepton.a" "${objects[3]}" "${objects[4]}" "${objects[5]}"
+xcrun --sdk "$sdk" clang "${flags[@]}" "${incs[@]}" -c "$repo/VXRuntime/tests/xrizer_xros_static_link.c" -o "$build/probe.o"
+xcrun --sdk "$sdk" libtool -static -o "$build/libklepton.a" "${objects[3]}" "${objects[4]}" "${objects[5]}"
 archive="$build/libxrizer.a"
-cp "$cache/target/aarch64-apple-visionos-sim/debug/libxrizer.a" "$archive"
-xcrun --sdk xrsimulator clang -target arm64-apple-xros26.0-simulator -isysroot "$SDKROOT" "$build/probe.o" "${objects[@]}" "$archive" -framework Foundation -framework Metal -framework Security -framework SystemConfiguration -licucore -lz -o "$build/link-probe"
+cp "$cache/target/$rust_target/debug/libxrizer.a" "$archive"
+xcrun --sdk "$sdk" clang -target "$clang_target" -isysroot "$SDKROOT" "$build/probe.o" "${objects[@]}" "$archive" -framework Foundation -framework Metal -framework Security -framework SystemConfiguration -licucore -lz -o "$build/link-probe"
 nm -gU "$build/link-probe" > "$build/symbols.txt"
 for symbol in VRClientCoreFactory xrizer_configure_openxr_provider xrizer_configure_metal_host vx_xros_xrizer_register kl_native_get_instance_proc_addr; do
  if ! grep -Eq "[[:space:]]_${symbol}$" "$build/symbols.txt"; then echo "missing static symbol: $symbol" >&2; exit 1; fi
@@ -49,4 +55,4 @@ if any(hashlib.sha256((repo/name).read_bytes()).hexdigest()!=digest for name,dig
 PYCHECK
 shasum -a 256 "$build/link-probe" "$archive" "$build/source-manifest.json" > "$build/hashes.txt"
 ln -sfn "$(basename "$build")" "$cache/latest"
-printf 'visionOS simulator static-link probe: build only, exact symbols pass; %s\n' "$build"
+printf 'visionOS %s static-link probe: build only, exact symbols pass; %s\n' "$sdk" "$build"

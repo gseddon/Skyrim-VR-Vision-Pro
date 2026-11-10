@@ -1,4 +1,4 @@
-/* Explicit simulator-only integration with the existing immersive compositor. */
+/* Integration of the xrizer host with the visionOS app's existing immersive compositor (simulator and device). */
 #pragma once
 #include <stdint.h>
 #include "native_vr.h"
@@ -6,6 +6,14 @@
 extern "C" {
 #endif
 int vx_xros_fixture_enabled(void);
+/* VXRT_XRIZER_XROS_IMMERSIVE=1 (main.m: -xrizer -immersive): the host is the platform's (not the injected test's) and
+ * the compositor shows the game's pairs: stereo into a two-view drawable, or, when the drawable has one view (the
+ * simulator), side by side in it. Implies vx_xros_fixture_enabled. */
+int vx_xros_immersive_enabled(void);
+void vx_xros_immersive_set_mono(int mono);
+/* JSON fields (no braces): fresh/repeated/stale/missing presentations, eyes drawn, the age (ms) of the pairs shown
+ * (compositor presentation time minus the pose time of the pair); the interval counts restart on each call. */
+int vx_xros_immersive_stats(char *buf, uint32_t len);
 int vx_xros_fixture_start(void *device, void *queue);
 /* Drawables supply their actual optical transforms and tangents; prediction is
  * in the verified compositor/Mach seconds epoch. A null head is identity and

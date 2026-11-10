@@ -7,7 +7,7 @@
 #   device (default): pending from the headset, compiled, the .metallib files back into Documents/shadercache
 set -e
 DEV=${DEV:-717AC0D2-8713-5537-8D5F-A611235E7D35}
-APP=${APP:-marimokodai.VXRuntimeHost}
+APP=${APP:-gseddon.dev.vxrt.VXRuntimeHost}
 compile() {
     in=$1; out=$2; mkdir -p "$out"; n=0; t0=$(date +%s)
     for m in "$in"/*.metal; do

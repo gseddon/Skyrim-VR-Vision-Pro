@@ -2,6 +2,7 @@
 #import <Metal/Metal.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include "xros_vr.h"
 #include "xrizer_xros_optics.h"
@@ -47,11 +48,35 @@ int vx_xros_native_begin(const float head[16], const float eyes[32], const float
 }
 
 #ifdef VXRT_XRIZER_XROS_FIXTURE
+/* What the compositor showed, per compositor frame (the compositor thread only). A pair is FRESH the first time its
+ * provider frame id is presented and a REPEAT every later time (the game has not submitted a newer pair, the pose is
+ * re-projected); a frame the game has not produced yet or whose pose is stale is counted apart, never as fresh. The
+ * age is the compositor's presentation time minus the pose time the pair was rendered for (the xrWaitFrame prediction),
+ * in the compositor/Mach seconds epoch. */
+static struct { unsigned long long fresh, repeat, stale, none, eyes; uint64_t last_id; double age_sum, age_max, rep_age_max;
+               unsigned long long i_fresh, i_repeat, i_stale, i_none; } g_imm;
 int vx_xros_fixture_present_begin(double time) {
     g_native_held=0; g_fixture_held=0;
-    if(vx_xros_fixture_acquire(&g_native_frame))return 0;
+    if(vx_xros_fixture_acquire(&g_native_frame)) { ++g_imm.none; ++g_imm.i_none; return 0; }
     g_native_held=1;g_fixture_held=1;
-    return vx_xros_pose_is_current(time, g_native_frame.pose.pose_time, g_native_frame.pose.tracking_valid);
+    int current=vx_xros_pose_is_current(time, g_native_frame.pose.pose_time, g_native_frame.pose.tracking_valid);
+    double age=time-g_native_frame.pose.pose_time;
+    if(!current) { ++g_imm.stale; ++g_imm.i_stale; }
+    else if(g_native_frame.pose.frame_id>g_imm.last_id) {
+        g_imm.last_id=g_native_frame.pose.frame_id; ++g_imm.fresh; ++g_imm.i_fresh; g_imm.age_sum+=age;
+        if(age>g_imm.age_max)g_imm.age_max=age;
+    } else { ++g_imm.repeat; ++g_imm.i_repeat; if(age>g_imm.rep_age_max)g_imm.rep_age_max=age; }
+    return current;
+}
+/* JSON fields for the host log: totals and this interval's counts (the interval restarts here). */
+int vx_xros_immersive_stats(char *buf, uint32_t len) {
+    int n=snprintf(buf,len,"\"imm_fresh\":%llu,\"imm_repeat\":%llu,\"imm_stale\":%llu,\"imm_none\":%llu,\"imm_eyes_drawn\":%llu,"
+        "\"imm_interval_fresh\":%llu,\"imm_interval_repeat\":%llu,\"imm_interval_stale\":%llu,\"imm_interval_none\":%llu,"
+        "\"imm_age_ms_mean_fresh\":%.2f,\"imm_age_ms_max_fresh\":%.2f,\"imm_age_ms_max_repeat\":%.2f,\"imm_last_frame\":%llu",
+        g_imm.fresh,g_imm.repeat,g_imm.stale,g_imm.none,g_imm.eyes,g_imm.i_fresh,g_imm.i_repeat,g_imm.i_stale,g_imm.i_none,
+        g_imm.fresh ? g_imm.age_sum/g_imm.fresh*1e3 : 0.0,g_imm.age_max*1e3,g_imm.rep_age_max*1e3,(unsigned long long)g_imm.last_id);
+    g_imm.i_fresh=g_imm.i_repeat=g_imm.i_stale=g_imm.i_none=0;
+    return n;
 }
 #endif
 
@@ -119,6 +144,9 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
     if (!enc) return 0;
     [enc setRenderPipelineState:pipeline]; [enc setFragmentTexture:tex atIndex:0]; [enc setFragmentBytes:&p length:sizeof p atIndex:0];
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; [enc endEncoding];
+#ifdef VXRT_XRIZER_XROS_FIXTURE
+    ++g_imm.eyes;
+#endif
     return 1;
 }
 #ifdef VXRT_XRIZER_XROS_FIXTURE
@@ -193,6 +221,7 @@ int vx_xros_fixture_draw_inspection(void *cbp, int view, void *outp, void *depth
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     }
     [enc endEncoding];
+    g_imm.eyes += 2;
     // Texel centres of each eye's source bounds, in drawable pixels. Only the
     // 4x3 fixture eyes are sampled; other sizes are presented but not audited.
     int audit = g_native_frame.eye[0].width == 4 && g_native_frame.eye[0].height == 3 &&
