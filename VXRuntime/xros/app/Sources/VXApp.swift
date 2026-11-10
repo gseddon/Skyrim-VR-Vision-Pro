@@ -22,6 +22,7 @@ struct VXRuntimeApp: App {
         vxrt_jlog("app_init", "\"start_window\":\(Self.gated)")
         if !Self.gated { vxrt_boot_fallback() }
         VXLifecycle.observeApplication()
+        VXKeyboardController.install()   // the game's text requests (name entry) open the keyboard window (VXKeyboard.swift)
         _ = VXImmersiveController.shared   // the app-level owner of the immersive space exists before any view
         // Main-thread heartbeat every 0.5 s: the last one before a system kill says when the app stopped being alive, and
         // the frame counter says whether the compositor loop was still presenting.
@@ -43,6 +44,8 @@ struct VXRuntimeApp: App {
             .defaultSize(width: 900, height: 640)
             .defaultLaunchBehavior(Self.gated ? .automatic : .suppressed)
             .restorationBehavior(.disabled)
+
+        VXKeyboardScene()   // the text-entry window the game's keyboard requests open (suppressed at launch)
 
         WindowGroup(id: "display") {
             VXDisplayView()
@@ -182,12 +185,16 @@ enum VXLifecycle {
     nonisolated(unsafe) static var invalidatedAt: CFTimeInterval = 0
     nonisolated(unsafe) static var resignedAt: CFTimeInterval = 0
     nonisolated(unsafe) static var quitting = false
+    // A keyboard window (VXKeyboard.swift) is open for the game's text request. The system keyboard and a second window may take focus from
+    // the display window; that is not a Crown press, so no crown_quit while it is open (the signals are still logged).
+    nonisolated(unsafe) static var keyboardOpen = false
     static let crownWindow = 1.5   // s: invalidation and leaving the app this close together (either order) are a Crown press
     static var crownQuitEnabled: Bool { ProcessInfo.processInfo.environment["VXRT_CROWN_QUIT"] != "0" }
     // Crown: quit cleanly. Logs which signal fired and the timings behind it (the next device run shows whether the rule separates a Crown press
     // from a headset off), flushes the logs, and exits 0.
     static func crownQuit(_ signal: String) {
         if quitting { return }
+        if keyboardOpen { vxrt_jlog("crown_quit_suppressed", "\"signal\":\"\(signal)\",\"why\":\"keyboard_open\""); return }
         quitting = true
         let now = CACurrentMediaTime()
         vxrt_jlog("crown_quit", "\"signal\":\"\(signal)\",\"since_invalidated_s\":\(invalidatedAt > 0 ? String(format: "%.3f", now - invalidatedAt) : "null"),\"since_resign_s\":\(resignedAt > 0 ? String(format: "%.3f", now - resignedAt) : "null"),\"phase\":\"\(scenePhaseNow)\",\"app_active\":\(appActive),\"frames\":\(VXImmersiveRenderer.frameCount)")
@@ -384,6 +391,7 @@ struct VXDisplayView: View {
                 .glassBackgroundEffect()
             }
         }
+        .vxKeyboardOpener()   // this view lives as long as the game (it hosts the swap chain's view), so it can open the keyboard window
     }
 
     private var display: some View {
