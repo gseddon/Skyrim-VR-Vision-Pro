@@ -27,6 +27,8 @@ Compatibility fixes (2026-11-09): every change made because Windows guarantees s
 
 Performance handoff (2026-11-10): what was built and measured this session, and the uninvestigated performance ideas (bottleneck measurement via replay, tile render passes, foveation/MetalFX, headset shader precompile), are in [the performance handoff](2026-11-10-performance-handoff.md).
 
+Device readiness (2026-11-10): the gaps, staged sequence (controller fixture, Skyrim start-up, Helgen cart) and open decisions for the physical Vision Pro are in [the device-readiness plan](2026-11-10-skyrim-device-readiness.md).
+
 ## Source control and active checkout
 
 The source-only checkpoint is published in `gseddon/Skyrim-VR-Vision-Pro`, branch
