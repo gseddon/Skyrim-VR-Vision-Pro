@@ -46,6 +46,9 @@ actor VXNativeXRTracking {
     private let world: WorldTrackingProvider
     private let hands: HandTrackingProvider?
     private let gate: VXTrackingGate
+    // true: this adapter's ARKitSession carries ONLY the Sense accessories (the head runs in its own session), so a slow or
+    // blocked accessory run can never take the head pose away (device run 4: the combined run never returned; no head, no frames).
+    private let accessoryOnly: Bool
     private var accessoryProvider: AccessoryTrackingProvider?
     private var generation: UInt64 = 0
     private var observers: [NSObjectProtocol] = []
@@ -56,8 +59,8 @@ actor VXNativeXRTracking {
     private var lastLogged: (connected: Int, loaded: Int)?
     private var latest: [VXSpatialObservation] = []
 
-    init(session: ARKitSession, world: WorldTrackingProvider, hands: HandTrackingProvider?, gate: VXTrackingGate) {
-        self.session = session; self.world = world; self.hands = hands; self.gate = gate
+    init(session: ARKitSession, world: WorldTrackingProvider, hands: HandTrackingProvider?, gate: VXTrackingGate, accessoryOnly: Bool = false) {
+        self.session = session; self.world = world; self.hands = hands; self.gate = gate; self.accessoryOnly = accessoryOnly
     }
 
     func start() async {
@@ -114,13 +117,14 @@ actor VXNativeXRTracking {
                     vxrt_jlog("xr_controllers", "\"what\":\"spatial controllers\",\"connected\":\(connected.count),\"loaded\":\(loaded.count),\"names\":\"\(loaded.map { $0.name }.joined(separator: "|"))\"")
                 }
             }
-            var providers: [any DataProvider] = [world]
-            if let hands { providers.append(hands) }
+            var providers: [any DataProvider] = accessoryOnly ? [] : [world]
+            if let hands, !accessoryOnly { providers.append(hands) }
             let next = loaded.isEmpty ? nil : AccessoryTrackingProvider(accessories: loaded)
             if let next { providers.append(next) }
-            gate.pause()
+            if !accessoryOnly { gate.pause() }
+            vxrt_jlog("xr_controllers", "\"what\":\"session run begin\",\"providers\":\(providers.count),\"accessory_only\":\(accessoryOnly),\"loaded\":\(loaded.count),\"mach_s\":\(String(format: "%.3f", CACurrentMediaTime()))")
             do {
-                try await session.run(providers)
+                if !providers.isEmpty { try await session.run(providers) }
                 if !stopped && pass == generation { devices = current; accessoryProvider = next }
                 else { refreshAgain = true }
                 vxrt_jlog("xr_controllers", "\"what\":\"session running\",\"accessory_provider\":\(next != nil),\"accessory_state\":\"\(next.map { "\($0.state)" } ?? "none")\",\"loaded\":\(loaded.count),\"mach_s\":\(String(format: "%.3f", CACurrentMediaTime()))")
@@ -128,7 +132,7 @@ actor VXNativeXRTracking {
                 /* provider unavailable: leave every observation invalid */
                 vxrt_jlog("xr_controllers", "\"what\":\"session run failed: \(error.localizedDescription)\"")
             }
-            gate.resume()
+            if !accessoryOnly { gate.resume() }
         } while refreshAgain && !stopped
         refreshing = false
     }
