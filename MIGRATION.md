@@ -9,7 +9,7 @@
 | `build/worktrees/terra-pose-input` in this repository | Terra B: poses/input, branch `codex/terra-pose-input` |
 | `build/worktrees/terra-skyrim-aot` in this repository | Actual Skyrim/AOT checkout (parent orchestration while Terra C is stopped), branch `codex/terra-skyrim-aot` |
 | `/Users/gseddon/git/VeRantyx/build/worktrees/native-darwin-aot` | Previous implementation checkout; read-only reference for private artifacts and earlier evidence |
-| `/Users/gseddon/git/VeRantyx/build/toolchains/xrizer-rust` | Existing repository-local Rust/Cargo installation; reused with separate output/XDG directories |
+| `build/toolchains/xrizer-rust` in this repository (git-ignored) | Rust/Cargo toolchain (rustc 1.99.1), moved here on 2026-11-10 from `/Users/gseddon/git/VeRantyx/build/toolchains/xrizer-rust` (historical location). Default of `XRIZER_RUST_ROOT`; scripts source `third_party/xrizer/rust-env.sh` |
 
 The approved round starts from `8eb61b4` (implementation checkpoint `fc17152` plus the approved plan). The three new agents are Terra; historical workers remain idle. New tests/builds/evidence stay in each new worktree's ignored output paths. Private game inputs are copied only when needed and checked by hash; unchanged AOT modules may be reused by explicit immutable paths after matching descriptors/bases. No old worktree is reset, removed or repointed.
 
