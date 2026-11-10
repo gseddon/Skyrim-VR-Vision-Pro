@@ -48,6 +48,28 @@ struct VXRuntimeApp: App {
 // keeps the process (a debugging session with the headset off).
 enum VXLifecycle {
     nonisolated(unsafe) static var outputEnded = false
+    // The compositor layer was invalidated by the system (a pause of the immersive space we did not ask for: device run 6 at 71 s, with no
+    // scene change). Returns true when a reopen was scheduled; the reopen budget is five. The xrizer fixture's surface loss is one-way and
+    // xrizer aborts the process once it has no surface, so the answer is to bring the space back, not to give up.
+    nonisolated(unsafe) static var reopens = 0
+    static func layerInvalidated() -> Bool {
+#if XRIZER_XROS_FIXTURE
+        guard vx_xros_immersive_enabled() != 0, ProcessInfo.processInfo.environment["VXRT_REOPEN"] != "0" else { return false }
+        if reopens >= 5 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                vxrt_jlog("lifecycle_exit", "\"phase\":\"layer_invalidated\",\"reopens\":\(reopens)")
+                fflush(nil)
+                exit(0)
+            }
+            return false
+        }
+        reopens += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { NotificationCenter.default.post(name: .vxReopenImmersive, object: nil) }
+        return true
+#else
+        return false
+#endif
+    }
     static func scenePhaseChanged(to phase: ScenePhase) {
 #if XRIZER_XROS_FIXTURE
         guard vx_xros_immersive_enabled() != 0,
@@ -73,6 +95,8 @@ struct VXLayerConfiguration: CompositorLayerConfiguration {
         if capabilities.supportedDepthFormats.contains(.depth32Float) { configuration.depthFormat = .depth32Float }
     }
 }
+
+extension Notification.Name { static let vxReopenImmersive = Notification.Name("vxReopenImmersive") }
 
 struct VXRootControllerView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController { vxrt_make_root_controller() }
@@ -100,6 +124,21 @@ struct VXDisplayView: View {
             .opacity(Self.hideFlatWindow ? 0.02 : 1)
             .allowsHitTesting(!Self.hideFlatWindow)
             .onAppear { vxrt_jlog("display_view", nil) }
+            // The system ended the compositor layer (VXLifecycle.layerInvalidated): open the immersive space again; the new
+            // CompositorLayer closure rebinds the running provider (VXImmersiveRenderer.start).
+            .onReceive(NotificationCenter.default.publisher(for: .vxReopenImmersive)) { _ in
+                Task {
+                    let result = await openImmersiveSpace(id: "vr")
+                    let text: String
+                    switch result {
+                    case .opened: text = "opened"
+                    case .userCancelled: text = "cancelled"
+                    case .error: text = "error"
+                    @unknown default: text = "unknown"
+                    }
+                    vxrt_jlog("immersive_space", "\"result\":\"\(text)\",\"reopen\":\(VXLifecycle.reopens)")
+                }
+            }
             .task {
                 guard !opened, vxrt_present_vr() != 0 else { return }
                 opened = true
