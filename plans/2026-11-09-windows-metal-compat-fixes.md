@@ -5,8 +5,7 @@ is listed here, with what it costs and how to turn it off. If one turns out to c
 this is where to look first to decide whether it can be dropped without hurting the game.
 
 Source of the list: a read-only audit of the code at `558be7d` (18 gap groups, 30 OK items, 8 unknowns). The report
-was written to `/tmp/claude/audit/windows-metal-guarantees.md`; its gap numbers are used below. Copy it into
-`research/` if it needs to outlive the scratch directory.
+is kept in [the audit report](../research/2026-11-09-windows-metal-guarantees-audit.md); its gap numbers are used below.
 
 How to read the columns:
 
