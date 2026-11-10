@@ -7,6 +7,8 @@ __declspec(dllimport) void *__stdcall GetStdHandle(unsigned);
 __declspec(dllimport) int __stdcall WriteFile(void *,const void *,unsigned,unsigned *,void *);
 __declspec(dllimport) void __stdcall ExitProcess(unsigned);
 __declspec(dllimport) unsigned __stdcall GetEnvironmentVariableA(const char *,char *,unsigned);
+__declspec(dllimport) unsigned long long __stdcall GetTickCount64(void);
+__declspec(dllimport) void __stdcall Sleep(unsigned);
 }
 static void check(bool ok,unsigned code){if(!ok)ExitProcess(code);}
 struct Desc {unsigned width,height,mips,array,format,samples,quality,usage,bind,cpu,misc;};
@@ -76,10 +78,28 @@ extern "C" void mainCRTStartup(){
   }
   compositor->PostPresentHandoff();check(verify(n&1)==0,12);
  }
+ /* VXRT_XROS_TEST_HOLD=<seconds> (opt-in, for looking at the immersive space): keep running at the compositor's pace
+  * and submit a new pair (alternating variants) every frame, then sleep 40 ms: the game is slower than the compositor, so
+  * the compositor shows repeats of each pair between fresh ones. The final drain audit counts audited drawables and is skipped in this mode. */
+ unsigned hold_ms=0;{char hb[16];unsigned n=GetEnvironmentVariableA("VXRT_XROS_TEST_HOLD",hb,sizeof hb);
+  for(unsigned i=0;i<n && i<sizeof hb && hb[i]>='0' && hb[i]<='9';i++)hold_ms=hold_ms*10+(unsigned)(hb[i]-'0');hold_ms*=1000;}
+ if(hold_ms){
+  const unsigned long long end=GetTickCount64()+hold_ms;
+  for(unsigned n=frames;GetTickCount64()<end;){
+   vr::TrackedDevicePose_t pose[3]={};if(compositor->WaitGetPoses(pose,3,nullptr,0)!=0)break;
+   ++n;
+   for(unsigned eye=0;eye<2;eye++){
+    fill(n&1,eye);((update_fn)table(context)[48])(context,textures[eye],0,nullptr,pixels[eye],32,256);
+    vr::Texture_t image={textures[eye],vr::TextureType_DirectX,vr::ColorSpace_Linear};
+    check(compositor->Submit((vr::EVREye)eye,&image,&bounds,vr::Submit_Default)==0,10+eye);
+   }
+   compositor->PostPresentHandoff();Sleep(40);
+  }
+ }
  for(unsigned eye=0;eye<2;eye++)((release_fn)table(textures[eye])[2])(textures[eye]);
  ((release_fn)table(context)[2])(context);((release_fn)table(device)[2])(device);check(prepare()==0,14);check(loss()==0,16);
  check(compositor->WaitGetPoses(nullptr,0,nullptr,0)==vr::VRCompositorError_RequestFailed,17);
- shutdown();check(finished()==0,15);
+ shutdown();check(hold_ms || finished()==0,15);
  const char text[]="xrizer_xros_guest: OpenVR geometry, two D3D pairs and provider readback passed\n";unsigned written=0;
  check(WriteFile(GetStdHandle((unsigned)-11),text,sizeof text-1,&written,nullptr) && written==sizeof text-1,13);
  ExitProcess(0);
