@@ -317,6 +317,20 @@ static void *make_mtl_texture(d3d_device *dev, const uint32_t *desc, uint32_t di
     uint32_t bytes;
     MTLPixelFormat f = d3d_mtl_format(desc[TD_FORMAT], &bytes);
     if (f == MTLPixelFormatInvalid) { vx_log("Direct3D: texture format %u is not supported yet", desc[TD_FORMAT]); *hr = E_INVALIDARG; return NULL; }
+#if VX_XROS_SIM
+    // The visionOS simulator's GPU has no BC texture support (VISIONOS_PORT.md), and a decoder is out of scope there
+    // (user decision 2026-11-10: the simulator is for start-up only). Refuse explicitly, once loudly, and count; this
+    // stop is not a pass of rendering. (DXGI 70-84 BC1-BC5, 94-99 BC6H/BC7.)
+    {
+        uint32_t fmt = desc[TD_FORMAT];
+        if ((fmt >= 70 && fmt <= 84) || (fmt >= 94 && fmt <= 99)) {
+            static int refused;
+            if (!refused++) vx_log("Direct3D: BC_REFUSED: DXGI format %u is block-compressed; the visionOS simulator has no BC support and no decoder "
+                                   "is built (start-up-only scope). Texture creation fails with E_INVALIDARG; expected stop, not a rendering pass", fmt);
+            *hr = E_INVALIDARG; return NULL;
+        }
+    }
+#endif
     if (desc[TD_BIND] & BIND_DEPTH_STENCIL) {                  // typeless formats that are depth buffers
         if (desc[TD_FORMAT] == 39) f = MTLPixelFormatDepth32Float;
         else if (desc[TD_FORMAT] == 53) f = MTLPixelFormatDepth16Unorm;

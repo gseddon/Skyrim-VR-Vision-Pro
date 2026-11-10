@@ -191,6 +191,15 @@ __attribute__((constructor)) static void early(void) {
     int argc = *_NSGetArgc(); char **argv = *_NSGetArgv();
     for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "-test")) snprintf(g_test, sizeof g_test, "%s", argv[i + 1]);
     for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "-game")) { snprintf(g_test, sizeof g_test, "%s", argv[i + 1]); g_game = 1; }
+    // -game skyrimvr -xrizer: use xrizer as the game's OpenVR (the XROS_XRIZER_GAME=1 build: the fixture's host, offscreen
+    // pair shown side by side in the simulator's one view). Opt-in by that argument; in any other build, or without it,
+    // these variables are not set (and in a build without the fixture they would be inert).
+    if (g_game && !strcmp(g_test, "skyrimvr"))
+        for (int i = 1; i < argc; i++) if (!strcmp(argv[i], "-xrizer")) {
+            setenv("VXRT_XRIZER_XROS_FIXTURE", "1", 0);
+            setenv("VXRT_XRIZER_XROS_OFFSCREEN", "1", 0);
+            setenv("VXRT_XRIZER_XROS_PRESENT", "1", 0);
+        }
     // Select the local input/presentation backend before Swift starts the immersive space.
     if (!strcmp(g_test, "native_vr_d3d11")) {
         setenv("VXRT_NATIVE_VR", "1", 1);
@@ -259,7 +268,45 @@ static void status(NSString *s) { dispatch_async(dispatch_get_main_queue(), ^{ g
 // no saves). The modules are the app's frameworks (tools/xros_aot.sh, XROS_AOT_GAME=1), the memory mechanisms of
 // avp-mem on (VXRT_PAGEFILE, VXRT_D3D12_FILE_BUFFERS, VXRT_IMAGE_CACHE in Documents/vxrt_mem), GPU budget 4096.
 // Each variable only when the launch did not set it (devicectl's --environment-variables wins).
+// -game skyrimvr (start-up-only scope on the simulator; plans/2026-11-10-skyrim-simulator-build.md). Opt-in: only with
+// that launch argument. Configuration, each from the launch environment (simctl: SIMCTL_CHILD_<name>; devicectl:
+// --environment-variables), with these defaults:
+//   VXRT_GAME_ROOT   the runtime's root (default <Documents>/root; read in runtime_thread for every game)
+//   VXRT_SKYRIM_DIR  the game folder, holding Data/, the .ini files, the DLLs and the PREPARED SkyrimVR.exe (default
+//                    <root>/SkyrimVR). The modules are named by a hash of the exe's content, so the exe here must be
+//                    byte-identical to the one the pipeline compiled (tools/skyrim_aot_pipeline.py).
+//   VXRT_SKYRIM_EXE  the exe (default <VXRT_SKYRIM_DIR>/SkyrimVR.exe)
+// As on the Mac harness (tools/vxrt_native_startup.py): no Steam variables, VXRT_NO_WINE, strict AOT (set by the caller),
+// the game's writes in <root>/overlay_skyrimvr, working folder the game folder. Nothing here sets up xrizer/OpenVR:
+// xrizer: only with -xrizer and the XROS_XRIZER_GAME=1 build (see main(), and the plan).
+static int skyrimvr_start(const char *root, char **exe_out, char ***argv_out, int *argc_out) {
+    static char dir_game[1400], exe[1600], ov[3000], dir[1400];
+    struct stat st;
+    snprintf(dir_game, sizeof dir_game, "%s", getenv("VXRT_SKYRIM_DIR") ?: "");
+    if (!dir_game[0]) snprintf(dir_game, sizeof dir_game, "%s/SkyrimVR", root);
+    snprintf(exe, sizeof exe, "%s", getenv("VXRT_SKYRIM_EXE") ?: "");
+    if (!exe[0]) snprintf(exe, sizeof exe, "%s/SkyrimVR.exe", dir_game);
+    if (stat(exe, &st)) { jlog("no_game", "\"exe\":\"%s\",\"why\":\"not present\"", exe); return 0; }
+    static const char *steam[] = { "VXRT_STEAM_BRIDGE", "SteamAppId", "SteamGameId", "SteamClientLaunch", "SteamEnv", "SteamPath", "SteamOverlayGameId" };
+    for (unsigned i = 0; i < sizeof steam / sizeof *steam; i++) unsetenv(steam[i]);
+    setenv("VXRT_STEAM_BRIDGE", "0", 1);
+    setenv("VXRT_NO_WINE", "1", 0);
+    snprintf(ov, sizeof ov, "%s:%s/overlay_skyrimvr", dir_game, root);
+    setenv("VXRT_OVERLAY", ov, 0);
+    snprintf(dir, sizeof dir, "%s/bundle/redist", NSBundle.mainBundle.resourcePath.fileSystemRepresentation);
+    if (!stat(dir, &st)) setenv("VXRT_DLL_PATH", dir, 0);
+    snprintf(dir, sizeof dir, "%s/aot.misses", g_docs); setenv("VXRT_AOT_MISSES", dir, 0);
+    setenv("VXRT_DEBUG_OUTPUT", "1", 0);
+    if (chdir(dir_game)) { jlog("no_game", "\"why\":\"chdir %s\"", dir_game); return 0; }
+    static char *argv[] = { "vxrt", "SkyrimVR.exe", NULL };
+    *exe_out = exe; *argv_out = argv; *argc_out = 2;
+    jlog("game", "\"exe\":\"%s\",\"game_dir\":\"%s\",\"overlay\":\"%s\",\"dll_path\":\"%s\",\"scope\":\"startup-only; BC textures refused on the simulator\"",
+         exe, dir_game, ov, getenv("VXRT_DLL_PATH") ?: "");
+    return 1;
+}
+
 static int game_start(const char *root, char **exe_out, char ***argv_out, int *argc_out) {
+    if (!strcmp(g_test, "skyrimvr")) return skyrimvr_start(root, exe_out, argv_out, argc_out);
     if (strcmp(g_test, "cyberpunk")) { jlog("no_game", "\"game\":\"%s\"", g_test); return 0; }
     static char install[1400], exe[1600], ov[3000], dir[1400];
     snprintf(install, sizeof install, "%s/drive_c/Program Files (x86)/Steam/steamapps/common/Cyberpunk 2077", root);
@@ -303,6 +350,7 @@ static void *runtime_thread(void *arg) {
     NSString *exe = [bundle stringByAppendingFormat:@"/exe/%s.exe", g_test];
     char root[1200];
     snprintf(root, sizeof root, "%s/root", g_docs);
+    if (getenv("VXRT_GAME_ROOT") && getenv("VXRT_GAME_ROOT")[0]) snprintf(root, sizeof root, "%s", getenv("VXRT_GAME_ROOT"));   // (default unchanged)
     mkdir(root, 0755);
     setenv("VXRT_ROOT", root, 0);
     setenv("VXRT_AOT_DIR", "/linked", 0);                  // (any folder: translator/aot.c finds the modules by file name)

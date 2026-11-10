@@ -2,7 +2,7 @@
 //   menus.m, tray.m      the notification area and popup menus: the stand-ins in user32.c / desktop.c stay
 //   clipboard.m          the Windows clipboard: desktop.c's stand-ins stay (the text one is in xros_ui.m)
 //   opengl.c             no OpenGL on visionOS: opengl32.dll is not there, a program importing it does not load
-//   directinput.m        no IOKit HID there: dinput8.dll keeps no devices (GameController would be the way)
+//   directinput.m        is built for visionOS now: no IOKit HID, the Game Controller framework's pads stand in (VX_XROS blocks there)
 //   vcpu.c, guest.c      no Hypervisor.framework there: no vCPU
 //   vm_hooks.c           (the vCPU's interposed allocator): the host's malloc
 #include <stdint.h>
@@ -23,7 +23,6 @@ void vx_clipboard_init(void) { }
 void vx_opengl_init(void) { }
 int vx_gl_describe_pixel_format(void *pfd, uint32_t size) { (void)pfd; (void)size; return 0; }
 int vx_gl_swap(void) { return 0; }
-void vx_directinput_init(void) { }
 
 // The vCPU (translator/vcpu.c) and its guest code (translator/guest.c): never started (xe_new_vcpu answers NULL).
 static __thread int t_depth;
