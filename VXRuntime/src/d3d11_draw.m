@@ -51,7 +51,50 @@ static MTLCompileOptions *d3d11_library_options(void) {
 // translator's version; the key adds the options (language version, math mode).
 extern id vx_library_cache_load(id<MTLDevice> dev, NSString *source, MTLCompileOptions *options, uint64_t *key);
 extern void vx_library_cache_store(NSString *source, MTLCompileOptions *options, uint64_t key, uint64_t took_ns);
+// One library per distinct source and process: a game asks for the same translated shader again and again (a Skyrim
+// capture: 18975 requests for about 600 distinct sources), and a request is a hash of the source, a disk lookup, a
+// compile or a library load each time otherwise. The map holds the library, or while it is being made the list of
+// requests waiting for it. VXRT_D3D11_LIBRARY_REUSE=0 turns it off (to measure).
+extern void vx_library_cache_note_reuse(void);
+static pthread_mutex_t g_library_map_lock = PTHREAD_MUTEX_INITIALIZER;
+static NSMutableDictionary *g_library_map;   // NSString source -> id<MTLLibrary>, or NSMutableArray of waiting blocks
+static int d3d11_library_reuse(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("VXRT_D3D11_LIBRARY_REUSE"); on = !(e && *e == '0'); }
+    return on;
+}
 static void d3d11_library_async(id<MTLDevice> dev, NSString *source, int sync, void (^done)(id<MTLLibrary>, NSError *)) {
+    int reuse = d3d11_library_reuse();
+    if (reuse) {
+        pthread_mutex_lock(&g_library_map_lock);
+        if (!g_library_map) g_library_map = [NSMutableDictionary dictionary];
+        id entry = g_library_map[source];
+        if ([entry conformsToProtocol:@protocol(MTLLibrary)]) {
+            pthread_mutex_unlock(&g_library_map_lock);
+            vx_library_cache_note_reuse();
+            done(entry, nil);
+            return;
+        }
+        if (entry && !sync) {   // being made by another request: wait for it (a synchronous request makes its own)
+            [(NSMutableArray *)entry addObject:[done copy]];
+            pthread_mutex_unlock(&g_library_map_lock);
+            vx_library_cache_note_reuse();
+            return;
+        }
+        if (!entry) g_library_map[source] = [NSMutableArray array];
+        pthread_mutex_unlock(&g_library_map_lock);
+        void (^inner)(id<MTLLibrary>, NSError *) = done;
+        done = ^(id<MTLLibrary> lib, NSError *err) {
+            NSArray *waiting = nil;
+            pthread_mutex_lock(&g_library_map_lock);
+            id e = g_library_map[source];
+            if ([e isKindOfClass:[NSMutableArray class]]) waiting = e;
+            if (lib) g_library_map[source] = lib; else if (waiting) [g_library_map removeObjectForKey:source];
+            pthread_mutex_unlock(&g_library_map_lock);
+            inner(lib, err);
+            for (void (^w)(id<MTLLibrary>, NSError *) in waiting) w(lib, err);
+        };
+    }
     MTLCompileOptions *options = d3d11_library_options();
     uint64_t key = 0;
     id<MTLLibrary> cached = vx_library_cache_load(dev, source, options, &key);

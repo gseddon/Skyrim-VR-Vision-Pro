@@ -139,22 +139,26 @@ void vx_shader_cache_store(NSString *source, uint64_t key, int std32, int min_lo
 #endif
 // The same folder for the other renderers (Direct3D 11: d3d11_draw.m). vx_library_cache_load returns the library
 // compiled before for this source and these options (NULL: none, or unreadable, which also removes it), with the key
-// to give vx_library_cache_store, which keeps a compile that took over VXRT_SHADER_CACHE_MIN_MS (default 100) for the
-// next start (the compile itself is in the background; see vx_shader_cache_store). The options must not be NULL.
+// to give vx_library_cache_store, which queues the source of a miss for the offline compiler (tools/shadercache_fill.sh).
+// The options must not be NULL.
 // VXRT_SHADER_CACHE=0 (or VXRT_D3D12_SHADER_CACHE=0): neither does anything.
 static unsigned g_cache_hits_x, g_cache_misses_x, g_cache_stored_x, g_cache_unreadable_x;
 static uint64_t g_cache_load_ns_x;
+static unsigned g_cache_reused_x;
+// (d3d11_draw.m: a request for a source it already has a library for in this process; it never reaches the cache)
+void vx_library_cache_note_reuse(void) { __atomic_add_fetch(&g_cache_reused_x, 1, __ATOMIC_RELAXED); }
 // One line at exit: every lookup was a hit (loaded), a miss (compiled from source) or unreadable (compiled again).
 // (also every 5 s while the numbers change, since the runtime may end with _exit, which skips atexit)
 static void vx_library_cache_summary(void) {
     static unsigned last;
+    if (!vx_shader_cache_dir()) return;
     unsigned h = g_cache_hits_x, m = g_cache_misses_x;
-    unsigned sig = h + m + g_cache_unreadable_x + g_cache_stored_x;
+    unsigned sig = h + m + g_cache_unreadable_x + g_cache_stored_x + g_cache_reused_x;
     if (sig == last) return;
     last = sig;
-    if (h + m + g_cache_unreadable_x)
-        vx_log("shader cache summary: %u hits, %u misses (compiled from source), %u damaged, %u stored for next time; %.1f ms loading libraries",
-               h, m, g_cache_unreadable_x, g_cache_stored_x, g_cache_load_ns_x / 1e6);
+    if (h + m + g_cache_unreadable_x + g_cache_reused_x)
+        vx_log("shader cache summary: %u hits, %u misses (compiled from source), %u damaged, %u distinct sources queued for the fill script; %.1f ms loading libraries; %u requests answered from this process's own libraries",
+               h, m, g_cache_unreadable_x, g_cache_stored_x, g_cache_load_ns_x / 1e6, g_cache_reused_x);
 }
 void vx_library_cache_finish(void) { vx_library_cache_summary(); }
 id vx_library_cache_load(id<MTLDevice> mtl, NSString *source, MTLCompileOptions *options, uint64_t *key_out) {
@@ -200,14 +204,37 @@ id vx_library_cache_load(id<MTLDevice> mtl, NSString *source, MTLCompileOptions 
     if (n <= 3 || !(n & (n - 1))) vx_log("shader cache: HIT %016llx.metallib loaded (%.1f ms; hit %u)", (unsigned long long)key, (fs_now12() - t0) / 1e6, n);
     return lib;
 }
+// A miss: the source is written to <folder>/pending/<key>.metal with its options (<key>.flags: std32 min_lod safe), once
+// per process and not when the library is there already, for tools/shadercache_fill.sh to compile after the game
+// (the game itself never runs the offline compiler). The write is in the background (VXRT_SHADER_CACHE_SYNC=1: now).
 void vx_library_cache_store(NSString *source, MTLCompileOptions *options, uint64_t key, uint64_t took_ns) {
-    static uint64_t min_ns = ~0ull;
-    if (min_ns == ~0ull) { const char *e = getenv("VXRT_SHADER_CACHE_MIN_MS"); min_ns = (e && *e ? (uint64_t)atoll(e) : 100) * 1000000ull; }
-    if (!key || took_ns < min_ns || !vx_shader_cache_dir()) return;
+    (void)took_ns;
+    const char *dir = vx_shader_cache_dir();
+    if (!key || !dir) return;
+    static NSMutableSet *seen;
+    static dispatch_queue_t q;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ seen = [NSMutableSet set]; q = dispatch_queue_create("vxrt.shadercache.pending", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0)); });
+    @synchronized (seen) {
+        if ([seen containsObject:@(key)]) return;
+        [seen addObject:@(key)];
+    }
+    char path[1200];
+    snprintf(path, sizeof path, "%s/%016llx.metallib", dir, (unsigned long long)key);
+    if (access(path, R_OK) == 0) return;
     int std32, min_lod, safe;
     uint64_t k = vx_shader_cache_key(source, options, &std32, &min_lod, &safe);
     if (k != key) return;
     unsigned n = __atomic_add_fetch(&g_cache_stored_x, 1, __ATOMIC_RELAXED);
-    if (n <= 3 || !(n & (n - 1))) vx_log("shader cache: %016llx took %.1f ms to compile: kept for the next start (%u so far)", (unsigned long long)key, took_ns / 1e6, n);
-    vx_shader_cache_store(source, key, std32, min_lod, safe);
+    if (n <= 3 || !(n & (n - 1))) vx_log("shader cache: %016llx queued in pending/ for tools/shadercache_fill.sh (%u so far)", (unsigned long long)key, n);
+    NSString *text = [source copy], *folder = @(dir);
+    void (^work)(void) = ^{
+        NSString *pend = [folder stringByAppendingPathComponent:@"pending"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:pend withIntermediateDirectories:YES attributes:@{ NSFilePosixPermissions: @0700 } error:nil];
+        NSString *b = [pend stringByAppendingPathComponent:[NSString stringWithFormat:@"%016llx", (unsigned long long)key]];
+        [text writeToFile:[b stringByAppendingString:@".metal"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        [[NSString stringWithFormat:@"%d %d %d\n", std32, min_lod, safe] writeToFile:[b stringByAppendingString:@".flags"] atomically:YES
+                                                                           encoding:NSUTF8StringEncoding error:nil];
+    };
+    if (getenv("VXRT_SHADER_CACHE_SYNC")) work(); else dispatch_async(q, work);
 }
