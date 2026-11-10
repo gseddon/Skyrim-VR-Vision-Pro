@@ -17,6 +17,12 @@ import UniformTypeIdentifiers
 final class VXImmersiveRenderer: @unchecked Sendable {
     private let layerRenderer: LayerRenderer
     private let queue: MTLCommandQueue
+    // The queue handed to the xrizer provider (the game-to-swapchain copies and the eye-ring copies). It MUST NOT be the compositor's queue: those
+    // command buffers wait on a shared event for the game's rendering (encodeWaitForEvent), and on one queue the compositor's own command buffers
+    // were held behind them, so the compositor's frames came at the game's pace (device run 12: presentation interval 50 to 83 ms, 12 to 20
+    // frames/s, submit CPU 0.5 ms). Its own queue lets the compositor's work run as soon as the GPU has room. (Metal exposes no queue priority
+    // on visionOS 26.1: no such API in the SDK headers. Klepton too uses a plain `device.makeCommandQueue()`.)
+    private let providerQueue: MTLCommandQueue
     // The previous renderer when the compositor layer was invalidated and the immersive space reopened: ARKit (the head session, the
     // Sense accessory session) and the xrizer provider carry on; only the layer, its queue and its loop are new.
     nonisolated(unsafe) private static var previous: VXImmersiveRenderer?
@@ -45,7 +51,6 @@ final class VXImmersiveRenderer: @unchecked Sendable {
     nonisolated(unsafe) static var lastFrameUptime = 0.0
     private var anchorPresent = 0, anchorTracked = 0, anchorMissing = 0, framesSecond = 0
     private var submitMsSum = 0.0, submitMsMax = 0.0, inputWaitMsMax = 0.0
-    private var placeholderMarker: MTLBuffer?
     // Self-capture of what the compositor draws (devicectl cannot screenshot a visionOS device): every VXRT_SHOT_EVERY seconds (default 8;
     // 0 = off) the finished left and right drawable textures are copied to shared buffers on the GPU; the completion handler logs their mean
     // colour (`output_probe`) and writes a quarter-size PNG to Documents/shots/ (shot_L.png, shot_R.png, overwritten, and a numbered copy).
@@ -154,6 +159,11 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         self.layerRenderer = layerRenderer
         self.queue = queue
         queue.label = "VX compositor"
+        // the provider keeps its queue across a layer reopen (the host was created with it)
+        if let p = previous?.providerQueue { providerQueue = p }
+        else if ProcessInfo.processInfo.environment["VXRT_SHARED_QUEUE"] == "1" { providerQueue = queue }   // A/B lever: the old shared queue
+        else { providerQueue = layerRenderer.device.makeCommandQueue() ?? queue }
+        providerQueue.label = "VX provider copies"
         arSession = previous?.arSession ?? ARKitSession()
         worldTracking = previous?.worldTracking ?? WorldTrackingProvider()
         trackingGate = previous?.trackingGate ?? VXTrackingGate()
@@ -324,7 +334,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                 xrizerFixtureAttempted = true
                 if Self.clockMatchesMach() {
                     let device = Unmanaged.passUnretained(layerRenderer.device as AnyObject).toOpaque()
-                    let commandQueue = Unmanaged.passUnretained(queue as AnyObject).toOpaque()
+                    let commandQueue = Unmanaged.passUnretained(providerQueue as AnyObject).toOpaque()
                     xrizerFixtureStarted = vx_xros_fixture_start(device, commandQueue) == 0
                         if xrizerFixtureStarted { _ = xrizerFixtureSurface.started() }
                 }
@@ -406,7 +416,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                     xrizerFixtureAttempted = true
                     if Self.clockMatchesMach() {
                         let device = Unmanaged.passUnretained(layerRenderer.device as AnyObject).toOpaque()
-                        let commandQueue = Unmanaged.passUnretained(queue as AnyObject).toOpaque()
+                        let commandQueue = Unmanaged.passUnretained(providerQueue as AnyObject).toOpaque()
                         xrizerFixtureStarted = vx_xros_fixture_start(device, commandQueue) == 0
                         if xrizerFixtureStarted { _ = xrizerFixtureSurface.started() }
                     }
@@ -480,8 +490,11 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                         }
                     }
                 }
-                if ok != 0 { Self.shownGamePair = true } else { clear(cb, color, depth) }
+                if ok != 0 { Self.shownGamePair = true } else { clear(cb, color, depth, drawable: d, view: i) }
             }
+#if XRIZER_XROS_FIXTURE
+            if Self.ctrlMarker { drawControllerMarkers(cb, d, head: head) }
+#endif
             captureOutput(cb, d)
             d.encodePresent(commandBuffer: cb)
         }
@@ -546,27 +559,19 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         }
     }
 
-    // (no game frame yet: a mid grey-blue that pulses slowly, so the wearer can tell the app is alive, and a head-locked
-    // light square in the middle of each eye. Depth far.)
+    // (no game frame yet: the loading screen, VXLoading.swift: a dark background, "Loading Skyrim VR...", a progress bar from the runtime's own
+    // milestones, head-locked at 2 m with finite depth. Once a game pair has been shown it never comes back.)
     nonisolated(unsafe) static var shownGamePair = false
-    private func clear(_ cb: MTLCommandBuffer, _ color: MTLTexture, _ depth: MTLTexture) {
+    private let loadingCard = VXLoadingCard()
+    private func clear(_ cb: MTLCommandBuffer, _ color: MTLTexture, _ depth: MTLTexture, drawable d: LayerRenderer.Drawable, view i: Int) {
         // Once a game pair has been shown the placeholder never comes back (a hitch, a stale pair, a swapchain change): black, at the
-        // finite depth. Before the first pair: the pulsing blue and the marker.
-        if Self.shownGamePair {
-            let hold = MTLRenderPassDescriptor()
-            hold.colorAttachments[0].texture = color; hold.colorAttachments[0].loadAction = .clear
-            hold.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1); hold.colorAttachments[0].storeAction = .store
-            hold.depthAttachment.texture = depth; hold.depthAttachment.loadAction = .clear; hold.depthAttachment.clearDepth = 0.05
-            hold.depthAttachment.storeAction = .store
-            cb.makeRenderCommandEncoder(descriptor: hold)?.endEncoding()
-            cleared += 1
-            return
-        }
-        let pulse = 0.5 + 0.5 * sin(CACurrentMediaTime() * 2 * Double.pi / 3)
+        // finite depth. Before the first pair: the loading screen.
+        let black = Self.shownGamePair
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = color
         pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0.10 + 0.06 * pulse, green: 0.20 + 0.08 * pulse, blue: 0.40 + 0.15 * pulse, alpha: 1)
+        let g = black ? 0.0 : VXLoadingCard.clearLinear
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: g, green: g, blue: g, alpha: 1)
         pass.colorAttachments[0].storeAction = .store
         pass.depthAttachment.texture = depth
         pass.depthAttachment.loadAction = .clear
@@ -575,27 +580,10 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         pass.depthAttachment.clearDepth = 0.05
         pass.depthAttachment.storeAction = .store
         cb.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
-        // the marker: a 160 x 160 square copied from a buffer (no pipeline needed); the texture is bgra8 (srgb)
-        let side = 512
-        if color.width >= side * 2, color.height >= side * 2, color.pixelFormat == .bgra8Unorm_srgb || color.pixelFormat == .bgra8Unorm {
-            if placeholderMarker == nil {
-                var pixels = [UInt8](repeating: 0, count: side * side * 4)
-                for y in 0..<side { for x in 0..<side {
-                    let border = x < 8 || y < 8 || x >= side - 8 || y >= side - 8
-                    let v: UInt8 = border ? 255 : 200
-                    let i = (y * side + x) * 4
-                    pixels[i] = v; pixels[i + 1] = v; pixels[i + 2] = border ? 255 : 230; pixels[i + 3] = 255
-                } }
-                placeholderMarker = layerRenderer.device.makeBuffer(bytes: pixels, length: pixels.count, options: .storageModeShared)
-            }
-            if let buf = placeholderMarker, let blit = cb.makeBlitCommandEncoder() {
-                blit.copy(from: buf, sourceOffset: 0, sourceBytesPerRow: side * 4, sourceBytesPerImage: side * side * 4,
-                          sourceSize: MTLSize(width: side, height: side, depth: 1), to: color, destinationSlice: 0, destinationLevel: 0,
-                          destinationOrigin: MTLOrigin(x: color.width / 2 - side / 2, y: color.height / 2 - side / 2, z: 0))
-                blit.endEncoding()
-            }
-        }
         cleared += 1
+        if black { return }
+        _ = loadingCard.encode(cb: cb, color: color, eye: i, view: d.views[i].transform,
+                               projection: d.computeProjection(convention: .rightUpBack, viewIndex: i), shown: false)
     }
 
     // Once a second: the head and both controllers in the SAME frame, in the provider's local space (each from its own ARKit session) and
@@ -614,8 +602,92 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         let line = "\"head_local\":\(f(h)),\"grip_local\":[\(f(c.grip[0])),\(f(c.grip[1]))],\"aim_local\":[\(f(c.aim[0])),\(f(c.aim[1]))],\"stage\":\(staged),\"head_stage\":\(staged ? f(toStage(h)) : "null"),\"grip_stage\":[\(staged ? f(c.grip[0].map(toStage)) : "null"),\(staged ? f(c.grip[1].map(toStage)) : "null")],\"grip_to_head_m\":[\(dist(c.grip[0])),\(dist(c.grip[1]))]"
         vxrt_jlog("pose_audit", line)
         print("pose_audit \(line)")
+        ctrlAudit(head: head)
 #endif
     }
+
+#if XRIZER_XROS_FIXTURE
+    // xrizer's Oculus Touch profile: the OpenVR device pose is the OpenXR grip times inverse(R(20.6 deg about X) T(+-0.007, -0.00182941, 0.1019482))
+    // (third_party/xrizer/upstream/src/input/profiles/oculus_touch.rs offset_grip_pose), i.e. about 10 cm ahead of the grip along its -Z axis.
+    static func touchTracked(_ hand: Int) -> simd_float4x4 { VXSenseTune.touchTracked(hand) }
+
+    // VXRT_CTRL_MARKER=1: small coloured squares drawn by the compositor itself (no game, no xrizer) where ARKit says the controller is, to be
+    // compared by eye with the real controller and with the controller Skyrim draws: magenta = the ARKit grip as reported, yellow = the
+    // ARKit aim, cyan = the pose the game is given (grip after the Sense tune, times the Touch offset: where Skyrim should draw its model).
+    private static let ctrlMarker = ProcessInfo.processInfo.environment["VXRT_CTRL_MARKER"] == "1"
+    private var markerBuffers: [(MTLBuffer, Int)] = []
+    private func drawControllerMarkers(_ cb: MTLCommandBuffer, _ d: LayerRenderer.Drawable, head: simd_float4x4) {
+        if markerBuffers.isEmpty {
+            for (b, g, r, side) in [(255, 0, 255, 28), (0, 255, 255, 16), (255, 255, 0, 20), (255, 255, 255, 10), (60, 255, 120, 10)] as [(UInt8, UInt8, UInt8, Int)] {
+                var px = [UInt8](repeating: 0, count: side * side * 4)
+                for k in 0..<(side * side) { px[k * 4] = b; px[k * 4 + 1] = g; px[k * 4 + 2] = r; px[k * 4 + 3] = 255 }
+                if let buf = layerRenderer.device.makeBuffer(bytes: px, length: px.count, options: .storageModeShared) { markerBuffers.append((buf, side)) }
+            }
+        }
+        guard markerBuffers.count == 5 else { return }
+        let full = VXPoseAudit.shared.getFull()
+        for i in d.views.indices {
+            let color = d.colorTextures[min(i, d.colorTextures.count - 1)]
+            guard color.pixelFormat == .bgra8Unorm_srgb || color.pixelFormat == .bgra8Unorm, let blit = cb.makeBlitCommandEncoder() else { continue }
+            let viewFromOrigin = (head * d.views[i].transform).inverse
+            let proj = d.computeProjection(convention: .rightUpBack, viewIndex: i)
+            for (hand, f) in full.enumerated() {
+                guard let raw = f.rawGrip else { continue }
+                var pts: [(SIMD4<Float>, Int)] = [(raw.columns.3, 0)]
+                if let a = f.rawAim { pts.append((a.columns.3, 1)) }
+                if let s = f.sent { pts.append(((s * Self.touchTracked(hand)).columns.3, 2)) }
+                // orientation: dots every 3 cm along -Z of the pose the game is given (white; where Skyrim's model should point) and of Apple's own
+                // anchor frame (yellow-green: the controller's body as ARKit sees it)
+                if let s = f.sent { let m = s * Self.touchTracked(hand); let z = -m.columns.2; for k in 1...6 { pts.append((m.columns.3 + z * (0.03 * Float(k)), 3)) } }
+                if let t = f.tracked { let z = -t.columns.2; for k in 1...6 { pts.append((t.columns.3 + z * (0.03 * Float(k)), 4)) } }
+                for (p, k) in pts {
+                    let c = proj * (viewFromOrigin * SIMD4(p.x, p.y, p.z, 1))
+                    guard c.w > 0.05 else { continue }
+                    let (buf, side) = markerBuffers[k]
+                    let cx = Int((c.x / c.w * 0.5 + 0.5) * Float(color.width)), cy = Int((1 - (c.y / c.w * 0.5 + 0.5)) * Float(color.height))
+                    let ox = cx - side / 2, oy = cy - side / 2
+                    guard ox >= 0, oy >= 0, ox + side <= color.width, oy + side <= color.height else { continue }
+                    blit.copy(from: buf, sourceOffset: 0, sourceBytesPerRow: side * 4, sourceBytesPerImage: side * side * 4, sourceSize: MTLSize(width: side, height: side, depth: 1),
+                              to: color, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin(x: ox, y: oy, z: 0))
+                }
+            }
+            blit.endEncoding()
+        }
+    }
+
+    // Controller offset audit (device run 14 question: the game's controller sits 10 to 15 cm to the left of the real one). Once a second per
+    // connected hand, in the HEAD's frame (x right, y up, -z forward), from the same ARKit origin as the head:
+    //   raw    = the ARKit `.rendered` grip as published before VXSenseTune,   sent = after VXSenseTune (what the provider gets),
+    //   dev0   = raw with xrizer's Touch offset applied (grip * inverse(R(20.6 deg about X) T(+-0.007,-0.0018,0.1019))): the pose the game would
+    //            get with the tune off,   dev    = the same for `sent`: the pose the game gets now.
+    // Each pose is its position and its -Z, +Y, +X axes in head space. rel_* are Klepton's probeSenseFrames rows: the aim, the `.none` grip and the
+    // anchor's own frame relative to the `.rendered` grip, position in the grip's frame and euler (x,y,z degrees).
+    private func ctrlAudit(head: simd_float4x4) {
+        let full = VXPoseAudit.shared.getFull()
+        let hi = head.inverse
+        func touch(_ hand: Int) -> simd_float4x4 { Self.touchTracked(hand) }
+        func v(_ a: SIMD3<Float>) -> String { String(format: "[%.3f,%.3f,%.3f]", a.x, a.y, a.z) }
+        func pose(_ m: simd_float4x4?) -> String {
+            guard let m else { return "null" }
+            let h = hi * m
+            let f = -SIMD3(h.columns.2.x, h.columns.2.y, h.columns.2.z), u = SIMD3(h.columns.1.x, h.columns.1.y, h.columns.1.z), r = SIMD3(h.columns.0.x, h.columns.0.y, h.columns.0.z)
+            return "{\"p\":\(v(SIMD3(h.columns.3.x, h.columns.3.y, h.columns.3.z))),\"fwd\":\(v(f)),\"up\":\(v(u)),\"right\":\(v(r))}"
+        }
+        func rel(_ base: simd_float4x4?, _ m: simd_float4x4?) -> String {
+            guard let base, let m else { return "null" }
+            let r = base.inverse * m, d = 180 / Float.pi
+            let e = SIMD3<Float>(atan2(-r.columns.2.y, r.columns.2.z) * d, asin(max(-1, min(1, r.columns.2.x))) * d, atan2(-r.columns.1.x, r.columns.0.x) * d)
+            return "{\"p\":\(v(SIMD3(r.columns.3.x, r.columns.3.y, r.columns.3.z))),\"euler\":\(v(e))}"
+        }
+        for (hand, f) in full.enumerated() {
+            guard let raw = f.rawGrip else { continue }
+            let t = touch(hand)
+            let dev0 = raw * t, dev = f.sent.map { $0 * t }
+            let line = "\"hand\":\"\(hand == 0 ? "left" : "right")\",\"raw\":\(pose(raw)),\"sent\":\(pose(f.sent)),\"dev0\":\(pose(dev0)),\"dev\":\(pose(dev)),\"aim\":\(pose(f.rawAim)),\"rel_aim\":\(rel(raw, f.rawAim)),\"rel_none\":\(rel(raw, f.gripNone)),\"rel_tracked\":\(rel(raw, f.tracked)),\"rel_sent\":\(rel(raw, f.sent)),\"head_world_fwd\":\(v(-SIMD3(head.columns.2.x, head.columns.2.y, head.columns.2.z)))"
+            vxrt_jlog("ctrl_audit", line)
+        }
+    }
+#endif
 
     private func report() {
         let now = CACurrentMediaTime()
@@ -643,5 +715,24 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         fields += ",\"frames\":\(framesSecond),\"anchor_present\":\(anchorPresent),\"anchor_tracked\":\(anchorTracked),\"anchor_missing\":\(anchorMissing),\"submit_ms_mean\":\(String(format: "%.2f", framesSecond > 0 ? submitMsSum / Double(framesSecond) : 0)),\"submit_ms_max\":\(String(format: "%.2f", submitMsMax)),\"input_wait_ms_max\":\(String(format: "%.2f", inputWaitMsMax))"
         framesSecond = 0; anchorPresent = 0; anchorTracked = 0; anchorMissing = 0; submitMsSum = 0; submitMsMax = 0; inputWaitMsMax = 0
         vxrt_jlog("vr", fields)
+#if XRIZER_XROS_FIXTURE
+        // the per-frame motion-to-photon record: pairs [id, sample, predicted display, game submit, presentation target, GPU end] in seconds
+        // on the uptime clock minus `epoch`, plus the compositor frames' queue wait and GPU time
+        if vx_xros_immersive_enabled() != 0 {
+            var tb = [CChar](repeating: 0, count: 1400)
+            var gb = [CChar](repeating: 0, count: 256)
+            _ = vx_xros_gate_json(&gb, UInt32(gb.count))
+            var left: UInt32 = 0
+            // the first line carries the interval statistics, every line up to 8 pair records (the host log line limit is 1.5 KB)
+            var first = true
+            repeat {
+                if vx_xros_timing_drain(&tb, UInt32(tb.count), Self.timingEpoch, first ? 1 : 0, 8, &left) > 0 {
+                    vxrt_jlog(first ? "mtp" : "mtp_pairs", first ? "\"epoch\":\(Self.timingEpoch),\(String(cString: gb)),\(String(cString: tb))" : String(cString: tb))
+                }
+                first = false
+            } while left > 0
+        }
+#endif
     }
+    private static let timingEpoch = floor(CACurrentMediaTime())
 }

@@ -109,6 +109,7 @@ struct VXRootControllerView: UIViewControllerRepresentable {
 
 struct VXDisplayView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
+    @Environment(\.dismissWindow) private var dismissWindow
     @State private var opened = false
     private static var hideFlatWindow: Bool {
 #if XRIZER_XROS_FIXTURE
@@ -127,6 +128,11 @@ struct VXDisplayView: View {
             .frame(width: Self.hideFlatWindow ? 160 : 1280, height: Self.hideFlatWindow ? 90 : 720)
             .opacity(Self.hideFlatWindow ? 0 : 1)
             .allowsHitTesting(!Self.hideFlatWindow)
+            // Device runs 9 to 13: the hidden window was still faintly visible. No glass plate behind it, and no system chrome (the grabber,
+            // the close button) on it; VXRT_DISMISS_WINDOW=1 additionally closes the window once the space is open (Klepton's
+            // dismissWindow()). Closing detaches the swap chain's host view: untested whether the game keeps presenting, so a lever.
+            .glassBackgroundEffect(displayMode: Self.hideFlatWindow ? .never : .always)
+            .persistentSystemOverlays(Self.hideFlatWindow ? .hidden : .automatic)
             .onAppear { vxrt_jlog("display_view", nil) }
             // The system ended the compositor layer (VXLifecycle.layerInvalidated): open the immersive space again; the new
             // CompositorLayer closure rebinds the running provider (VXImmersiveRenderer.start).
@@ -155,6 +161,11 @@ struct VXDisplayView: View {
                 @unknown default: text = "unknown"
                 }
                 vxrt_jlog("immersive_space", "\"result\":\"\(text)\"")
+                if result == .opened, Self.hideFlatWindow, ProcessInfo.processInfo.environment["VXRT_DISMISS_WINDOW"] == "1" {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    dismissWindow(id: "display")
+                    vxrt_jlog("window_dismissed", nil)
+                }
             }
     }
 }
