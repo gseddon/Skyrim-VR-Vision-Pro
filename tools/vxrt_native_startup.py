@@ -264,8 +264,10 @@ def capture(args):
         # D3D11/D3D12 shader library cache (VXRuntime/src/d3d12.m, d3d11_draw.m). The harness strips VXRT_* from the caller's
         # environment, so it is passed here: one folder shared by every run (not the per-run out/ or TMPDIR, which are
         # deleted), in the checkout's git-ignored build/private. Holds translated game shaders: private, never committed.
-        # VXRT_SHADER_CACHE in the caller's environment overrides it ('0': off). `rm -rf build/private/shadercache` clears
-        # it; it also trims itself to VXRT_SHADER_CACHE_MAX_MB (1024) least-recently-used.
+        # VXRT_SHADER_CACHE in the caller's environment overrides it ('0': off). The game only reads <key>.metallib and
+        # queues the source of each miss in pending/; tools/shadercache_fill.sh compiles those (about 11000 distinct
+        # shaders in a Skyrim boot, ~50 MB of .metal and ~170 MB of .metallib) so the next boot loads them. `rm -rf
+        # build/private/shadercache` clears it; the libraries are also trimmed to VXRT_SHADER_CACHE_MAX_MB (1024).
         cache = os.environ.get('VXRT_SHADER_CACHE') or str(REPO / 'build' / 'private' / 'shadercache')
         if cache != '0':
             Path(cache).mkdir(parents=True, exist_ok=True, mode=0o700)
