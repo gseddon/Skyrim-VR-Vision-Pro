@@ -219,6 +219,52 @@ slow and stalls when it is not worn); the next d3d12.exe (in the immersive space
 compiled from source** (0.2 ms each), still 108 "ok" lines, 0 failures. For the game: build its cache the same way
 from a first run, or from the Mac's own sources (`tools/xros_shadercache.sh compile <dir> <out>`).
 
+### Shaders from a manifest (the D3D11 set, built on the Mac from the game's own files, no game boot)
+
+Why a manifest and not a boot: a Skyrim boot asks for 18975 shader libraries, but only **10830 distinct DXBC shaders**
+(10807 distinct MSL sources). Measured on `p1300.cap` with `VXRT_SHADER_VARIANT_LOG` (empty cache, whole capture): every
+request was the *base* translation, one MSL per DXBC. The D3D11 translation bakes in no draw or pipeline state
+(the pass-through, vs-kernel and dual-source variants exist in the code for geometry-shader and dual-source-blend
+draws, and Skyrim never asks for them), so there is nothing to turn into Metal function constants: the count is the
+game's own shader permutations (10292 pixel shaders, 485 vertex, 30 compute; the bodies differ in code). So the
+whole set is a list of DXBC hashes, and it can be built without running the game.
+
+Where Skyrim VR keeps its DXBC (read-only install, `SkyrimVR/`): `Data/Skyrim_VR - Main.bsa` (BSA v105, entries stored
+uncompressed) holds `shadersfx\shaders011_vr.fxp` (98.6 MB: 10777 DXBC containers, **all** of them were requested at
+runtime) and `shadersfx\shaders011_vr_fs.fxp` (265 MB, a second pack that shares part of the set). 53 more shaders are linked
+into `SkyrimVR.exe` itself, 61 are also in the older `Data/Skyrim - Shaders.bsa` (`shaders011.fxp`). Each `.fxp` is a
+header-framed sequence of plain `DXBC` containers; a container is identified by the SHA-256 of exactly its bytes
+(the container's own size field), which is the hash the runtime logs. Across the four sources all 10830 runtime
+hashes were found.
+
+Manifest (`VXRT_SHADER_MANIFEST=<file>` makes the runtime append one line per cache *miss*, so a replay or a long
+playthrough produces it; a header line `# vxrt-shader-manifest 1`, then tab separated):
+
+| column | meaning |
+| --- | --- |
+| dxbc-sha256 | SHA-256 of the DXBC container |
+| stage | `ps` `vs` `gs` `cs` |
+| kind | `base`, `dual-source`, `pass-through`, `vs-kernel` |
+| params | `vs-kernel`: `reg:kind,...` of each input (0 floats, 1 signed, 2 unsigned); empty otherwise |
+| translator | `DXBC_TRANSLATOR_REV` (`src/dxbc.h`): bump when a change to `dxbc.c` changes any generated MSL |
+| cache-key | optional: the cache key the runtime made of the source (compile options included), checked when building |
+
+The manifest holds hashes and state only: no DXBC, no MSL. It is derived from the game, so a manifest from a game run is not
+committed (keep it with the other private artifacts).
+
+Build the set on the Mac (the user's own install, nothing written to it):
+
+    make -C VXRuntime build/vxrt-shader-manifest
+    tools/shader_manifest_build --game <SkyrimVR dir> --manifest <manifest> --out <private dir> --sdk xros
+
+`shader_manifest_build` finds each DXBC (BSA directories are parsed, uncompressed `.fxp` entries and the `.exe` files are scanned
+for containers), writes `<out>/dxbc/<sha>.dxbc`, runs `build/vxrt-shader-manifest` (the translator `dxbc.c` and the
+runtime's own `vx_library_cache_store`, so `<out>/pending/<key>.metal` and `.flags` are what the runtime writes), then
+`tools/shadercache_fill.sh <out> xros`, which leaves `<out>/<key>.metallib`. `<out>/report.tsv` has the outcome per entry;
+the exit status is 0 only when every DXBC was found, every entry translated and every recorded key matched. `<out>` and the
+manifest are private (derived from the game); the compiled libraries go into the app's `bundle/shadercache` read-only cache
+(`VXRT_D3D12_SHADER_CACHE_RO`) or `Documents/shadercache`, as above.
+
 ### d3d12.exe in the immersive space
 
 108 "ok" lines and no failure, the same as in the window (its swap-chain test presents 128x96 frames: they are
