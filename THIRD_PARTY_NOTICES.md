@@ -708,3 +708,9 @@ necessary.  Here is a sample; alter the names:
 
 That's all there is to it!
 ```
+
+## App icon (2026-11-10)
+
+`VXRuntime/xros/app/IconSource/skyrim-icon.jpeg` is a user-supplied picture (the Skyrim dragon emblem), committed with the user's
+approval as the source of the app icon; it is third-party artwork and is not covered by this repository's licenses. The generated
+icon layers are in `VXRuntime/xros/app/Icon/`. Origin: `VXRuntime/xros/app/IconSource/README.md`.
