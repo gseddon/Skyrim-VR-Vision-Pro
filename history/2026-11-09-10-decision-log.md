@@ -147,3 +147,38 @@ The session started from a handoff. Skyrim VR ran under strict ahead-of-time tra
   - the headset is GPU-bound at about 17 fresh pairs/s with about 150 ms pair age, which is the lag on head turns;
   - run 13 added head-pose prediction and Klepton's Sense grip offset: "a bit better, still juddery".
 - **Next, as he asked:** a display-rate, GPU-priority compositor; a clean loading bar instead of pink squares; foveated rendering; the controller offset, now to the left of the hand.
+
+---
+
+## Session 2, evening (10 Nov): performance and robustness on the headset
+
+All measurements in this section are from the physical headset unless they say Mac.
+
+### Compositor and feel
+- **Compositor at display rate (100 Hz) on its own queue.** "ok the compositor is way better. Let's keep that." The judder went. A pair gate (release the game only when the last pair is in flight) cut motion-to-photon age from about 137 to about 77 ms.
+- **Controllers:** aligned to ARKit's aim pose using coloured debug dots and screenshots he took in the headset (IMG 0037–0040). "ok I'm very happy with this. commit it and then turn all the dots off." Hand pass-through hidden by default, as a future Klepton setting.
+- A loading bar replaced the pink squares.
+
+### Resolution
+- **Foveation stayed parked.** It lost on the Mac, and visionOS gives apps no gaze, only the system's rasterization-rate map. "This is a big shame, I was counting on that to fix our performance problems."
+- **Pixel test on the headset** (screen kept unlocked with the proximity sensor covered; a remote `devicectl device reboot` cleared wedged file copies): GPU ms per pair scales about 1:1 with pixel count. The headset is pixel-bound; the Mac replay misleads.
+- **0.55 render scale with MetalFX spatial upscaling:** "yeah the sharpness feels ok!"
+- **Smart gate:** release the game early by the predicted GPU finish. Cart ride 35.2 pairs/s against 29.1 for the plain gate, at the same latency (25 at the old 0.7 scale). These three became the defaults on the integration branch.
+
+### Frontend
+- **Klepton frontend, option A+:** keep Klepton's settings names and env vars so it is familiar to Klepton users, and leave room for AVP Play to install the game. **Rejected forking Klepton,** because its runtime is tied to running Android APKs.
+- **"Brand it Skyrim":** the app is now "Skyrim VR" with his downloaded icon, committed on his decision. English only. Preloading behind the start window deferred.
+
+### "Skyrim vanishes"
+- **He rejected a retry-only launch fix:** "I don't like your launch fix that involves just retries and not debugging the actual problem."
+- **Root cause:** our own `exit(0)` when visionOS backgrounds the app on doff. Now the app pauses and resumes the layer. A follow-up regression (a dead Resume window over the resumed game) was fixed from the device log; the double window came from two persisted scene sessions.
+
+### Saves
+- On the Mac, saves were lost in per-run roots; a persistent saves dir fixed that. His downloaded save is a Skyrim SE save (no SkyrimVR.esm), and loading it crashes the game. Native VR saves work. Copying a working save to the headset is pending.
+
+### Other
+- **Hidden-area mesh:** the game uses it once xrizer gets XR_KHR_visibility_mask. On the Mac a large inset cut GPU time 32%; the headset calibration is next.
+- **Mods plan:** VRIK, HIGGS, PLANCK, SKSE VR and SkyUI VR, added to the improvements list. OpenComposite isn't needed: xrizer already fills that role.
+- **Settings research:** INI keys verified against the exe, with a device A/B plan.
+- **Smoke "rectangles" on the main menu:** traced to the native present treating Skyrim's gamma-coded 8-bit eye textures as linear, so they are sRGB-encoded twice and the darkest 8-bit steps get about ten times brighter. He asked to also check the earlier audit items.
+- **Three disk cleanups,** each deleting project leftovers (worktrees, old dumps).

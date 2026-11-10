@@ -103,7 +103,7 @@ Runs independently of 1A, with serialized runtime execution.
 2. Review xrizer SOURCE/patch records, provider contracts, loader defaults and static guest ABI/thunk generation even when Git reports no conflict. Verify pins/notices and generated patch/hash consistency.
 3. Follow the corrected B fixture recipe. Preserve ordinary scratch/resources: unique optional AOT/project/bundle/guest outputs, correct `bundle/exe` guest placement, unique app identifier/container and launch nonce. Inventory ordinary resources before/after, including the documented 72-file check where applicable.
 
-Build recipe, with existing repository-local toolchain selected in `XRIZER_RUST_ROOT`:
+Build recipe, with the repository-local toolchain (default `build/toolchains/xrizer-rust`, override `XRIZER_RUST_ROOT`; at the time of writing it was under the old VeRantyx checkout):
 
 ```sh
 make -C VXRuntime XROS_SDK=xrsimulator XROS_XRIZER_FIXTURE=1 XROS_CODE_SIGNING=NO xros-app

@@ -1,5 +1,8 @@
 # Skyrim submit frame handover
 
+> Historical (2026-11-08): the Rust toolchain path named below moved to `build/toolchains/xrizer-rust` in this repository on 2026-11-10.
+
+
 8 November 2026, 21:16 UTC. Continue from the integration checkout. Do not push. Do not start a game while a runtime is already running.
 
 ## Status

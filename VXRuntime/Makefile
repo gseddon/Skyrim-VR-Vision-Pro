@@ -261,7 +261,10 @@ XROS_CODE_SIGNING ?= YES
 XROS_ALLOW_PROVISIONING ?= 0
 XROS_TARGET = arm64-apple-xros26.0$(if $(filter xrsimulator,$(XROS_SDK)),-simulator)
 XROS_CC = xcrun -sdk $(XROS_SDK) clang -target $(XROS_TARGET)
-XROS_CFLAGS = $(if $(filter 1,$(XROS_XRIZER_FIXTURE)),$(VXRT_ARM64_EXTRA_CFLAGS) -I$(VXRT_ARM64_THUNKS_ROOT)) -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -include xros/vx_xros.h -Ixros/include -Isrc -Ibuild -Ithird_party/vulkan -fobjc-arc
+# Debug info of the visionOS objects: line tables only (file:line for crash symbolication, a fraction of the size of full
+# DWARF). `make XROS_DEBUG_FLAG=-g ...` restores full debug info for an lldb session.
+XROS_DEBUG_FLAG ?= -gline-tables-only
+XROS_CFLAGS = $(if $(filter 1,$(XROS_XRIZER_FIXTURE)),$(VXRT_ARM64_EXTRA_CFLAGS) -I$(VXRT_ARM64_THUNKS_ROOT)) -O1 $(XROS_DEBUG_FLAG) -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -include xros/vx_xros.h -Ixros/include -Isrc -Ibuild -Ithird_party/vulkan -fobjc-arc
 XROS_OUT = src/cocoa.m src/menus.m src/tray.m src/clipboard.m src/opengl.c translator/engine.c translator/vcpu.c
 XROS_OUT += $(if $(filter xrsimulator,$(XROS_SDK)),src/upscale_core.m)
 XROS_SRC = $(filter-out $(XROS_OUT),$(ARM64_SRC)) src/xros_ui.m src/xros_vr.m src/xros_stubs.c translator/engine_nojit.c

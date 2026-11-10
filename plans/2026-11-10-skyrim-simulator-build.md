@@ -103,7 +103,8 @@ python3 tools/skyrim_aot_pipeline.py --config tools/skyrim_aot_skyrimvr.json --t
 # 2. xrizer static libs for xrsimulator (once; xros-lib runs this too). Output: $M/build/xros-host-static/latest/{libxrizer.a,libklepton.a}
 #    in THIS checkout's build/ (the app's link line reads ../build/xros-host-static/latest). Needs the repository-local Rust toolchain
 #    with the aarch64-apple-visionos-sim target (unverified that it is installed there); offline, locked.
-export XRIZER_RUST_ROOT=/Users/gseddon/git/VeRantyx/build/toolchains/xrizer-rust
+# (optional: XRIZER_RUST_ROOT defaults to build/toolchains/xrizer-rust; it was VeRantyx/build/toolchains/xrizer-rust before 2026-11-10)
+:
 make -C VXRuntime XROS_SDK=xrsimulator XROS_XRIZER_GAME=1 xros-xrizer-static-probe
 # 3. app (embeds game_fw; ad-hoc signed; unsigned simulator build only). Build dir: VXRuntime/build/xrsimulator-xrizer-fixture
 mkdir -p VXRuntime/build/xrsimulator-xrizer-fixture && ln -sfn $OUT/game_fw VXRuntime/build/xrsimulator-xrizer-fixture/game_fw
