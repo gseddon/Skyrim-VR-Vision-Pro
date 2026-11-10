@@ -15,6 +15,13 @@ final class VXPoseAudit: @unchecked Sendable {
     private var grip = [SIMD3<Float>?](repeating: nil, count: 2), aim = [SIMD3<Float>?](repeating: nil, count: 2)
     func set(hand: Int, grip g: SIMD3<Float>?, aim a: SIMD3<Float>?) { lock.lock(); grip[hand] = g; aim[hand] = a; lock.unlock() }
     func get() -> (grip: [SIMD3<Float>?], aim: [SIMD3<Float>?]) { lock.lock(); defer { lock.unlock() }; return (grip, aim) }
+    // Full poses for the controller offset audit (provider LOCAL = ARKit origin): what ARKit reports (`.rendered` grip and aim as used, `.none` grip,
+    // the anchor's own tracked frame) and the grip actually published to the provider after VXSenseTune.
+    struct Full { var rawGrip: simd_float4x4?, rawAim: simd_float4x4?, gripNone: simd_float4x4?, tracked: simd_float4x4?, sent: simd_float4x4?, sentTime = 0.0 }
+    private var full = [Full](repeating: Full(), count: 2)
+    func setFull(hand: Int, _ f: Full) { lock.lock(); full[hand] = f; lock.unlock() }
+    func clearFull(hand: Int) { lock.lock(); full[hand] = Full(); lock.unlock() }
+    func getFull() -> [Full] { lock.lock(); defer { lock.unlock() }; return full }
 }
 
 func vxSpatialSide(_ chirality: Accessory.Chirality) -> VXSpatialSide {
@@ -180,6 +187,11 @@ actor VXNativeXRTracking {
                 return matrix
             }
             let grip = originFrom(.grip), aim = originFrom(.aim)
+            // the audit's extra frames (Klepton probeSenseFrames): the grip without Apple's rendering correction, and the anchor's own frame
+            var gripNone: simd_float4x4?
+            if locations.contains(.grip) { gripNone = predicted.coordinateSpace(for: .grip, correction: .none).ancestorFromSpaceTransformFloat().matrix }
+            VXPoseAudit.shared.setFull(hand: handIndex, .init(rawGrip: grip, rawAim: aim, gripNone: gripNone, tracked: predicted.originFromAnchorTransform,
+                                                              sent: VXPoseAudit.shared.getFull()[handIndex].sent, sentTime: presentation))
             let before = mach_absolute_time()
             let input = controller.input.capture()
             let after = mach_absolute_time()
@@ -262,7 +274,7 @@ actor VXNativeXRTracking {
             h.connected = 1
             h.grip_position_tracked = c.gripPose.positionTracked ? 1 : 0
             h.aim_position_tracked = c.aimPose.positionTracked ? 1 : 0
-            h.grip = VXSenseTune.correctedGrip(grip, hand: c.hand); h.aim = VXSenseTune.correctedGrip(aim, hand: c.hand)
+            h.grip = VXSenseTune.gripForGame(grip: grip, aim: aim, hand: c.hand); h.aim = VXSenseTune.rawPose(aim)
             // Device run 10: Skyrim's rendered controller sat a few centimetres ABOVE the real one (IMG_0029). A world-space drop (VXRT_SENSE_DROP_M, metres,
             // default 0.04) applied to grip and aim in the provider's LOCAL space (ARKit origin, Y up); eyeballed, not measured. Klepton's own offsets are
             // rotation-dependent (a grip-frame offset and a pivot); this is the one-number version until a measurement says otherwise.
@@ -274,9 +286,15 @@ actor VXNativeXRTracking {
             h.grip_pressed = value(c.controls.grip) ? 1 : 0; h.menu = value(c.controls.menu) ? 1 : 0
             h.stick_pressed = value(c.controls.stickPress) ? 1 : 0
             hands[c.hand] = h
+            do {
+                var f = VXPoseAudit.shared.getFull()[c.hand]
+                let q = simd_quatf(ix: h.grip.3, iy: h.grip.4, iz: h.grip.5, r: h.grip.6)
+                var m = simd_float4x4(q); m.columns.3 = SIMD4(h.grip.0, h.grip.1, h.grip.2, 1)
+                f.sent = m; VXPoseAudit.shared.setFull(hand: c.hand, f)
+            }
             VXPoseAudit.shared.set(hand: c.hand, grip: SIMD3(h.grip.0, h.grip.1, h.grip.2), aim: SIMD3(h.aim.0, h.aim.1, h.aim.2))
         }
-        for hand in 0..<2 where hands[hand].connected == 0 { VXPoseAudit.shared.set(hand: hand, grip: nil, aim: nil) }
+        for hand in 0..<2 where hands[hand].connected == 0 { VXPoseAudit.shared.set(hand: hand, grip: nil, aim: nil); VXPoseAudit.shared.clearFull(hand: hand) }
         var drivers: [Int: GCController] = [:]
         for o in observations where (0..<2).contains(o.canonical.hand) { drivers[o.canonical.hand] = o.controller }
         VXHapticRouter.shared.setControllers(drivers)
