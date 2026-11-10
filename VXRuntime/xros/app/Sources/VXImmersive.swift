@@ -720,7 +720,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         // on the uptime clock minus `epoch`, plus the compositor frames' queue wait and GPU time
         if vx_xros_immersive_enabled() != 0 {
             var tb = [CChar](repeating: 0, count: 1400)
-            var gb = [CChar](repeating: 0, count: 256)
+            var gb = [CChar](repeating: 0, count: 384)
             _ = vx_xros_gate_json(&gb, UInt32(gb.count))
             var left: UInt32 = 0
             // the first line carries the interval statistics, every line up to 8 pair records (the host log line limit is 1.5 KB)
