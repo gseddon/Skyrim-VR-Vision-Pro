@@ -721,6 +721,7 @@ static void pose_matrix(XrPosef p,float m[16]) {
     memcpy(m,v,sizeof v);
 }
 #include "pose_math.h"
+#include "xrizer_vismask_host.h"
 /* Everything after the copy finished on the GPU: statistics, optional dumps, then the pair to native_vr. `settle`: the
  * blocking path clears the outstanding ticket here; the non-blocking path already did when it committed. */
 static XrResult finish_pair(VXDevXRHost *h,const KlNativeFramePair *pair,id<MTLTexture> const copies[2],id<MTLBuffer> const dumps[2],
@@ -915,9 +916,10 @@ int vx_xrizer_dev_host_start(const char *path,unsigned width,unsigned height) {
         KlNativeFrameHost frame={KL_NATIVE_FRAME_HOST_VERSION,sizeof(frame),ctx,wait_frame,publish,cancel_frame};
         KlNativeInputHost inputHost={KL_NATIVE_INPUT_HOST_VERSION,sizeof(inputHost),ctx,input};
         KlNativeInputHost3 controllerHost={KL_NATIVE_INPUT_HOST_VERSION_3,sizeof(controllerHost),ctx,synthetic_controllers};
+        KlNativeVisibilityHost visibility={KL_NATIVE_VISIBILITY_HOST_VERSION,sizeof(visibility),ctx,vx_vismask_get_params};
         KlNativeHapticHost hapticHost={KL_NATIVE_HAPTIC_HOST_VERSION,sizeof(hapticHost),ctx,dev_haptic_apply,dev_haptic_stop};
         if (kl_native_configure(&system)!=XR_SUCCESS || kl_native_configure_views(&view)!=XR_SUCCESS ||
-            kl_native_configure_view_geometry(&geometry)!=XR_SUCCESS ||
+            kl_native_configure_view_geometry(&geometry)!=XR_SUCCESS || kl_native_configure_visibility(&visibility)!=XR_SUCCESS ||
             kl_native_configure_metal(&metal)!=XR_SUCCESS || kl_native_configure_image_sync(&sync)!=XR_SUCCESS ||
             kl_native_configure_session(&session)!=XR_SUCCESS || kl_native_configure_frame(&frame)!=XR_SUCCESS ||
             (h.syntheticControllers ? kl_native_configure_input3(&controllerHost) : kl_native_configure_input(&inputHost))!=XR_SUCCESS ||

@@ -9,6 +9,7 @@
 #include "input_host.h"
 #include "haptic_host.h"
 #include "pose_math.h"
+#include "vismask.h"
 #define XR_USE_GRAPHICS_API_METAL 1
 #include <openxr/openxr_platform.h>
 #include <string.h>
@@ -18,7 +19,7 @@
 /* The initial host boundary is serialized. Never reuse a slot in this process:
  * a stale XrInstance must not become valid after destroy/recreate. */
 #define INSTANCE_LIMIT 64
-struct XrInstance_T { unsigned used, live, metal_enabled, metal_queried; };
+struct XrInstance_T { unsigned used, live, metal_enabled, metal_queried, vismask_enabled; };
 static struct XrInstance_T instances[INSTANCE_LIMIT];
 static KlNativeHost native_host;
 static int configured;
@@ -40,6 +41,8 @@ static KlNativeInputHost3 input_host3;
 static int input_configured; /* 0, 1, 2 or 3 */
 static KlNativeHapticHost haptic_host;
 static int haptic_configured;
+static KlNativeVisibilityHost visibility_host;
+static int visibility_configured;
 static int metal_extension_available(void) {
 #ifdef KL_NATIVE_TEST_METAL_PARTIAL
     return metal_configured;
@@ -275,12 +278,18 @@ static XrResult XRAPI_CALL klxr_EnumerateApiLayerProperties(uint32_t capacity, u
 }
 static XrResult XRAPI_CALL klxr_EnumerateInstanceExtensionProperties(const char *layer, uint32_t capacity, uint32_t *count, XrExtensionProperties *properties) {
     if (layer) return XR_ERROR_API_LAYER_NOT_PRESENT;
-    uint32_t have = metal_extension_available() ? 1 : 0;
+    const char *names[2]; uint32_t versions[2], have = 0;
+    if (metal_extension_available()) { names[have] = XR_KHR_METAL_ENABLE_EXTENSION_NAME; versions[have++] = XR_KHR_metal_enable_SPEC_VERSION; }
+    if (visibility_configured) { names[have] = XR_KHR_VISIBILITY_MASK_EXTENSION_NAME; versions[have++] = XR_KHR_visibility_mask_SPEC_VERSION; }
     XrResult result = klxr_two_call(capacity, count, have);
     if (result != XR_SUCCESS || !capacity || !have) return result;
-    if (!properties || properties[0].type != XR_TYPE_EXTENSION_PROPERTIES || properties[0].next) return XR_ERROR_VALIDATION_FAILURE;
-    snprintf(properties[0].extensionName, sizeof properties[0].extensionName, "%s", XR_KHR_METAL_ENABLE_EXTENSION_NAME);
-    properties[0].extensionVersion = XR_KHR_metal_enable_SPEC_VERSION;
+    if (!properties) return XR_ERROR_VALIDATION_FAILURE;
+    for (uint32_t i = 0; i < have; ++i)
+        if (properties[i].type != XR_TYPE_EXTENSION_PROPERTIES || properties[i].next) return XR_ERROR_VALIDATION_FAILURE;
+    for (uint32_t i = 0; i < have; ++i) {
+        snprintf(properties[i].extensionName, sizeof properties[i].extensionName, "%s", names[i]);
+        properties[i].extensionVersion = versions[i];
+    }
     return XR_SUCCESS;
 }
 
@@ -291,13 +300,14 @@ static XrResult XRAPI_CALL klxr_CreateInstance(const XrInstanceCreateInfo *info,
     *instance = XR_NULL_HANDLE;
     if (!configured) return XR_ERROR_RUNTIME_UNAVAILABLE;
     if (info->enabledApiLayerCount) return XR_ERROR_API_LAYER_NOT_PRESENT;
-    unsigned metal_enabled = 0;
+    unsigned metal_enabled = 0, vismask_enabled = 0;
     if (info->enabledExtensionCount && !info->enabledExtensionNames) return XR_ERROR_VALIDATION_FAILURE;
     for (uint32_t i = 0; i < info->enabledExtensionCount; ++i) {
         const char *name = info->enabledExtensionNames[i];
         if (!name) return XR_ERROR_VALIDATION_FAILURE;
-        if (!metal_extension_available() || strcmp(name, XR_KHR_METAL_ENABLE_EXTENSION_NAME)) return XR_ERROR_EXTENSION_NOT_PRESENT;
-        metal_enabled = 1;
+        if (metal_extension_available() && !strcmp(name, XR_KHR_METAL_ENABLE_EXTENSION_NAME)) metal_enabled = 1;
+        else if (visibility_configured && !strcmp(name, XR_KHR_VISIBILITY_MASK_EXTENSION_NAME)) vismask_enabled = 1;
+        else return XR_ERROR_EXTENSION_NOT_PRESENT;
     }
     if (XR_VERSION_MAJOR(info->applicationInfo.apiVersion) != 1 || XR_VERSION_MINOR(info->applicationInfo.apiVersion) != 0) return XR_ERROR_API_VERSION_UNSUPPORTED;
     if (info->next) return XR_ERROR_VALIDATION_FAILURE;
@@ -305,6 +315,7 @@ static XrResult XRAPI_CALL klxr_CreateInstance(const XrInstanceCreateInfo *info,
         if (!instances[i].used) {
             instances[i].used = instances[i].live = 1;
             instances[i].metal_enabled = metal_enabled;
+            instances[i].vismask_enabled = vismask_enabled;
             *instance = &instances[i];
             return XR_SUCCESS;
         }
@@ -1513,6 +1524,41 @@ static XrResult XRAPI_CALL klxr_LocateViews(XrSession session, const XrViewLocat
     return XR_SUCCESS;
 }
 
+/* XR_KHR_visibility_mask: a parametric mask from the host's params and the
+ * static view FOV. No parameters, a disabled mask or no geometry yet (the
+ * immersive space ended) is a successful empty mesh, never an error: xrizer
+ * unwraps this call. */
+XrResult kl_native_configure_visibility(const KlNativeVisibilityHost *host) {
+    for (unsigned i = 0; i < INSTANCE_LIMIT; ++i) if (instances[i].live) return XR_ERROR_CALL_ORDER_INVALID;
+    if (!host) { memset(&visibility_host, 0, sizeof visibility_host); visibility_configured = 0; return XR_SUCCESS; }
+    if (host->version != KL_NATIVE_VISIBILITY_HOST_VERSION || host->struct_size < sizeof(*host) || !host->get_params) return XR_ERROR_VALIDATION_FAILURE;
+    visibility_host = *host; visibility_configured = 1;
+    return XR_SUCCESS;
+}
+static XrResult XRAPI_CALL klxr_GetVisibilityMaskKHR(XrSession session, XrViewConfigurationType type, uint32_t view, XrVisibilityMaskTypeKHR mask_type, XrVisibilityMaskKHR *out) {
+    if (!valid_session(session)) return XR_ERROR_HANDLE_INVALID;
+    if (!out || out->type != XR_TYPE_VISIBILITY_MASK_KHR || out->next) return XR_ERROR_VALIDATION_FAILURE;
+    if (type != XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO) return XR_ERROR_VIEW_CONFIGURATION_TYPE_UNSUPPORTED;
+    if (view >= 2) return XR_ERROR_VALIDATION_FAILURE;
+    if (mask_type != XR_VISIBILITY_MASK_TYPE_HIDDEN_TRIANGLE_MESH_KHR && mask_type != XR_VISIBILITY_MASK_TYPE_VISIBLE_TRIANGLE_MESH_KHR &&
+        mask_type != XR_VISIBILITY_MASK_TYPE_LINE_LOOP_KHR) return XR_ERROR_VALIDATION_FAILURE;
+    if ((out->vertexCapacityInput && !out->vertices) || (out->indexCapacityInput && !out->indices)) return XR_ERROR_VALIDATION_FAILURE;
+    static KlVisMask mesh; /* the API is externally synchronized per session; one scratch is enough */
+    memset(&mesh, 0, sizeof mesh);
+    KlNativeVisibilityParams params = {0};
+    KlNativeViewGeometry geometry = {.version = KL_NATIVE_VIEW_GEOMETRY_VERSION, .struct_size = sizeof geometry};
+    if (visibility_configured && view_geometry_configured &&
+        visibility_host.get_params(visibility_host.context, view, &params) == XR_SUCCESS &&
+        view_geometry_host.get_geometry(view_geometry_host.context, &geometry) == XR_SUCCESS)
+        kl_vismask_build(&params, &geometry.fov[view], mask_type, &mesh);
+    out->vertexCountOutput = mesh.vertex_count; out->indexCountOutput = mesh.index_count;
+    if (!out->vertexCapacityInput && !out->indexCapacityInput) return XR_SUCCESS;
+    if (out->vertexCapacityInput < mesh.vertex_count || out->indexCapacityInput < mesh.index_count) return XR_ERROR_SIZE_INSUFFICIENT;
+    memcpy(out->vertices, mesh.vertices, mesh.vertex_count * sizeof *out->vertices);
+    memcpy(out->indices, mesh.indices, mesh.index_count * sizeof *out->indices);
+    return XR_SUCCESS;
+}
+
 #include "refusals.inc"
 
 /* Derived from Klepton klxr_GetInstanceProcAddr and klxr_install, upstream
@@ -1577,6 +1623,11 @@ XRAPI_ATTR XrResult XRAPI_CALL kl_native_get_instance_proc_addr(XrInstance insta
     INSTANCE("xrAcquireSwapchainImage", klxr_AcquireSwapchainImage)
     INSTANCE("xrWaitSwapchainImage", klxr_WaitSwapchainImage)
     INSTANCE("xrReleaseSwapchainImage", klxr_ReleaseSwapchainImage)
+    if (!strcmp(name, "xrGetVisibilityMaskKHR")) {
+        if (!instance->vismask_enabled) return XR_ERROR_FUNCTION_UNSUPPORTED;
+        *function = (PFN_xrVoidFunction)klxr_GetVisibilityMaskKHR;
+        return XR_SUCCESS;
+    }
     if (!strcmp(name, "xrGetMetalGraphicsRequirementsKHR")) {
         if (!instance->metal_enabled) return XR_ERROR_FUNCTION_UNSUPPORTED;
         *function = (PFN_xrVoidFunction)klxr_GetMetalGraphicsRequirementsKHR;
