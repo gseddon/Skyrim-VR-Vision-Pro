@@ -54,6 +54,28 @@ Skyrim VR's Oculus columns (`controlmapvr.txt`) decide what each control does.
 Mouse: drag in the dev keyboard window turns the head (the hands follow); right-button drag aims the hands relative to
 the head. Menus are world-locked panels: aim the hands' pointer at an item, then Space or E.
 
+## Typing into the game (Skyrim VR's console)
+
+Press **F2** in the dev keyboard window to switch between **controller mode** (the table above) and **keyboard mode**.
+In keyboard mode no key drives the synthetic controllers: every key (letters, digits, Shift, Backspace, Return, the
+grave key) goes to the game as a key on a Windows keyboard, with its scan code, through everything a Windows game can
+read: `GetAsyncKeyState`/`GetKeyState`, the DirectInput keyboard (`DirectInput8Create`, DIK codes; Skyrim VR imports
+it), `WM_KEYDOWN`/`WM_KEYUP` and `WM_CHAR` (`TranslateMessage`, `ToUnicode`) and raw input. F1 still toggles the help;
+F2 returns to controller mode (keys held in either mode are released at the switch). The mode is in the window title
+(`[CONTROLLER mode, F2 = type into the game]` / `[KEYBOARD mode: ...]`) and in the F1 panel.
+
+To open the console: press the grave / tilde key (`` ` ``, left of 1; Skyrim's DIK_GRAVE 0x29). Pressing it in controller
+mode also switches to keyboard mode and sends it, so one key is enough. Type a command (`tgm`, `help`), press Return,
+press `` ` `` again to close the console, then F2 for the controllers. Skyrim VR draws the console in the headset's view
+(and on the mirror). Key scripts take `f2` as a key name (`3:f2:0.2,5:grave:0.3,7:t:0.1,7.3:g:0.1,7.6:m:0.1,8:return:0.1`): `f2` toggles the mode and, in
+keyboard mode, the other keys go to the game as unshifted US keys.
+
+Checked on the Mac dev host (2026-11-10, actual Skyrim VR, `VXRT_TRACE_INPUT`): the game's window is active, it makes
+the DirectInput system keyboard (buffered, 10 events, exclusive foreground) and polls it every frame; the scripted keys
+arrived as DIK 0x29 (grave), 0x14 (T), 0x22 (G), 0x32 (M), 0x1c (Return) within about 8 ms. A person typing after F2 saw the
+console open and the text appear at the bottom of the screen. A scripted run in the Helgen cart scene showed no console in
+the eye images, so the key script alone is not a console test.
+
 Quit: Ctrl-C in the terminal that runs the script, or close the Skyrim VR window.
 
 ## The Skyrim VR window
