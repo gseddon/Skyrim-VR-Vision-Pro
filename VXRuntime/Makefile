@@ -1763,7 +1763,7 @@ runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d1
 	$(VXRT) build/winprops.exe
 	$(VXRT) build/a11y.exe
 	$(VXRT) build/client_imports.exe build/hello32.exe
-	VXRT_PASTEBOARD=vxrt-check $(VXRT) build/clipboard.exe
+	VXRT_PASTEBOARD=vxrt-check-$$$$-$(notdir $(VXRT)) VXRT_PASTEBOARD_TEMP=1 $(VXRT) build/clipboard.exe
 	$(VXRT) build/gdi_xform.exe
 	$(VXRT) build/view_align.exe
 	$(VXRT) build/winhttp.exe
