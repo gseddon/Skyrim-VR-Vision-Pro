@@ -58,6 +58,20 @@ non-Terra implementation worker was introduced.
 
 ### Verified round progress
 
+- Direct3D 11 shader library cache (10 November 2026, owned test `draw.exe` plus 600 real Skyrim DXBC shaders cut
+  from capture `p1300.cap`; no game run). Measured: DXBC to MSL is 0.1 ms per shader; `newLibraryWithSource` is the cost
+  (31 ms per shader on average cold, 60 ms for pixel shaders of the 10k dumped); the same compile again in a new process is
+  0.03-0.06 ms because macOS caches it, in `$DARWIN_USER_CACHE_DIR/com.apple.metal`, shared by all programs, rotating
+  at about 330 MB (a full Skyrim set is about 10k libraries, so other GPU work can push it out). A render or compute pipeline
+  made after a cached library costs 1-5 ms. So translated MSL is not cached. `d3d11_draw.m` now takes libraries from the
+  Direct3D 12 on-disk metallib cache (`d3d12.m`, `vx_library_cache_load/store`) first: key = hash of the MSL (so DXBC and
+  translator version) + language version (forced Metal 3.1) + math mode + min-LOD macro; a compile over
+  `VXRT_SHADER_CACHE_MIN_MS` (default 100) is built again by `xcrun metal` in the background at utility QoS into
+  `~/Library/Caches/VXRuntime/metallib/<key>.metallib` (load 0.05-0.3 ms; offline build about 130 ms each). Switches:
+  `VXRT_SHADER_CACHE=<dir>` / `0` (`VXRT_D3D12_SHADER_CACHE` wins for D3D12), `VXRT_SHADER_CACHE_MAX_MB` (default 1024,
+  least recently used removed at start), `VXRT_SHADER_CACHE_SYNC=1` (tests). Unreadable files are removed and
+  compiled again; temporary names carry the pid and are renamed in. `tests/shader_cache_check.py` (in `make check`): cold,
+  warm, damaged and off runs of `draw.exe` give identical results; hits on the second run. Not measured: a Skyrim start.
 - Guest graphics/ABI: the exact game-facing six-export Windows guest, real
   xrizer/provider, normal 1024 recommendation and normal consumer pass two
   changing 4x3 pixel/crop pairs, nonzero Seated poses, pre-frame optics with
