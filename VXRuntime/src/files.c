@@ -236,8 +236,15 @@ int vx_unix_path(const char *win, char *out, size_t cap) {
     // (visionOS: the overlay's own names - a loose mod tree copied in - need the same case-insensitive lookup as the
     // install's; vx_ci_path is a no-op elsewhere.)
     if (overlay_shadow(out, shadow, sizeof shadow)) vx_ci_path(shadow, sizeof shadow);
-    if (*shadow && !stat(shadow, &ss) && (!S_ISDIR(ss.st_mode) || stat(out, &os)))
+    if (*shadow && !stat(shadow, &ss) && (!S_ISDIR(ss.st_mode) || stat(out, &os))) {
         snprintf(out, cap, "%s", shadow);             // written before: the overlay's copy (directories stay the original)
+        // Always on, three lines at most: the first regular files the overlay served, so a run without tracing shows whether
+        // a loose mod tree is being used (VXRT_OVERLAY, e.g. the visionOS app's overlay_skyrimvr).
+        static int served;
+        if (S_ISREG(ss.st_mode) && served < 3 && strcasestr(shadow, "/Data/") && !strcasestr(shadow, "ShaderCache")) vx_log("overlay: served #%d from the overlay: %s", ++served, shadow);
+    }
+    { static int pt_logged;                           // and the first lookup of a Plugins.txt, found or not
+      if (!pt_logged && strcasestr(win, "Plugins.txt")) { pt_logged = 1; struct stat pst; vx_log("overlay: Plugins.txt asked as %s -> %s (%s)", win, out, stat(out, &pst) ? "not found" : "found"); } }
     return 1;
 }
 

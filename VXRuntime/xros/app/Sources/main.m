@@ -388,6 +388,28 @@ static NSString *mods_safe(id v, NSUInteger max) {
     }
     return o;
 }
+// Always on: what the overlay holds, before the game asks for anything (counts only; the first opens are logged by src/files.c).
+static int count_files(const char *dir) {
+    int n = 0; DIR *d = opendir(dir); struct dirent *e;
+    if (!d) return 0;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char p[1800]; snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(p, &st)) continue;
+        n += S_ISDIR(st.st_mode) ? count_files(p) : 1;
+    }
+    closedir(d); return n;
+}
+static void log_overlay_summary(const char *root) {
+    char p[1600]; snprintf(p, sizeof p, "%s/overlay_skyrimvr/Data", root);
+    int files = count_files(p), lines = -1;
+    snprintf(p, sizeof p, "%s/drive_c/users/vxrt/AppData/Local/Skyrim VR/Plugins.txt", root);
+    FILE *f = fopen(p, "r");
+    if (f) { lines = 0; int c; while ((c = fgetc(f)) != EOF) if (c == '\n') lines++; fclose(f); }
+    fprintf(stderr, "[vxrt] overlay: %d files under %s/overlay_skyrimvr/Data, Plugins.txt lines %d%s\n", files, root, lines < 0 ? 0 : lines, lines < 0 ? " (file absent)" : "");
+    jlog("overlay", "\"data_files\":%d,\"plugins_txt_lines\":%d", files, lines);
+}
 static void log_mods(const char *root) {
     char path[1500]; snprintf(path, sizeof path, "%s/mods.json", root);
     NSData *d = [NSData dataWithContentsOfFile:@(path)];
@@ -445,6 +467,7 @@ static int skyrimvr_start(const char *root, char **exe_out, char ***argv_out, in
     snprintf(ov, sizeof ov, "%s:%s/overlay_skyrimvr", dir_game, root);
     setenv("VXRT_OVERLAY", ov, 0);
     log_mods(root);
+    log_overlay_summary(root);
     snprintf(dir, sizeof dir, "%s/bundle/redist", NSBundle.mainBundle.resourcePath.fileSystemRepresentation);
     if (!stat(dir, &st)) setenv("VXRT_DLL_PATH", dir, 0);
     // The visionOS shader set embedded by the build (XROS_SHADER_SET; <key>.metallib files): read-only hits load from the
