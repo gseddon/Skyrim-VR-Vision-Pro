@@ -212,6 +212,50 @@ struct VXSettingsPage: View {
                             note("Off by default: the game draws its own controllers, and your real hands would be a second pair in the same place. Takes effect at once.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    GroupBox("Turning") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Turning", selection: $settings.turn) {
+                                Text("Game default").tag(VXTurn.game)
+                                Text("Snap").tag(VXTurn.snap)
+                                Text("Smooth").tag(VXTurn.smooth)
+                            }.pickerStyle(.segmented).labelsHidden()
+                            note(settings.turn == .game
+                                 ? "Leaves turning as the game has it."
+                                 : settings.turn == .snap
+                                 ? "Flicking the right stick turns you in steps."
+                                 : "Holding the right stick turns you smoothly. Some people find this uncomfortable.")
+                            Toggle("Snap angle: game default", isOn: Binding(get: { settings.snapAngle == nil }, set: { settings.snapAngle = $0 ? nil : VXSettings.snapAngleBuiltIn }))
+                            if let a = settings.snapAngle {
+                                HStack {
+                                    Slider(value: Binding(get: { a }, set: { settings.snapAngle = $0 }), in: VXSettings.snapAngleRange, step: 5)
+                                    Text(String(format: "%.0f°", a)).font(.system(.body, design: .monospaced)).frame(width: 70)
+                                }
+                            }
+                            Toggle("Turn speed: game default", isOn: Binding(get: { settings.turnSpeed == nil }, set: { settings.turnSpeed = $0 ? nil : VXSettings.turnSpeedBuiltIn }))
+                            if let v = settings.turnSpeed {
+                                HStack {
+                                    Slider(value: Binding(get: { v }, set: { settings.turnSpeed = $0 }), in: VXSettings.turnSpeedRange, step: 0.1)
+                                    Text(String(format: "%.1f", v)).font(.system(.body, design: .monospaced)).frame(width: 70)
+                                }
+                            }
+                            note("Game default writes nothing: the game keeps its own choice. The snap angle is for Snap turning and the speed for Smooth turning. Applies the next time you start.")
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    GroupBox("Movement") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Movement", selection: $settings.move) {
+                                Text("Game default").tag(VXMove.game)
+                                Text("Teleport").tag(VXMove.teleport)
+                                Text("Walk").tag(VXMove.walk)
+                            }.pickerStyle(.segmented).labelsHidden()
+                            note(settings.move == .game
+                                 ? "Leaves movement as the game has it."
+                                 : settings.move == .teleport
+                                 ? "Push the left stick forward to aim and release to jump there."
+                                 : "The left stick walks you around directly.")
+                            note("Applies the next time you start.")
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     GroupBox("Mods") {
                         VXModsList()
                     }
