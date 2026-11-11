@@ -1,0 +1,193 @@
+{
+ "profile": "default",
+ "comment": [
+  "Default mod set: the build installed on the headset on 2026-11-11. A manifest only: no mod files, no game files, no private paths.",
+  "Mods come from Nexus Mods (your own account, personal use; see docs/SETUP_SKYRIM.md): python3 tools/vxrt_build.py mods-fetch, then mods.",
+  "nexus.md5 pins the exact archive. nexus.file_id is null until recorded (python3 -I tools/nexus.py files skyrimspecialedition MOD_ID lists the ids and md5s); the Downloads-folder fetch matches by md5 meanwhile.",
+  "Load order of the plugins in the built pack: Lit Road Signs.esp, Skyland Watercolor - Slow Green-Vanilla.esp, higgs_vr.esp, SkyUI_SE.esp, vrik.esp (by priority).",
+  "The SKSE VR runtime files (core DLL, hooks module, capture) are private and are not part of this list: add a skse_runtime section to your own copy."
+ ],
+ "mods": [
+  {
+   "id": "skyland",
+   "name": "Skyland AIO 1k (full)",
+   "kind": "plugin",
+   "enabled": true,
+   "priority": 5,
+   "plugins": [
+    "Lit Road Signs.esp",
+    "Skyland Watercolor - Slow Green-Vanilla.esp"
+   ],
+   "memory_hint_mb": 250,
+   "size_bytes": 2632276741,
+   "nexus": {
+    "game": "skyrimspecialedition",
+    "mod_id": 34179,
+    "file_id": null,
+    "md5": "5322d2b279af813e6e52199dc6f28850",
+    "version": "4.32"
+   },
+   "recipe": {
+    "kind": "fomod_auto",
+    "allow_plugins": [
+     "Lit Road Signs.esp",
+     "Skyland Watercolor - Slow Green-Vanilla.esp"
+    ],
+    "note": "the FOMOD's own defaults: every option of a SelectAny group, the first (preselected) option of an exclusive group; tools/fomod_auto.py"
+   }
+  },
+  {
+   "id": "sksevr-scripts",
+   "name": "SKSE VR 2.0.12 Papyrus scripts",
+   "kind": "files",
+   "enabled": true,
+   "priority": 10,
+   "shadow_install": true,
+   "size_bytes": 166980,
+   "external": {
+    "url": "https://skse.silverlock.org/beta/sksevr_2_00_12.7z",
+    "file_name": "sksevr_2_00_12.7z",
+    "md5": "eafdd0f8163b3131435d54f01977b445",
+    "extract": "Data/Scripts/*.pex",
+    "note": "not on Nexus; only the 85 compiled scripts are used (no DLL, no loader, no Source)"
+   }
+  },
+  {
+   "id": "skyrimvrtools",
+   "name": "SkyrimVRTools 2.3 BETA",
+   "kind": "skse",
+   "enabled": true,
+   "priority": 30,
+   "size_bytes": 518006,
+   "nexus": {
+    "game": "skyrimspecialedition",
+    "mod_id": 27782,
+    "file_id": null,
+    "md5": "0456f7a274932172c1c2bacb45eff1a6",
+    "version": "2.3 BETA"
+   }
+  },
+  {
+   "id": "higgs",
+   "name": "HIGGS 1.10.10",
+   "kind": "skse",
+   "enabled": true,
+   "priority": 40,
+   "plugins": [
+    "higgs_vr.esp"
+   ],
+   "size_bytes": 914552,
+   "nexus": {
+    "game": "skyrimspecialedition",
+    "mod_id": 43930,
+    "file_id": null,
+    "md5": "45b81bef6fa939a7d7079b6db267e1ba",
+    "version": "1.10.10"
+   },
+   "install": {
+    "exclude": [
+     "*.pdb",
+     "*.psc",
+     "source/*",
+     ".gitignore"
+    ]
+   }
+  },
+  {
+   "id": "planck",
+   "name": "PLANCK 0.8.2",
+   "kind": "skse",
+   "enabled": true,
+   "priority": 45,
+   "size_bytes": 792039,
+   "nexus": {
+    "game": "skyrimspecialedition",
+    "mod_id": 66025,
+    "file_id": null,
+    "md5": "99655a4e741db1a60e7ec303ddaf52de",
+    "version": "0.8.2"
+   },
+   "install": {
+    "exclude": [
+     "*.pdb",
+     "*.psc",
+     "source/*",
+     ".gitignore"
+    ]
+   }
+  },
+  {
+   "id": "skyui-vr",
+   "name": "SkyUI VR 1.2.2",
+   "kind": "skse",
+   "enabled": true,
+   "priority": 50,
+   "plugins": [
+    "SkyUI_SE.esp"
+   ],
+   "size_bytes": 2465374,
+   "nexus": {
+    "game": "skyrimspecialedition",
+    "mod_id": 91535,
+    "file_id": null,
+    "md5": "5cabd43ab32ab1e76848524b7d5ff25b",
+    "version": "1.2.2"
+   },
+   "install": {
+    "data_root": "SkyUI",
+    "exclude": [
+     "*.pdb",
+     "*.psc",
+     "source/*",
+     ".gitignore"
+    ]
+   }
+  },
+  {
+   "id": "skyui-vr-nojit",
+   "name": "SkyUI VR: LuaJIT off (strict AOT cannot run generated code)",
+   "kind": "skse",
+   "enabled": true,
+   "priority": 51,
+   "recipe": {
+    "kind": "skyui_nojit",
+    "from": "skyui-vr",
+    "note": "tools/skyui_nojit.py: SKSE/Plugins/SkyUI-VR/MainEntry.lua with 'if jit and jit.off then jit.off() end' in front of SkyUI's own file; priority 51 beats SkyUI's 50 in the merged tree"
+   }
+  },
+  {
+   "id": "vrik",
+   "name": "VRIK Player Avatar 0.8.8",
+   "kind": "skse",
+   "enabled": true,
+   "priority": 55,
+   "plugins": [
+    "vrik.esp"
+   ],
+   "size_bytes": 1775230,
+   "nexus": {
+    "game": "skyrimspecialedition",
+    "mod_id": 23416,
+    "file_id": null,
+    "md5": "154d7dc81239a3164699b5320746fec3",
+    "version": "0.8.8"
+   },
+   "install": {
+    "exclude": [
+     "*.pdb",
+     "*.psc",
+     "source/*",
+     ".gitignore"
+    ]
+   }
+  },
+  {
+   "id": "modlist-dump",
+   "name": "owned diagnostic: list the game's plugins at DataLoaded",
+   "kind": "skse",
+   "enabled": false,
+   "priority": 60,
+   "note": "a repo-owned SKSE test plugin (VXRuntime/tests/skse) that has to be built locally; not part of the default set"
+  }
+ ]
+}

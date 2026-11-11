@@ -370,6 +370,8 @@ def browser_downloads_dir():
 
 
 def files_page(game, mod_id, file_id):
+    if not file_id:                  # (a list that pins only the md5: the mod's Files tab, the file is matched by md5)
+        return 'https://www.nexusmods.com/%s/mods/%s?tab=files' % (game, mod_id)
     return 'https://www.nexusmods.com/%s/mods/%s?tab=files&file_id=%s' % (game, mod_id, file_id)
 
 
@@ -413,7 +415,9 @@ def manual_fetch(game, mod_id, file_id, name=None, md5=None, wait=0, progress=No
     """No API key: ask the user to download the file in the browser ("Manual download", then "Slow download") and take the archive from the
     Downloads folder (new, or already there). Matched by the pinned md5, else by the mod id in the file name (Nexus names are
     <name>-<mod_id>-<version>-<timestamp>.<ext>) after a yes from the user. The archive is copied (not moved) into the private downloads dir."""
-    game = _ident(game, 'game'); mod_id = _ident(mod_id, 'mod id', r'\d+'); file_id = _ident(file_id, 'file id', r'\d+')
+    game = _ident(game, 'game'); mod_id = _ident(mod_id, 'mod id', r'\d+'); file_id = _ident(file_id, 'file id', r'\d+') if file_id else None
+    if not file_id and not md5:
+        raise NexusError('without a file id the file can only be matched by its md5: pin it')
     folder = Path(folder) if folder else browser_downloads_dir()
     want_md5 = (md5 or '').lower() or None
     e = lambda m='': print(m, file=sys.stderr, flush=True)
@@ -424,7 +428,7 @@ def manual_fetch(game, mod_id, file_id, name=None, md5=None, wait=0, progress=No
     sizes = {}; refused = set(); said = set(); started = False
 
     def finish(src, st):
-        dest = downloads_dir() / ('%s-%s-%s-%s' % (game, mod_id, file_id, _safe_name(src.name)))
+        dest = downloads_dir() / ('%s-%s-%s-%s' % (game, mod_id, file_id or 'md5', _safe_name(src.name)))
         dest.parent.mkdir(parents=True, exist_ok=True)
         part = dest.with_name(dest.name + '.part')
         try:
@@ -498,7 +502,7 @@ def manual_fetch(game, mod_id, file_id, name=None, md5=None, wait=0, progress=No
 
 def fetch_file(game, mod_id, file_id, nxm=None, md5=None, wait=0, progress=None, name=None, manual=False, accept_name=False):
     """One entry point: the API path when a key is set (and not --manual), else the Downloads-folder path."""
-    if manual or not (os.environ.get('NEXUS_API_KEY') or '').strip():
+    if manual or not file_id or not (os.environ.get('NEXUS_API_KEY') or '').strip():
         if nxm:
             print('nexus: an nxm link cannot be used without an API key (the download-link call needs the key); using the Downloads folder instead.', file=sys.stderr)
         return manual_fetch(game, mod_id, file_id, name=name, md5=md5, wait=wait, progress=progress, accept_name=accept_name)

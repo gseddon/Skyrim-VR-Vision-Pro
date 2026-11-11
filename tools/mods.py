@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Mac-side mod pack tool for the Skyrim VR runtime: prepared mod folders + a mods list -> one pack.
 
-  python3 -I tools/mods.py build  --list mods-list.json --out PACK [--force]
-  python3 -I tools/mods.py fetch  --list mods-list.json [--nxm nxm://...] [--force]       (Nexus entries only; a NEXUS_API_KEY is optional)
+  python3 -I tools/mods.py build  [--list mods-list.json] --out PACK [--force]
+  python3 -I tools/mods.py fetch  [--list mods-list.json] [--nxm nxm://...] [--force]     (Nexus entries only; a NEXUS_API_KEY is optional)
+  Without --list: <VXRT_PRIVATE_ROOT>/mods-list.json if it exists, else the tracked default mods/default.json (names, versions, Nexus ids, md5s,
+  load order, the SkyUI jit.off recipe; no mod files). Copy it to change the set.
   python3 -I tools/mods.py show   PACK
   python3 -I tools/mods.py deploy PACK --bundle BUNDLE_ID [--device ID] [--yes]     (prints the devicectl commands; runs them only with --yes)
 
@@ -14,6 +16,10 @@ mods-list.json (written by hand or by a later UI):
               { "id": "higgs", "name": "HIGGS 1.10.10", "kind": "skse", "enabled": true, "priority": 40, "size_bytes": 5128085 } ] }
 A mod may instead name a Nexus Mods file: "nexus": {"game": "skyrimspecialedition", "mod_id": 43930, "file_id": 12345, "md5": "<pinned>"}
 (no "source"). `mods.py fetch --list L [--nxm nxm://...]` downloads it through tools/nexus.py (with NEXUS_API_KEY; without a key, from the browser's Downloads folder), pins its md5 in the list, and unpacks it to <VXRT_PRIVATE_ROOT>/mods-src/<id>/ (a tree with Data/), which build then uses.
+Other keys of an entry: "nexus.file_id" may be null when "nexus.md5" is pinned (the Downloads-folder fetch matches by md5); "install": {"data_root":
+"Folder" (the archive's Data content is inside it), "exclude": [fnmatch patterns on Data-relative paths, e.g. "*.pdb"]}; "external": {url, file_name, md5,
+extract: glob under the archive's top folder} for a mod that is not on Nexus (put the archive in <VXRT_PRIVATE_ROOT>/downloads or ~/Downloads; checked by md5);
+"recipe": {"kind": "fomod_auto", "allow_plugins": [...]} (unpack a FOMOD by its own defaults) or {"kind": "skyui_nojit", "from": "<skyui mod id>"} (the LuaJIT-off overlay).
 kind: files (loose assets), plugin (assets plus ESP/ESM/ESL; listed in plugins), skse (needs SKSE VR; listed, never applied).
 
 PACK/ gets
@@ -93,11 +99,57 @@ def nexus_tree(mod_id):
     return private_root() / 'mods-src' / mod_id
 
 
+REPO = Path(__file__).resolve().parent.parent
+DEFAULT_LIST = REPO / 'mods' / 'default.json'      # tracked: the default mod set (manifest only: no mod files, no private paths)
+
+
+def resolve_list(arg=None):
+    """The mods list to use: --list if given, else the user's own list at <VXRT_PRIVATE_ROOT>/mods-list.json if there is one, else the tracked default."""
+    if arg: return Path(arg)
+    user = private_root() / 'mods-list.json'
+    return user if user.is_file() else DEFAULT_LIST
+
+
+def list_problems(cfg):
+    """What is wrong with a mods list (shape only: nothing is read from disk or the network). Used by the default's test and by `check`."""
+    out = []; seen = set(); prios = set()
+    if not isinstance(cfg.get('mods'), list) or not cfg['mods']: return ['no mods']
+    for m in cfg['mods']:
+        i = m.get('id', '')
+        if not re.fullmatch(r'[a-z0-9][a-z0-9._-]*', i): out.append(f'bad id {i!r}')
+        if i in seen: out.append(f'duplicate id {i}')
+        seen.add(i)
+        if m.get('kind') not in KINDS: out.append(f'{i}: kind must be one of {KINDS}')
+        if not isinstance(m.get('priority'), int): out.append(f'{i}: priority must be an integer')
+        elif m['priority'] in prios: out.append(f'{i}: priority {m["priority"]} is used twice')
+        else: prios.add(m['priority'])
+        if not isinstance(m.get('enabled', True), bool): out.append(f'{i}: enabled must be true or false')
+        for p in m.get('plugins', []):
+            if not p.lower().endswith(('.esp', '.esm', '.esl')): out.append(f'{i}: plugin {p!r} is not an ESP/ESM/ESL')
+        how = [k for k in ('source', 'nexus', 'external', 'recipe') if k in m]
+        if 'nexus' in m:
+            n = m['nexus']
+            if not isinstance(n, dict) or not str(n.get('mod_id', '')).isdigit() or not n.get('game'): out.append(f'{i}: nexus needs game and a numeric mod_id')
+            elif n.get('file_id') and not str(n['file_id']).isdigit(): out.append(f'{i}: nexus.file_id must be numeric')
+            if isinstance(n, dict) and n.get('md5') and not re.fullmatch(r'[0-9a-f]{32}', str(n['md5'])): out.append(f'{i}: nexus.md5 must be 32 lowercase hex digits')
+        if 'source' in m and 'nexus' in m: out.append(f'{i}: give either source or nexus, not both')
+        if 'external' in m and not all(m['external'].get(k) for k in ('url', 'file_name', 'md5', 'extract')): out.append(f'{i}: external needs url, file_name, md5 and extract')
+        inst = m.get('install') or {}
+        if inst.get('data_root') and (os.path.isabs(inst['data_root']) or '..' in Path(inst['data_root']).parts): out.append(f'{i}: install.data_root must stay inside the archive')
+        r = m.get('recipe')
+        if r is not None and r.get('kind') not in ('fomod_auto', 'skyui_nojit'): out.append(f'{i}: recipe kind must be fomod_auto or skyui_nojit')
+        if r and r.get('kind') == 'skyui_nojit' and r.get('from') not in {x.get('id') for x in cfg['mods']}: out.append(f'{i}: recipe.from names no mod of the list')
+        if m.get('enabled', True) and m['kind'] != 'skse' and not any(k in m for k in ('source', 'nexus', 'external', 'recipe')): out.append(f'{i}: enabled but no source, nexus, external or recipe')
+        text = json.dumps(m)
+        if re.search(r'/Users/|/home/|\b[A-Za-z]:\\\\', text): out.append(f'{i}: contains a machine path')
+    return out
+
+
 def _nexus_spec(m):
     n = m['nexus']
-    if not isinstance(n, dict) or not all(n.get(k) for k in ('game', 'mod_id', 'file_id')):
-        sys.exit(f"{m.get('id')}: nexus needs game, mod_id and file_id")
-    if not re.fullmatch(r'[A-Za-z0-9_-]+', str(n['game'])) or not re.fullmatch(r'\d+', str(n['mod_id'])) or not re.fullmatch(r'\d+', str(n['file_id'])):
+    if not isinstance(n, dict) or not all(n.get(k) for k in ('game', 'mod_id')) or not (n.get('file_id') or n.get('md5')):
+        sys.exit(f"{m.get('id')}: nexus needs game, mod_id and a file_id (or, without one, a pinned md5)")
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', str(n['game'])) or not re.fullmatch(r'\d+', str(n['mod_id'])) or (n.get('file_id') and not re.fullmatch(r'\d+', str(n['file_id']))):
         sys.exit(f"{m.get('id')}: bad nexus game/mod_id/file_id")
     if n.get('md5') and not re.fullmatch(r'[0-9a-fA-F]{32}', str(n['md5'])):
         sys.exit(f"{m.get('id')}: nexus md5 must be 32 hex digits")
@@ -137,12 +189,62 @@ def _into_tree(raw, tree):
     else: clone(raw, tree / 'Data')                  # loose files at the top: they are the Data/ contents
 
 
+def _prune(data, patterns):
+    """Remove the files of data/ whose path (relative, lower case, '/') matches one of the fnmatch patterns (debug symbols, script sources), then empty folders."""
+    import fnmatch
+    if not patterns: return
+    pats = [p.lower() for p in patterns]
+    for dp, dn, fn in os.walk(data):
+        for f in fn:
+            rel = (Path(dp) / f).relative_to(data).as_posix().lower()
+            if any(fnmatch.fnmatchcase(rel, p) for p in pats): (Path(dp) / f).unlink()
+    for dp, dn, fn in sorted(os.walk(data), key=lambda t: -len(t[0])):
+        if Path(dp) != data and not os.listdir(dp): os.rmdir(dp)
+
+
+def _fomod(raw, tree, recipe):
+    """raw (an unpacked FOMOD archive) -> tree/Data by tools/fomod_auto.py with the recipe's choices (data only; nothing from the download runs)."""
+    top = list(raw.iterdir())
+    if len(top) == 1 and top[0].is_dir() and (top[0] / 'fomod').is_dir(): raw = top[0]
+    cmd = [sys.executable, '-I', str(Path(__file__).resolve().parent / 'fomod_auto.py'), '--src', str(raw), '--out', str(tree)]
+    for p in recipe.get('allow_plugins', []): cmd += ['--allow-plugin', p]
+    for c in recipe.get('choose', []): cmd += ['--choose', c]
+    for c in recipe.get('skip_options', []): cmd += ['--skip-option', c]
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
+
+
+def _fetch_external(m, lst):
+    """A mod that is not on Nexus (SKSE VR's scripts): the archive named in m['external'] from the private downloads folder or the browser's
+    Downloads folder, checked against its md5, then only the files matching m['external']['extract'] (a glob under the archive's top folder)."""
+    import shutil, tempfile
+    x = m['external']; tree = nexus_tree(m['id']); marker = tree / '.external-md5'
+    if marker.is_file() and marker.read_text().strip() == x['md5'].lower() and (tree / 'Data').is_dir():
+        print(f"{m['id']}: already fetched and unpacked (md5 {x['md5']})"); return False
+    cands = [private_root() / 'downloads' / x['file_name'], Path.home() / 'Downloads' / x['file_name']]
+    found = next((c for c in cands if c.is_file() and hashlib.md5(c.read_bytes()).hexdigest() == x['md5'].lower()), None)
+    if not found:
+        print(f"{m['id']}: download {x['url']} (md5 {x['md5']}) into {cands[0].parent} or ~/Downloads as {x['file_name']}, then fetch again", file=sys.stderr)
+        return None
+    with tempfile.TemporaryDirectory() as t:
+        raw = Path(t) / 'raw'; _unpack(found, raw)
+        top = list(raw.iterdir()); base = top[0] if len(top) == 1 and top[0].is_dir() else raw
+        files = [p for p in sorted(base.glob(x['extract'])) if p.is_file()]
+        if not files: raise ValueError(f"{m['id']}: nothing in {found.name} matches {x['extract']}")
+        new = Path(t) / 'tree'
+        for p in files:
+            d = new / p.relative_to(base); d.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(p, d)
+        (new / '.external-md5').write_text(x['md5'].lower() + '\n')
+        if tree.exists(): shutil.rmtree(tree)
+        tree.parent.mkdir(parents=True, exist_ok=True); shutil.move(str(new), str(tree))
+    return True
+
+
 def fetch(a):
     """Download the Nexus files of a list, pin md5s in it, unpack to mods-src/<id>. Idempotent: nothing is fetched for a mod whose archive and tree match."""
     import shutil
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import nexus
-    lst = Path(a.list).resolve(strict=True); cfg = json.loads(lst.read_text())
+    lst = resolve_list(a.list).resolve(strict=True); cfg = json.loads(lst.read_text())
     links = {}
     for u in a.nxm or []:
         try: n = nexus.parse_nxm(u)
@@ -153,8 +255,14 @@ def fetch(a):
                and not (not a.force and (nexus_tree(m['id']) / '.nexus-md5').is_file() and (m['nexus'].get('md5') or '').lower() == (nexus_tree(m['id']) / '.nexus-md5').read_text().strip().lower() and (nexus_tree(m['id']) / 'Data').is_dir())]
     done = 0
     for m in cfg['mods']:
+        if 'external' in m and m.get('enabled', True) and not m.get('source'):
+            try: r = _fetch_external(m, lst)
+            except (ValueError, OSError) as e: print(f"{m['id']}: {e}", file=sys.stderr); sys.exit(1)
+            if r is None: skipped.append(m['id'])
+            elif r: todo += 1; print(f"{m['id']}: unpacked {m['external']['extract']}")
+            continue
         if 'nexus' not in m or not m.get('enabled', True) or m.get('source'): continue
-        n = _nexus_spec(m); game, mod, fid = n['game'], str(n['mod_id']), str(n['file_id'])
+        n = _nexus_spec(m); game, mod, fid = n['game'], str(n['mod_id']), (str(n['file_id']) if n.get('file_id') else None)
         tree = nexus_tree(m['id']); marker = tree / '.nexus-md5'
         pinned = (n.get('md5') or '').lower() or None
         if not a.force and marker.is_file() and pinned and marker.read_text().strip() == pinned and (tree / 'Data').is_dir():
@@ -162,11 +270,15 @@ def fetch(a):
         todo += 1
         try:
             r = nexus.fetch_file(game, mod, fid, nxm=links.get((game.lower(), mod, fid)), md5=pinned, wait=nexus.default_wait(a.wait),
-                                 progress=(done, len(pending)), name=m.get('name') or m['id'], manual=a.manual, accept_name=a.accept_name_match)
+                                 progress=(done, len(pending)), name=m.get('name') or m['id'], manual=a.manual or fid is None, accept_name=a.accept_name_match)
             tmp = tree.with_name(tree.name + '.tmp')
             if tmp.exists(): shutil.rmtree(tmp)
             raw = tmp / 'raw'; _unpack(Path(r['path']), raw)
-            new = tmp / 'tree'; _into_tree(raw, new)
+            new = tmp / 'tree'
+            inst = m.get('install') or {}
+            if (m.get('recipe') or {}).get('kind') == 'fomod_auto': _fomod(raw, new, m['recipe'])
+            else: _into_tree(raw / inst['data_root'] if inst.get('data_root') else raw, new)
+            _prune(new / 'Data', inst.get('exclude', []))
             (new / '.nexus-md5').write_text(r['md5'] + '\n')
             if tree.exists(): shutil.rmtree(tree)
             tree.parent.mkdir(parents=True, exist_ok=True); os.replace(new, tree); shutil.rmtree(tmp)
@@ -187,7 +299,7 @@ def fetch(a):
 
 
 def build(a):
-    lst = Path(a.list).resolve(strict=True); out = Path(a.out).resolve()
+    lst = resolve_list(a.list).resolve(strict=True); out = Path(a.out).resolve()
     cfg = json.loads(lst.read_text())
     if out.exists() and any(out.iterdir()):
         if not a.force: sys.exit(f'{out} is not empty (use --force to rebuild; it is private and rebuildable)')
@@ -202,15 +314,26 @@ def build(a):
         if 'nexus' in m:
             _nexus_spec(m)
             if m.get('source'): sys.exit(f"{m['id']}: give either source or nexus, not both")
-            if m.get('enabled', True) and not (nexus_tree(m['id']) / 'Data').is_dir():
-                print(f"{m['id']}: not fetched yet: run tools/mods.py fetch --list {lst} (or vxrt_build.py mods-fetch)", file=sys.stderr); sys.exit(2)
+        if m.get('enabled', True) and not m.get('source') and any(k in m for k in ('nexus', 'external')) and not (nexus_tree(m['id']) / 'Data').is_dir():
+            print(f"{m['id']}: not fetched yet: run tools/mods.py fetch --list {lst} (or vxrt_build.py mods-fetch)", file=sys.stderr); sys.exit(2)
+    for m in mods:                                   # (generated mods: the SkyUI LuaJIT-off overlay, from the fetched SkyUI tree)
+        r = m.get('recipe') or {}
+        if m.get('enabled', True) and r.get('kind') == 'skyui_nojit':
+            base = next((x for x in mods if x['id'] == r.get('from')), None)
+            if not base: sys.exit(f"{m['id']}: recipe.from {r.get('from')!r} is not in the list")
+            sdir = (lst.parent / base['source']).resolve(strict=True) if base.get('source') else nexus_tree(base['id'])
+            tree = nexus_tree(m['id'])
+            if tree.exists(): subprocess.run(['rm', '-rf', str(tree)], check=True)
+            sys.path.insert(0, str(Path(__file__).resolve().parent)); import skyui_nojit
+            skyui_nojit.main(str(sdir / 'Data'), str(tree))
     (out / 'merged' / 'Data').mkdir(parents=True)
     res = []; plugins = []; skse_plugins = []; shadow = []
     for m in sorted(mods, key=lambda m: (m['priority'], m['id'])):
         r = dict(id=m['id'], name=m.get('name', m['id']), kind=m['kind'], enabled=bool(m.get('enabled', True)), priority=m['priority'],
                  plugins=list(m.get('plugins', [])), memory_hint_mb=m.get('memory_hint_mb'), size_bytes=m.get('size_bytes'), files=None,
                  active=False, path=None, note=m.get('note', ''))
-        if 'nexus' in m and r['enabled']: m = dict(m, source=str(nexus_tree(m['id'])))    # (absolute: joins as itself)
+        if r['enabled'] and not m.get('source') and any(k in m for k in ('nexus', 'external')) or (r['enabled'] and (m.get('recipe') or {}).get('kind') == 'skyui_nojit'):
+            m = dict(m, source=str(nexus_tree(m['id'])))    # (absolute: joins as itself)
         if m['kind'] == 'skse' and not m.get('source'):
             r['note'] = r['note'] or SKSE_NOTE          # (listed only: no prepared source tree)
         elif r['enabled']:
@@ -312,8 +435,8 @@ def deploy(a):
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(); sub = ap.add_subparsers(dest='cmd', required=True)
-    b = sub.add_parser('build'); b.add_argument('--plugin-base', default='0x30c000000', help='arena base of the first SKSE plugin DLL module; 16 MB apart'); b.add_argument('--list', required=True); b.add_argument('--out', required=True); b.add_argument('--force', action='store_true')
-    f = sub.add_parser('fetch'); f.add_argument('--list', required=True); f.add_argument('--nxm', action='append', help='nxm:// link from the website (non-premium); repeatable'); f.add_argument('--force', action='store_true'); f.add_argument('--manual', action='store_true', help='download in the browser and take the archive from the Downloads folder even if NEXUS_API_KEY is set'); f.add_argument('--accept-name-match', action='store_true', help='without a terminal: accept an archive whose name carries the mod id'); f.add_argument('--wait', type=int, help='seconds to wait per file for its nxm link without Premium (default 600 in a terminal, else 0)')
+    b = sub.add_parser('build'); b.add_argument('--plugin-base', default='0x30c000000', help='arena base of the first SKSE plugin DLL module; 16 MB apart'); b.add_argument('--list', help='default: <VXRT_PRIVATE_ROOT>/mods-list.json if it exists, else mods/default.json'); b.add_argument('--out', required=True); b.add_argument('--force', action='store_true')
+    f = sub.add_parser('fetch'); f.add_argument('--list', help='default: as for build'); f.add_argument('--nxm', action='append', help='nxm:// link from the website (non-premium); repeatable'); f.add_argument('--force', action='store_true'); f.add_argument('--manual', action='store_true', help='download in the browser and take the archive from the Downloads folder even if NEXUS_API_KEY is set'); f.add_argument('--accept-name-match', action='store_true', help='without a terminal: accept an archive whose name carries the mod id'); f.add_argument('--wait', type=int, help='seconds to wait per file for its nxm link without Premium (default 600 in a terminal, else 0)')
     s = sub.add_parser('show'); s.add_argument('pack')
     q = sub.add_parser('pipeline'); q.add_argument('pack'); q.add_argument('--config', required=True); q.add_argument('--out', required=True)
     p = sub.add_parser('deploy'); p.add_argument('pack'); p.add_argument('--bundle', required=True); p.add_argument('--device'); p.add_argument('--yes', action='store_true')

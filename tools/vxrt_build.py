@@ -9,8 +9,8 @@
     shaders           Metal shader set from the committed manifest        -> $VXRT_PRIVATE_ROOT/shadercache-xros-manifest
     app               build and sign the app  (--unsigned: no signing; --install: devicectl install, needs VXRT_DEVICE_ID)
     stage-to-device   copy the game tree to the headset (dry run unless --run)
-    mods-fetch        fetch the Nexus Mods files of a mods list, pin their md5, unpack  (--list L; the key is optional: without it, from ~/Downloads)
-    mods              build a mod pack  (--list mods-list.json [--out DIR] [--deploy])
+    mods-fetch        fetch the Nexus Mods files of a mods list, pin their md5, unpack  (--list L, default mods/default.json; the key is optional: without it, from ~/Downloads)
+    mods              build a mod pack  (--list L, default mods/default.json [--out DIR] [--deploy])
 
 Rules every stage follows: inputs come from the environment or arguments (local/env.sh, copied from local.example.sh, is read
 first; the real environment wins); outputs go under VXRT_PRIVATE_ROOT (default build/private) except the toolchain and the
@@ -173,27 +173,25 @@ def stage_stage(a):
 
 
 def stage_mods_fetch(a):
-    if not a.list:
-        raise NeedInput('--list <mods-list.json> is required (format: tools/mods.py)')
-    need_path(a.list, None, 'the mods list')
+    if a.list:
+        need_path(a.list, None, 'the mods list')       # (no --list: tools/mods.py picks your own list, else mods/default.json)
     out = priv() / 'downloads' / 'nexus'
     # mods.py fetch asks for the key only when a mod still has to be downloaded, so a finished list needs no key and does nothing.
-    rc = run([sys.executable, '-I', REPO / 'tools' / 'mods.py', 'fetch', '--list', a.list] + [x for u in (a.nxm or []) for x in ('--nxm', u)] + (['--force'] if a.force else []) + (['--wait', str(a.wait)] if a.wait is not None else []) + (['--manual'] if a.manual else []) + (['--accept-name-match'] if a.accept_name_match else []))
+    rc = run([sys.executable, '-I', REPO / 'tools' / 'mods.py', 'fetch'] + (['--list', a.list] if a.list else []) + [x for u in (a.nxm or []) for x in ('--nxm', u)] + (['--force'] if a.force else []) + (['--wait', str(a.wait)] if a.wait is not None else []) + (['--manual'] if a.manual else []) + (['--accept-name-match'] if a.accept_name_match else []))
     if rc == MISSING:
         raise NeedInput('a Nexus file is not available yet (no matching archive in the Downloads folder, or no link; skipped or timed out); see the message above and docs/SETUP_SKYRIM.md')
     return rc, [str(out)]
 
 
 def stage_mods(a):
-    if not a.list:
-        raise NeedInput('--list <mods-list.json> is required (format: tools/mods.py)')
-    need_path(a.list, None, 'the mods list')
+    if a.list:
+        need_path(a.list, None, 'the mods list')       # (no --list: tools/mods.py picks your own list, else mods/default.json)
     out = Path(a.out) if a.out else priv() / 'mods-pack'
     if out.exists() and not a.force:
         say('mods: %s already exists (--force to rebuild)' % out)
         rc = OK
     else:
-        rc = run([sys.executable, '-I', REPO / 'tools' / 'mods.py', 'build', '--list', a.list, '--out', out] + (['--force'] if a.force else []))
+        rc = run([sys.executable, '-I', REPO / 'tools' / 'mods.py', 'build', '--out', out] + (['--list', a.list] if a.list else []) + (['--force'] if a.force else []))
     if rc == OK and a.deploy:
         need_env('VXRT_DEVICE_ID', 'XROS_BUNDLE_PREFIX')
         rc = run([sys.executable, '-I', REPO / 'tools' / 'mods.py', 'deploy', out, '--bundle', os.environ['XROS_BUNDLE_PREFIX'] + '.SkyrimVR',
