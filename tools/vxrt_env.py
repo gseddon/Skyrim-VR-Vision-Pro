@@ -38,6 +38,7 @@ def variables(env=None):
     redist = Path(env.get('VXRT_REDIST_DIR') or sk / 'redist')
     return {
         'REPO': str(REPO),
+        'XRIZER_RUST_ROOT': env.get('XRIZER_RUST_ROOT') or str(REPO / 'build' / 'toolchains' / 'xrizer-rust'),
         'VXRT_PRIVATE_ROOT': str(private_root(env)),
         'VXRT_SKYRIM_DIR': str(sk),
         'VXRT_AOT_INPUTS': str(inputs),
@@ -81,3 +82,12 @@ def load_local_env(path=None, env=None):
     got = dict(item.split('=', 1) for item in r.stdout.decode(errors='replace').split('\0') if '=' in item)
     skip = {'_', 'SHLVL', 'PWD', 'OLDPWD'}
     return {k: v for k, v in got.items() if k not in skip and env.get(k) != v}
+
+
+def sha256_file(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for b in iter(lambda: f.read(1 << 20), b''):
+            h.update(b)
+    return h.hexdigest()
