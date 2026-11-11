@@ -286,11 +286,23 @@ def capture(args):
             odata = overlay / assets.relative_to(source) / 'Data'
             odata.mkdir(parents=True, exist_ok=True)
             linked = {}
-            for ent in sorted(mdata.iterdir()):
-                if (assets / 'Data' / ent.name).exists():
-                    raise ValueError(f'--mods-dir: Data/{ent.name} already exists in the install; refusing to shadow it')
-                (odata / ent.name).symlink_to(ent, target_is_directory=ent.is_dir())
-                linked[ent.name] = sum(1 for p in ent.rglob('*') if p.is_file()) if ent.is_dir() else 1
+            # Per-file overlay: an entry the install does not have is linked whole; a directory the install has (Scripts, interface,
+            # Textures, ...) becomes a real overlay directory (the install's spelling) holding links to the mod's files, and the
+            # runtime lists overlay and install together (files.c); a FILE the install already has is still refused.
+            def link_tree(src_dir, dst_dir, inst_dir, rel, count):
+                inst = {e.name.lower(): e for e in inst_dir.iterdir()} if inst_dir is not None and inst_dir.is_dir() else {}
+                for ent in sorted(src_dir.iterdir()):
+                    have = inst.get(ent.name.lower())
+                    if have is None:
+                        (dst_dir / ent.name).symlink_to(ent, target_is_directory=ent.is_dir())
+                        count[rel + ent.name] = sum(1 for q in ent.rglob('*') if q.is_file()) if ent.is_dir() else 1
+                    elif have.is_dir() and ent.is_dir():
+                        sub = dst_dir / have.name
+                        sub.mkdir(exist_ok=True)
+                        link_tree(ent, sub, have, rel + have.name + '/', count)
+                    else:
+                        raise ValueError(f'--mods-dir: Data/{rel}{ent.name} already exists in the install; refusing to shadow it')
+            link_tree(mdata, odata, assets / 'Data', '', linked)
             # Plugins.txt: the game opens C:\users\vxrt\AppData\Local\Skyrim VR\Plugins.txt (seen in a file trace). DIR/Plugins.txt if
             # present, else one "*Name" line per .esp/.esm/.esl at the top of DIR/Data (SE-style: the star enables; the official
             # masters are implicit). Official-master-only plugins are the caller's responsibility (tools/fomod_auto.py checks).
@@ -483,7 +495,24 @@ def capture(args):
                                    read_only_inputs=input_hashes)
         if xrizer_path:
             result['artifacts']['xrizer_dylib'] = dict(path=str(xrizer_path), sha256=digest(xrizer_path))
-        cmd = ['/usr/bin/arch', '-arm64', str(runtime), str(exe)]
+        run_exe = exe
+        skse_plugins = (cfg.get('skse_plugins') if mods_cfg else None) or []
+        if skse_plugins:
+            # SKSE reads <directory of the running exe>/Data/SKSE/Plugins, not the overlay: a per-run directory holds an APFS clone
+            # of the prepared exe (same bytes, so the same AOT module) and a clone of the pack's Data/SKSE tree.
+            xdir = out / 'exe'
+            (xdir / 'Data').mkdir(parents=True)
+            subprocess.run(['cp', '-c', str(exe), str(xdir / exe.name)], check=True)
+            subprocess.run(['cp', '-cR', str(mroot / 'Data' / 'SKSE'), str(xdir / 'Data' / 'SKSE')], check=True)
+            if digest(xdir / exe.name) != digest(exe):
+                raise ValueError('per-run exe clone differs from the prepared exe')
+            run_exe = xdir / exe.name
+            result.setdefault('diagnostic', {})['skse_plugins'] = dict(dir=str(xdir / 'Data' / 'SKSE' / 'Plugins'), plugins=skse_plugins,
+                scope='per-run copy of the pack tree where SKSE reads it; hashes are those the pipeline built modules for')
+            for pl in skse_plugins:
+                if pl.get('sha256') and digest(xdir / 'Data' / pl['path']) != pl['sha256']:
+                    raise ValueError(f"skse plugin {pl['path']} differs from the pack's recorded hash")
+        cmd = ['/usr/bin/arch', '-arm64', str(runtime), str(run_exe)]
         result.update(command=cmd, cwd=str(assets), environment={k:v for k,v in env.items() if k.startswith(('VXRT_', 'VERANTYX_')) or k=='TMPDIR' or (getattr(args, 'experimental_xrizer', False) and k.startswith('XDG_'))}, timeout_seconds=args.seconds)
         log = out/'startup.log'
         timed_out = False

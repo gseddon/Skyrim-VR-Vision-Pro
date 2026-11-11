@@ -201,6 +201,15 @@ build/skse/skse_fixture_ext.dll: tests/skse/skse_fixture_ext.c
 	@mkdir -p build/skse
 	$(MINGW) -O1 -shared -nostdlib -e DllMain -Wl,--image-base=0x306000000 -o $@ $< -lkernel32
 
+build/lstrcat/lstrcat_a.exe: tests/lstrcat_a.c
+	@mkdir -p build/lstrcat
+	$(MINGW) -O1 -nostdlib -e mainCRTStartup -o $@ $< -lkernel32
+
+lstrcat-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/lstrcat/lstrcat_a.exe
+	python3 tests/lstrcat_check.py
+
+.PHONY: lstrcat-check
+
 # The static script-extender scheme on an owned fixture (research/2026-11-11-skse-vr-on-aot.md): arena bases 0x306/307/308000000.
 skse-fixture-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/skse/skse_fixture_host.exe build/skse/skse_fixture_ext.dll
 	python3 tests/skse_fixture_check.py
