@@ -263,6 +263,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                 // pause, which xrizer answers with a panic once the game asks for a size. Only an invalidated layer ends this loop.
                 vxrt_jlog("vr_pause", "\"frames\":\(Self.frameCount)")
                 let pausedAt = CACurrentMediaTime()
+                VXLifecycle.pausedAt = pausedAt
 #if XRIZER_XROS_FIXTURE
                 vx_xros_set_paused(1)   // WaitFrame blocks, the audio goes quiet: a backgrounded app must idle (it was SIGKILLed 15 s into a pause)
                 vxrt_jlog("pause_idle_start", "\"frames\":\(Self.frameCount)")
