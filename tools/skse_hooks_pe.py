@@ -54,7 +54,7 @@ def main():
         with open(a.capture) as f:
             for line in f:
                 p = line.split()
-                if len(p) != 4:
+                if len(p) not in (4, 5):        # (P lines may carry the original bytes as a fifth field)
                     continue
                 if p[0] == 'R':
                     off = int(p[2], 16)
