@@ -31,7 +31,7 @@ VXRT_ROSETTA_TARGET ?= build/vxrt
 
 all: $(VXRT_ROSETTA_TARGET) build/vxrt-npu tests
 
-$(VXRT_ROSETTA_TARGET): src/native_vr.h src/native_openvr.h $(SRC) src/vx.h src/npu_interp.h src/warp_core.h src/npu_proto.h src/pe.h src/dotnet_metadata.h src/dotnet_resources.h src/dotnet_baml.h src/dotnet_il.h src/dotnet_exec.h src/dotnet_host.h src/ui.h src/d3d_common.h src/d3d_format.h src/d3d12_view.h src/stereo.h src/upscale_core.h src/d3d_tables.h src/d3d12_tables.h src/dxil.h src/dxil_msl.h src/dxil_ir.h src/gpu_ir.h src/gpu_ir_msl.h src/gpu_ir_metal.h src/spirv.h src/spirv_ir.h src/vx_vulkan.h src/vk_impl.h src/vk_encode.h src/vk_msl.h src/vk_win32.h src/vk_dispatch_table.h src/directinput_buffer.h src/directinput_format.h src/audio_tables.h src/xaudio2_tables.h $(WMADEC_HDR) src/dwrite_tables.h src/dxbc.h src/aes_gcm.h
+$(VXRT_ROSETTA_TARGET): src/native_vr.h src/native_openvr.h $(SRC) src/vx.h src/npu_interp.h src/warp_core.h src/npu_proto.h src/pe.h src/dotnet_metadata.h src/dotnet_resources.h src/dotnet_baml.h src/dotnet_il.h src/dotnet_exec.h src/dotnet_host.h src/ui.h src/d3d_common.h src/d3d_format.h src/d3d12_view.h src/stereo.h src/upscale_core.h src/d3d_tables.h src/d3d12_tables.h src/dxil.h src/dxil_msl.h src/dxil_ir.h src/gpu_ir.h src/gpu_ir_msl.h src/gpu_ir_metal.h src/spirv.h src/spirv_ir.h src/vx_vulkan.h src/vk_impl.h src/vk_encode.h src/vk_msl.h src/vk_win32.h src/vk_dispatch_table.h src/directinput_buffer.h src/directinput_format.h src/audio_tables.h src/xaudio2_tables.h src/xaudio2_reverb.h $(WMADEC_HDR) src/dwrite_tables.h src/dxbc.h src/aes_gcm.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -Ithird_party/vulkan -fobjc-arc -o $@.tmp $(SRC) -framework Cocoa -framework CoreFoundation -framework CoreServices -framework CoreText -framework Metal -framework MetalFX -framework QuartzCore -framework GameController -framework CoreGraphics -framework IOSurface -framework AudioToolbox -framework CoreAudio -framework ImageIO -framework OpenGL -framework IOKit -framework SystemConfiguration -framework CFNetwork -framework Security -Wl,-pagezero_size,0x10000 -licucore -lz && mv -f $@.tmp $@
 
@@ -502,14 +502,14 @@ build/libvxrt_vm.dylib: src/vm_hooks.c translator/xvheap.h
 	@mkdir -p build
 	$(CC) -arch arm64 -O1 -mmacosx-version-min=14.0 -dynamiclib -install_name @executable_path/libvxrt_vm.dylib -Itranslator -o $@ $<
 $(VXRT_ARM64_TARGET): $(VXRT_ARM64_EXTRA_OBJS)
-$(VXRT_ARM64_TARGET): src/native_vr.h src/native_openvr.h $(ARM64_SRC) src/npu_interp.h src/npu_proto.h $(VXRT_ARM64_THUNKS_ROOT)/thunks/stamp build/libvxrt_vm.dylib build/guest.o src/arm64.h src/pe.h src/dotnet_metadata.h src/dotnet_resources.h src/dotnet_baml.h src/ui.h src/d3d_common.h src/d3d_format.h src/d3d12_view.h src/stereo.h src/d3d_tables.h src/d3d12_tables.h src/dxil.h src/dxil_msl.h src/dxil_ir.h src/gpu_ir.h src/gpu_ir_msl.h src/gpu_ir_metal.h src/spirv.h src/spirv_ir.h src/vx_vulkan.h src/directinput_buffer.h src/directinput_format.h src/audio_tables.h src/xaudio2_tables.h $(WMADEC_HDR) src/dwrite_tables.h src/dxbc.h translator/xlat.h translator/xlat_sse.inc translator/a64.h translator/engine.h translator/x87.h translator/cpuid_table.h translator/aot.h
+$(VXRT_ARM64_TARGET): src/native_vr.h src/native_openvr.h $(ARM64_SRC) src/npu_interp.h src/npu_proto.h $(VXRT_ARM64_THUNKS_ROOT)/thunks/stamp build/libvxrt_vm.dylib build/guest.o src/arm64.h src/pe.h src/dotnet_metadata.h src/dotnet_resources.h src/dotnet_baml.h src/ui.h src/d3d_common.h src/d3d_format.h src/d3d12_view.h src/stereo.h src/d3d_tables.h src/d3d12_tables.h src/dxil.h src/dxil_msl.h src/dxil_ir.h src/gpu_ir.h src/gpu_ir_msl.h src/gpu_ir_metal.h src/spirv.h src/spirv_ir.h src/vx_vulkan.h src/directinput_buffer.h src/directinput_format.h src/audio_tables.h src/xaudio2_tables.h src/xaudio2_reverb.h $(WMADEC_HDR) src/dwrite_tables.h src/dxbc.h translator/xlat.h translator/xlat_sse.inc translator/a64.h translator/engine.h translator/x87.h translator/cpuid_table.h translator/aot.h
 	@mkdir -p $(dir $@)
 	$(CC) -arch arm64 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -mmacosx-version-min=14.0 -Isrc -I$(VXRT_ARM64_THUNKS_ROOT) -Ibuild -Ithird_party/vulkan $(VXRT_ARM64_EXTRA_CFLAGS) -fobjc-arc -o $@ $(ARM64_SRC) $(VXRT_ARM64_EXTRA_OBJS) -framework Cocoa -framework CoreFoundation -framework CoreServices -framework CoreText -framework Metal -framework MetalFX -framework QuartzCore -framework GameController -framework CoreGraphics -framework IOSurface -framework AudioToolbox -framework CoreAudio -framework ImageIO -framework OpenGL -framework IOKit -framework SystemConfiguration -framework CFNetwork -framework Security -framework Hypervisor build/libvxrt_vm.dylib build/guest.o -licucore -lz $(VXRT_ARM64_EXTRA_LDFLAGS)
 	codesign -s - -f --entitlements translator/hypervisor.entitlements $@
 
 tests: build/hello_k32.exe build/hello_crt.exe build/threads.exe build/cxx_exceptions.exe build/hw_exceptions.exe build/seh_try.exe build/unwind.exe build/breakpoint.exe build/child_stdout.exe \
        build/files.exe build/ini.exe build/dll_test.exe build/vxplugin.dll build/dllprobe.exe \
-       build/crt_text_mode.exe build/window.exe build/winsta.exe build/scm.exe build/net.exe build/winhttp.exe build/winhttp_proxy.exe build/iphlp.exe build/winsock_nsp.exe build/midi.exe build/directinput.exe build/msvc_eh.exe build/com.exe build/msxml.exe build/vxcom.dll build/iocp.exe build/d3d11.exe build/egl_host.exe build/gl.exe build/hlslc.exe build/dxbc2msl build/vxrt-shader-manifest build/draw.exe build/compute.exe build/d3d12.exe build/d3d12_engine.exe build/d3d12_fxc.exe build/d3d11on12.exe build/input.exe build/xinput_script.exe build/audio.exe build/xaudio2.exe build/xaudio2_27.exe build/dwrite.exe build/dxbcscan build/pipes.exe build/ipc.exe build/shared.exe build/steam.exe build/smc.exe build/order.exe build/lowmem.exe build/clip.exe build/shoplist.exe build/vulkan_win.exe build/vulkan_features.exe build/vulkan_shaders.exe build/game_imports.exe build/ucrt_extra.exe build/kernelx.exe build/jobs.exe build/security.exe \
+       build/crt_text_mode.exe build/window.exe build/winsta.exe build/scm.exe build/net.exe build/winhttp.exe build/winhttp_proxy.exe build/iphlp.exe build/winsock_nsp.exe build/midi.exe build/directinput.exe build/msvc_eh.exe build/com.exe build/msxml.exe build/vxcom.dll build/iocp.exe build/d3d11.exe build/egl_host.exe build/gl.exe build/hlslc.exe build/dxbc2msl build/vxrt-shader-manifest build/draw.exe build/compute.exe build/d3d12.exe build/d3d12_engine.exe build/d3d12_fxc.exe build/d3d11on12.exe build/input.exe build/xinput_script.exe build/audio.exe build/xaudio2.exe build/xaudio2_27.exe build/xaudio2_fx.exe build/dwrite.exe build/dxbcscan build/pipes.exe build/ipc.exe build/shared.exe build/steam.exe build/smc.exe build/order.exe build/lowmem.exe build/clip.exe build/shoplist.exe build/vulkan_win.exe build/vulkan_features.exe build/vulkan_shaders.exe build/game_imports.exe build/ucrt_extra.exe build/kernelx.exe build/jobs.exe build/security.exe \
        build/sysdlls.exe build/dbghelp.exe build/crypt32.exe build/webhelper_apis.exe build/steam_client_ui.exe build/skyrim_preset.exe build/handle_xfer.exe build/open_thread.exe build/version_info.exe build/section_access.exe build/dbfiles.exe build/updater_files.exe build/shlock.exe build/net_events.exe build/regwait.exe build/tcptable.exe build/winprops.exe build/a11y.exe build/gdi_xform.exe build/view_align.exe \
        build/client_imports.exe build/hello32.exe build/clipboard.exe build/input_route.exe build/name_reuse.exe
 
@@ -1342,6 +1342,14 @@ build/xaudio2.exe: tests/xaudio2.c
 	@mkdir -p build
 	$(MINGW) -O1 -o $@ $< -lxaudio2_9 -lm
 
+build/xaudio2_fx.exe: tests/xaudio2_fx.c
+	@mkdir -p build
+	$(MINGW) -O1 -o $@ $< -lxaudio2_9 -lole32 -luuid -lm
+
+build/xaudio2_reverb_test: tests/xaudio2_reverb_test.c src/xaudio2_reverb.h
+	@mkdir -p build
+	$(HOSTCC) -O2 -Isrc -o $@ tests/xaudio2_reverb_test.c -lm
+
 build/xaudio2_27.exe: tests/xaudio2_27.c tests/wma/m22_24k_packets.h
 	@mkdir -p build
 	$(MINGW) -O1 -Itests -o $@ $< -lole32 -luuid -lm
@@ -1860,7 +1868,7 @@ check: all build/vkmsl build/x86dec_test build/x86dec_check build/ref_x86 build/
 VXRT ?= $(VXRT_ROSETTA_TARGET)
 runtime-tests: export VXRT_ROOT = build/root
 runtime-tests: export VXRT_NO_ACTIVATE = 1
-runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d11-replay build/d3d11_capture.exe
+runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/xaudio2_reverb_test build/vxrt-d3d11-replay build/d3d11_capture.exe
 	$(VXRT) build/hello_k32.exe
 	$(VXRT) build/smc.exe
 	n=0; while [ $$n -lt 40 ]; do $(VXRT) build/smc_data_threads.exe >/dev/null || exit 1; n=$$((n+1)); done
@@ -1978,6 +1986,10 @@ runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d1
 	rm -f build/xaudio2_27.capture
 	VXRT_MUTE=1 VXRT_XAUDIO2_CAPTURE=build/xaudio2_27.capture $(VXRT) build/xaudio2_27.exe
 	python3 tests/xaudio2_wma_check.py build/xaudio2_27.capture tests/wma/m22_24k.ref.s16
+	build/xaudio2_reverb_test
+	for m in none disabled enabled; do rm -f build/xaudio2_fx_$$m.capture; VXRT_MUTE=1 VXRT_XAUDIO2_CAPTURE=build/xaudio2_fx_$$m.capture $(VXRT) build/xaudio2_fx.exe $$m || exit 1; done
+	rm -f build/xaudio2_fx_off.capture; VXRT_XAUDIO2_NO_EFFECTS=1 VXRT_MUTE=1 VXRT_XAUDIO2_CAPTURE=build/xaudio2_fx_off.capture $(VXRT) build/xaudio2_fx.exe enabled || exit 1
+	python3 tests/xaudio2_fx_check.py build/xaudio2_fx_none.capture build/xaudio2_fx_disabled.capture build/xaudio2_fx_enabled.capture build/xaudio2_fx_off.capture
 	$(VXRT) build/dwrite.exe
 	$(VXRT) build/pipes.exe
 	$(VXRT) build/pipes.exe serve & server=$$!; $(VXRT) build/pipes.exe ask; client_status=$$?; wait $$server; server_status=$$?; test $$client_status -eq 0 -a $$server_status -eq 0
