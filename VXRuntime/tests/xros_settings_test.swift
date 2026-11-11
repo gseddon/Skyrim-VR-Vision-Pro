@@ -25,6 +25,19 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         s2.predictMs = nil; s2.stageEyeHeight = nil
         check(d.object(forKey: "vxrt.predictMs") == nil && d.object(forKey: "vxrt.stageEyeHeight") == nil, "auto removes the stored value")
 
+        // picture extras: off / system default exports nothing; set, they persist and export; env wins and is clamped
+        let pd = fresh()
+        let p1 = VXSettings(defaults: pd, info: [:], environment: [:])
+        check(p1.sharpen == nil && p1.renderQuality == nil && map(p1)["VXRT_SHARPEN"] == nil && map(p1)["VXRT_RENDER_QUALITY"] == nil, "sharpen and quality default off")
+        p1.sharpen = 0.35; p1.renderQuality = 0.8
+        let p2 = VXSettings(defaults: pd, info: [:], environment: [:])
+        check(p2.sharpen == 0.35 && p2.renderQuality == 0.8 && map(p2)["VXRT_SHARPEN"] == "0.35" && map(p2)["VXRT_RENDER_QUALITY"] == "0.80", "sharpen and quality persist and export")
+        p2.sharpen = 0; check(map(p2)["VXRT_SHARPEN"] == nil, "sharpen 0 exports nothing")
+        p2.sharpen = nil; p2.renderQuality = nil
+        check(pd.object(forKey: "vxrt.sharpen") == nil && pd.object(forKey: "vxrt.renderQuality") == nil, "off removes the stored values")
+        let p3 = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_SHARPEN": "2", "VXRT_RENDER_QUALITY": "0.5"])
+        check(p3.sharpen == 1 && p3.renderQuality == 0.5, "environment wins and is clamped")
+
         // gameplay: Skyrim's own settings go out as VXRT_INI_SET only when picked; "game default" writes nothing
         d = fresh()
         s = VXSettings(defaults: d, info: [:], environment: [:])
