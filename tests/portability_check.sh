@@ -1,16 +1,14 @@
 #!/bin/sh
 # Portability regression check (make -C VXRuntime portability-check): no personal identity or machine path in the
 # committed live files, the stage manifest matches the dispatcher, and the helper tools' own tests pass.
-# History (history/, handoffs/, plans/, research/), the legacy streaming product (MacApp, VRDriver, scripts, ...) and
+# History (history/, handoffs/, plans/, research/) and
 # vendored upstream sources are not live Skyrim-path files and are not scanned. Run from anywhere.
 set -u
 R=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd); cd "$R"
 fail=0
 hits=$(git grep -nIE 'MA9VLPU826|marimokodai|gseddon\.dev|/Users/gseddon|Verantyx_VR_Drive|717AC0D2-|52B8333F-|7YNW843VY6' -- . \
   ':!history' ':!handoffs' ':!plans' ':!research' ':!third_party/xrizer/upstream' ':!tests/portability_check.sh' ':!VXRuntime/tests/xrizer_xros_fixture.md' \
-  ':!MacApp' ':!VRDriver' ':!ALVRBridge' ':!MacEncoder' ':!NativeARM' ':!VisionProClient' ':!VisionOSProto' ':!RemoteSpatialProto' \
-  ':!scripts' ':!docs/NATIVE_SETUP.md' ':!docs/SETUP.md' ':!docs/TESTFLIGHT.md' ':!docs/VXRT.md' ':!docs/README_ja.md' ':!docs/VERANTYX_UPSTREAM_README.md' \
-  ':!.github' ':!provenance' ':!games' ':!tests/launch_vxrt_windows_steam_test.sh' || true)
+  ':!docs/VERANTYX_UPSTREAM_README.md' ':!provenance' || true)
 if [ -n "$hits" ]; then echo "portability-check: personal identity or machine path in committed files:"; echo "$hits"; fail=1; fi
 keys=$(git grep -nIE 'NEXUS_API_KEY=["'"'"']?[A-Za-z0-9+/_=-]{16,}' -- . ':!tests/portability_check.sh' || true)
 if [ -n "$keys" ]; then echo "portability-check: a Nexus API key in committed files (lines not shown)"; fail=1; fi

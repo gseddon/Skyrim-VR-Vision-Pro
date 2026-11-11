@@ -10,7 +10,7 @@
 // it applies however deep in the process tree the program starts. Each process it changes says so in the log, with
 // what it added.
 //
-// The Windows Steam launcher (scripts/launch_vxrt_windows_steam.sh) uses it for steamwebhelper.exe's
+// The former Windows Steam launcher script used it for steamwebhelper.exe's
 // --single-process and --disable-software-rasterizer, which no Steam client option sets (2026-10-24:
 // -cef-single-process and -cef-in-process-gpu add nothing to the webhelper's command line; the client's own
 // -cef-disable-gpu and -cef-disable-sandbox do their part). Chromium's renderer, GPU and utility processes talk Mojo
