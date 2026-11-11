@@ -10,7 +10,7 @@
 //   VXRT_STEREO_WINDOW=sbs   what the Mac window shows: sbs (both eyes squeezed side by side), anaglyph (red/cyan),
 //                            left, right, flat (the game's picture)
 //   VXRT_STEREO_STREAM=<file>|1   both eyes side by side (full width each, BGRA8) into the Mac encoder's shared frame
-//                            file (1: $VERANTYX_SHARED_FRAME or ~/Verantyx_VR_Drive/vr_stereo_frame.dat), with
+//                            file (1: $VXRT_SHARED_FRAME, else $VERANTYX_SHARED_FRAME, else $VXRT_DRIVE/vr_stereo_frame.dat), with
 //                            captureSourceMode 3 ("a flat game in stereo": the headset shows it on a virtual screen)
 //   VXRT_STEREO_SHOT=<dir>   writing a count N to <dir>/now: the next N frames' eyes as <dir>/<n>-sbs.png and
 //                            <n>-anaglyph.png, a line each in <dir>/shots.txt; while <dir>/pause exists (looked
@@ -235,9 +235,10 @@ int vx_stereo_on(void) {
                        !strcmp(w, "right") ? 4 : 0;
         const char *s = getenv("VXRT_STEREO_STREAM");
         if (s && !strcmp(s, "1")) {
-            const char *f = getenv("VERANTYX_SHARED_FRAME"), *home = getenv("HOME");
+            const char *f = getenv("VXRT_SHARED_FRAME"), *drive = getenv("VXRT_DRIVE");
+            if (!f || !*f) f = getenv("VERANTYX_SHARED_FRAME");   // (the name the Mac encoder reads)
             if (f && *f) snprintf(g_cfg.stream, sizeof g_cfg.stream, "%s", f);
-            else snprintf(g_cfg.stream, sizeof g_cfg.stream, "%s/Verantyx_VR_Drive/vr_stereo_frame.dat", home ? home : "/tmp");
+            else snprintf(g_cfg.stream, sizeof g_cfg.stream, "%s/vr_stereo_frame.dat", drive && *drive ? drive : "/tmp");
         } else if (s && *s && strcmp(s, "0")) snprintf(g_cfg.stream, sizeof g_cfg.stream, "%s", s);
         const char *d = getenv("VXRT_STEREO_SHOT");
         if (d && *d) snprintf(g_cfg.shot, sizeof g_cfg.shot, "%s", d);
