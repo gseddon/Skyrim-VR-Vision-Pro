@@ -25,3 +25,10 @@ export SKYRIM_ASSET_ROOT="$HOME/path/to/steamapps/common/SkyrimVR"
 # export XROS_GAME_FW=...                           # default: $VXRT_PRIVATE_ROOT/game_fw-xros  (the aot stage's output)
 # export XROS_SHADER_DIR=...                        # default: $VXRT_PRIVATE_ROOT/shadercache-xros-manifest
 # export XRIZER_RUST_ROOT=...                       # default: <checkout>/build/toolchains/xrizer-rust (tools/setup_rust.sh)
+
+# --- Nexus Mods (optional) ---------------------------------------------------------------------------------------------
+# Not needed: without a key, `tools/vxrt_build.py mods-fetch` asks you to download in the browser and picks the file up from ~/Downloads.
+# Your personal API key: nexusmods.com > Site preferences > API Keys. Not your password (the API has no password login).
+# Never commit it. Put it here directly, or read it from a password manager, for example 1Password:
+# export NEXUS_API_KEY="YOUR_KEY"
+# export NEXUS_API_KEY="$(op item get "Nexus Mods" --vault Private --fields label=apikey --reveal 2>/dev/null)"   # item needs a field labelled "apikey"
