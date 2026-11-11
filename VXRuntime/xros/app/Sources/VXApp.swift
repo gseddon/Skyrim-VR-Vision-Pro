@@ -342,6 +342,12 @@ struct VXLayerConfiguration: CompositorLayerConfiguration {
         let layouts = capabilities.supportedLayouts(options: [])
         configuration.layout = layouts.contains(.dedicated) ? .dedicated : (layouts.first ?? .dedicated)
         configuration.isFoveationEnabled = false
+        // VXRT_RENDER_QUALITY=0..1 (unset: the system default, as before): the drawable's resolution (visionOS 26 CompositorServices render quality; it sets the
+        // size of the textures the compositor gives us, so the game's size, VXRT_RENDER_SCALE of it, moves too). Logged: default, max and the value used.
+        if #available(visionOS 26.0, *), let e = ProcessInfo.processInfo.environment["VXRT_RENDER_QUALITY"], let q = Float(e), q >= 0, q <= 1 {
+            configuration.maxRenderQuality = .init(q)
+            vxrt_jlog("render_quality_config", "\"default\":\(capabilities.defaultRenderQuality),\"max\":\(q)")
+        }
         let colors = capabilities.supportedColorFormats(options: [])
         if colors.contains(.bgra8Unorm_srgb) { configuration.colorFormat = .bgra8Unorm_srgb }
         if capabilities.supportedDepthFormats.contains(.depth32Float) { configuration.depthFormat = .depth32Float }

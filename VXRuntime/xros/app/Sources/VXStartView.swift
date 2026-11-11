@@ -190,6 +190,24 @@ struct VXSettingsPage: View {
                             note(settings.upscale == .metalfx
                                  ? "Apple's MetalFX spatial upscaler brings the game's picture up to the display's size: sharper than plain scaling."
                                  : "The display's own sampler stretches the picture: softer, with no extra work.")
+                            Toggle("Sharpening off", isOn: Binding(get: { settings.sharpen == nil }, set: { settings.sharpen = $0 ? nil : 0.35 }))
+                            if let v = settings.sharpen {
+                                HStack {
+                                    Text("Sharpening")
+                                    Slider(value: Binding(get: { v }, set: { settings.sharpen = $0 }), in: VXSettings.unitRange, step: 0.05)
+                                    Text(String(format: "%.2f", v)).font(.system(.body, design: .monospaced)).frame(width: 70)
+                                }
+                            }
+                            note("A light sharpening pass on the final picture. Off by default; about 0.35 is a start. Next launch.")
+                            Toggle("Display quality: system default", isOn: Binding(get: { settings.renderQuality == nil }, set: { settings.renderQuality = $0 ? nil : 1.0 }))
+                            if let q = settings.renderQuality {
+                                HStack {
+                                    Text("Display quality")
+                                    Slider(value: Binding(get: { q }, set: { settings.renderQuality = $0 }), in: VXSettings.unitRange, step: 0.05)
+                                    Text(String(format: "%.2f", q)).font(.system(.body, design: .monospaced)).frame(width: 70)
+                                }
+                            }
+                            note("The size of the picture the system gives the app to fill. Higher is finer but heavier; the game's own size is a share of it, so lower Resolution to match. Next launch.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                     GroupBox("Latency") {
