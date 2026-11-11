@@ -1,11 +1,11 @@
 #!/bin/bash
 # Render-scale sweep on the physical Vision Pro: is Skyrim VR limited by pixel count?
-# Subject: the actual game (Helgen cart ride) in the signed app gseddon.dev.vxrt.SkyrimVR on the device.
+# Subject: the actual game (Helgen cart ride) in the signed Skyrim VR app on the device.
 # The headset MUST be worn and unlocked for the whole sweep: when it comes off the system invalidates the
 # compositor layer and all frames stop (plans/2026-11-10-skyrim-device-readiness.md, runs A, "off-head").
 #
 # usage: tools/device_scale_sweep.sh [out-dir]
-#   env: DEV          device UUID (default: the paired Vision Pro)
+#   env: DEV          device UUID (default: $VXRT_DEVICE_ID)
 #        ORDER        scales in run order (default "0.5 0.7 1.0")
 #        PROFILE=1    also set VXRT_GPU_PROFILE=1 (per-pass GPU time) for every arm; use ORDER="0.7 0.5" in a separate sweep
 #                     (the profile counters may perturb timing, so do not mix profiled and unprofiled arms)
@@ -20,8 +20,9 @@
 # the end with the app not running (retries); its per-arm part is found by the launch pid.
 # Then: tools/device_scale_analyze.py <out-dir>
 set -u
-DEV=${DEV:-52B8333F-A6DD-5405-B626-CDE9C2C16CC5}
-BID=gseddon.dev.vxrt.SkyrimVR
+DEV=${DEV:-${VXRT_DEVICE_ID:-}}
+[ -n "$DEV" ] || { echo 'set DEV or VXRT_DEVICE_ID (xcrun devicectl list devices)' >&2; exit 2; }
+BID=${BID:-${XROS_BUNDLE_PREFIX:-dev.example.vxrt}.SkyrimVR}
 ORDER=${ORDER:-"0.5 0.7 1.0"}
 RUN_SECS=${RUN_SECS:-100}
 OUT=${1:-/tmp/claude/perf/pixeltest/sweep-$(date +%Y%m%d-%H%M)}

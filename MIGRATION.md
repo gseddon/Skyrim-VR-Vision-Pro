@@ -1,19 +1,16 @@
 # Workspace and source-control migration
 
-8 November 2026. One repository is sufficient for the standalone project and its pinned source dependencies. The source, approved plan and all new implementation work are now in `gseddon/Skyrim-VR-Vision-Pro`.
+8 November 2026. One repository is sufficient for the standalone project and its pinned source dependencies. The source, approved plan and all new implementation work are now in this repository.
 
 | Location | Role |
 | --- | --- |
-| `/Users/gseddon/git/Skyrim-VR-Vision-Pro` | Integration checkout, branch `codex/standalone-import` |
+| the main checkout of this repository | Integration checkout, branch `codex/standalone-import` |
 | `build/worktrees/terra-guest-stereo` in this repository | Terra A: guest graphics/ABI, branch `codex/terra-guest-stereo` |
 | `build/worktrees/terra-pose-input` in this repository | Terra B: poses/input, branch `codex/terra-pose-input` |
 | `build/worktrees/terra-skyrim-aot` in this repository | Actual Skyrim/AOT checkout (parent orchestration while Terra C is stopped), branch `codex/terra-skyrim-aot` |
-| `/Users/gseddon/git/VeRantyx/build/worktrees/native-darwin-aot` | Previous implementation checkout; read-only reference for private artifacts and earlier evidence |
-| `build/toolchains/xrizer-rust` in this repository (git-ignored) | Rust/Cargo toolchain (rustc 1.99.1), moved here on 2026-11-10 from `/Users/gseddon/git/VeRantyx/build/toolchains/xrizer-rust` (historical location). Default of `XRIZER_RUST_ROOT`; scripts source `third_party/xrizer/rust-env.sh` |
+| `build/toolchains/xrizer-rust` in this repository (git-ignored) | Rust/Cargo toolchain (rustc 1.99.1); installed by `tools/setup_rust.sh`. Default of `XRIZER_RUST_ROOT`; scripts source `third_party/xrizer/rust-env.sh` |
 
 The approved round starts from `8eb61b4` (implementation checkpoint `fc17152` plus the approved plan). The three new agents are Terra; historical workers remain idle. New tests/builds/evidence stay in each new worktree's ignored output paths. Private game inputs are copied only when needed and checked by hash; unchanged AOT modules may be reused by explicit immutable paths after matching descriptors/bases. No old worktree is reset, removed or repointed.
-
-The other original VeRantyx checkouts remain preserved: main checkout, `skyrim-vr` and `native-darwin-{mac,headset,contract}`. No source synchronization back into them is required now.
 
 GitHub authentication for this repository uses its own `GH_CONFIG_DIR` under the integration checkout's `.git/gh-auth` and a repository-local HTTPS credential helper. No credentials are committed. Existing global/work account configuration is preserved. Use that environment for `gh` operations on this repository; ordinary Git uses the local helper.
 

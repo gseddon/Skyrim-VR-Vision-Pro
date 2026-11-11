@@ -12,13 +12,13 @@
 #   3. UserSettings.json (lowest settings) into Documents/root/drive_c/users/vxrt/AppData/Local/CD Projekt Red/
 #      Cyberpunk 2077 - from the Mac's settings copy, never UserSettings.orig.json; saves and Steam config not copied
 #
-#   GAME=<install>  (default: the Windows Steam install under ~/Verantyx_VR_Drive/vxrt_wsteam)
+#   GAME=<install>  (required: the Windows install of the game)
 #   SETTINGS=<UserSettings.json>  DEV=<device id>  RATE_MBS=<measured devicectl MB/s, default 40>
 set -e
 cd "$(dirname "$0")/.."
-DEV=${DEV:-717AC0D2-8713-5537-8D5F-A611235E7D35}
-APP=gseddon.dev.vxrt.VXRuntimeHost
-GAME=${GAME:-$HOME/Verantyx_VR_Drive/vxrt_wsteam/drive_c/Program Files (x86)/Steam/steamapps/common/Cyberpunk 2077}
+DEV=${DEV:-${VXRT_DEVICE_ID:-}}
+APP=${APP:-${XROS_BUNDLE_PREFIX:-dev.example.vxrt}.VXRuntimeHost}
+GAME=${GAME:-}
 SETTINGS=${SETTINGS:-}
 ARENA=${XROS_ARENA:-0x7000000000}
 RATE=${RATE_MBS:-40}
@@ -26,7 +26,7 @@ DST_GAME="Documents/root/drive_c/Program Files (x86)/Steam/steamapps/common/Cybe
 DST_SET="Documents/root/drive_c/users/vxrt/AppData/Local/CD Projekt Red/Cyberpunk 2077"
 RUN=0; [ "$1" = "--run" ] && RUN=1
 
-[ -d "$GAME" ] || { echo "no install at $GAME"; exit 1; }
+[ -d "$GAME" ] || { echo "no install at '$GAME' (set GAME=<install dir>)"; exit 1; }
 mb() { du -sm "$1" 2>/dev/null | cut -f1; }
 echo "== Cyberpunk 2077 on the Vision Pro: plan ($( [ $RUN = 1 ] && echo RUN || echo 'dry run: nothing is copied' ))"
 total=$(mb "$GAME")
@@ -44,7 +44,7 @@ for p in $(printf '%s\n' "$pes" | tr ' ' '\037'); do
 done
 [ "$img" -gt 0 ] && echo "images: $npe PE files, $((img >> 20)) MB of address space in the arena at $ARENA (XROS_ARENA_MB must hold it)" \
                  || echo "images: $npe PE files (sizes: run vxrt-aot analyze; the arena at $ARENA)"
-mac_aot=$HOME/Verantyx_VR_Drive/wt/avp-preflight/VXRuntime/build/aot
+mac_aot=${MAC_AOT:-build/aot}
 [ -d "$mac_aot" ] && echo "AOT modules on the Mac today: $(ls "$mac_aot" | wc -l | tr -d ' ') dylibs, $(mb "$mac_aot") MB (made for the Mac's arena: made again for $ARENA)"
 fwmb=$(( $( [ -d "$mac_aot" ] && mb "$mac_aot" || echo 1300 ) ))
 echo "app with the modules as frameworks: about $((fwmb + 25)) MB (install: devicectl device install app)"

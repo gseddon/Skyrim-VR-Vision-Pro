@@ -63,7 +63,7 @@ For games whose executable is wrapped in Steam's DRM (SteamStub): the wrapper is
 you are signed in to, running on the same "machine" (the same `VXRT_ROOT` registry and VXRuntime's named objects).
 Every other game keeps using the Mac Steam client through the bridge (`VXRT_STEAM_BRIDGE=1`). How it is meant to be used:
 
-1. Windows Steam lives in a VXRuntime root of its own, `~/Verantyx_VR_Drive/vxrt_wsteam` (`VXRT_WSTEAM_ROOT`), at
+1. Windows Steam lives in a VXRuntime root of its own, `<VXRT_DRIVE>/vxrt_wsteam` (`VXRT_WSTEAM_ROOT`), at
    `drive_c/Program Files (x86)/Steam`, never in the Wine prefix. Installing it there (Valve's installer on
    VXRuntime) is a later step: it downloads Steam from Valve, so it waits for your go-ahead.
 2. `scripts/launch_vxrt_windows_steam.sh [<Windows Steam folder>]` (`VXRT_WSTEAM_SILENT=1` for `-silent`) starts it,
@@ -140,10 +140,10 @@ fixes: Chromium's DevTools server (Steam's `-cef-enable-debugging`) listened on 
 (no WSAEnumNetworkEvents for its FD_ACCEPT event).
 
 Steam updates itself here as on Windows (2026-10-25: from the 2026-09-03 client, 1788652215, to 1792618285, Valve's
-download). Those runs were made in `~/Verantyx_VR_Drive/vxrt_wsteam` itself, not in a copy, two of them with
+download). Those runs were made in `<VXRT_DRIVE>/vxrt_wsteam` itself, not in a copy, two of them with
 `-forcesteamupdate -forcepackagedownload` (Steam downloads its packages again and reinstalls them over its files);
 the user had approved the download of Steam's update and, told afterwards about the runs in the root and the two forced reinstalls, said to go on (2026-10-25). Trying changes, run
-Steam in an APFS copy of the root instead (`cp -c -R ~/Verantyx_VR_Drive/vxrt_wsteam <scratch>/wsteam_root`, then
+Steam in an APFS copy of the root instead (`cp -c -R <VXRT_DRIVE>/vxrt_wsteam <scratch>/wsteam_root`, then
 `VXRT_WSTEAM_ROOT=<scratch>/wsteam_root scripts/launch_vxrt_windows_steam.sh`), so whatever Steam writes (logs, web
 cache, its own updates) lands in the copy, and without those two options: Steam's own update check is enough. The
 bootstrapper checks at once when the last run did not end cleanly (its `.crash` file is still there: "Checking for

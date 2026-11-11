@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "contract": "tools/vxrt_build.py <stage> [--force] [--json]. Inputs come from the environment (or local/env.sh, read by the dispatcher; the real environment wins) and arguments; every output is under VXRT_PRIVATE_ROOT (default build/private) except the toolchain and the built app; exit 0 = the stage's outputs exist and were checked, 2 = a missing input (the message names it and the stage that makes it), 1 = the stage ran and failed. A stage whose outputs already exist and match does nothing (idempotent); --force redoes it. `tools/vxrt_build.py list --json` prints this file with each stage's current state.",
+  "env": {
+    "VXRT_PRIVATE_ROOT": "everything derived from the player's game; default <checkout>/build/private",
+    "SKYRIM_ASSET_ROOT": "the player's SkyrimVR folder (read only)",
+    "STEAMVR_WIN64_DLLS": "SteamVR bin/vrwebhelper/win64 (read only; msvcp140.dll)",
+    "XROS_TEAM_ID": "Apple Developer Team ID (paid), signed builds only",
+    "XROS_BUNDLE_PREFIX": "reverse-DNS prefix; the app is <prefix>.SkyrimVR",
+    "VXRT_DEVICE_ID": "CoreDevice id of the Vision Pro (xcrun devicectl list devices)"
+  },
+  "stages": [
+    {
+      "name": "toolchain",
+      "summary": "Rust 1.99.1 with the Apple targets plus the locked crates, and (--with-steamless) Steamless built with a private .NET 8 SDK",
+      "inputs": [],
+      "outputs": ["${XRIZER_RUST_ROOT}/cargo/bin/rustc"],
+      "network": true,
+      "network_note": "static.rust-lang.org, crates.io; with --with-steamless also github.com/atom0s/Steamless (CC BY-NC-ND 4.0) and dot.net, the .NET SDK and NuGet. Asks before downloading Steamless unless --yes",
+      "idempotent": "setup_rust.sh --check passes (and steamless-bin exists for --with-steamless)"
+    },
+    {
+      "name": "prepare",
+      "summary": "Unpack the player's own SkyrimVR.exe with Steamless (hash-checked) and collect the pipeline's input DLLs",
+      "inputs": [{"env": "SKYRIM_ASSET_ROOT"}, {"env": "STEAMVR_WIN64_DLLS"}, {"stage": "toolchain", "path": "${VXRT_PRIVATE_ROOT}/skyrim-tools/steamless-bin/Steamless.CLI.dll", "needs": "toolchain --with-steamless"}],
+      "outputs": ["${VXRT_PREPARED_EXE}", "${VXRT_AOT_INPUTS}/msvcp140.dll", "${VXRT_REDIST_DIR}/d3dx9_42.dll"],
+      "network": false,
+      "idempotent": "the prepared exe already has the pinned hash and the inputs match their pins"
+    },
+    {
+      "name": "aot",
+      "summary": "Compile the prepared exe and DLLs to ARM64 frameworks for the headset (tools/skyrim_aot_pipeline.py --target xros)",
+      "inputs": [{"env": "SKYRIM_ASSET_ROOT"}, {"stage": "prepare", "path": "${VXRT_PREPARED_EXE}"}],
+      "outputs": ["${VXRT_PRIVATE_ROOT}/game_fw-xros"],
+      "network": false,
+      "idempotent": "game_fw-xros exists (a module cache makes a --force rebuild cheap)"
+    },
+    {
+      "name": "shaders",
+      "summary": "Build the Metal shader set for the headset from the committed hash manifest and the player's Main.bsa",
+      "inputs": [{"env": "SKYRIM_ASSET_ROOT"}],
+      "outputs": ["${VXRT_PRIVATE_ROOT}/shadercache-xros-manifest/.complete"],
+      "network": false,
+      "idempotent": "make xros-shader-set reports the set is up to date"
+    },
+    {
+      "name": "app",
+      "summary": "Build, and sign with the player's team, the Skyrim VR app for visionOS; --install installs it with devicectl",
+      "inputs": [{"env": "XROS_TEAM_ID", "unless": "--unsigned"}, {"env": "XROS_BUNDLE_PREFIX", "unless": "--unsigned"}, {"stage": "aot", "path": "${VXRT_PRIVATE_ROOT}/game_fw-xros"}, {"stage": "shaders", "path": "${VXRT_PRIVATE_ROOT}/shadercache-xros-manifest/.complete"}, {"stage": "toolchain", "path": "${XRIZER_RUST_ROOT}/cargo/bin/rustc"}, {"env": "VXRT_DEVICE_ID", "only": "--install"}],
+      "outputs": ["${REPO}/VXRuntime/build/xros-xrizer-fixture/derived/Build/Products/Debug-xros/VXRuntimeHost.app"],
+      "network": false,
+      "idempotent": "make decides (incremental)"
+    },
+    {
+      "name": "stage-to-device",
+      "summary": "Copy the game tree (Data, ini files, prepared exe, DLLs; about 14 GB) into the app's container on the headset",
+      "inputs": [{"env": "VXRT_DEVICE_ID"}, {"env": "XROS_BUNDLE_PREFIX"}, {"env": "SKYRIM_ASSET_ROOT"}, {"stage": "prepare", "path": "${VXRT_PREPARED_EXE}"}],
+      "outputs": ["(on the headset) Documents/root/SkyrimVR"],
+      "network": false,
+      "device": true,
+      "idempotent": "only files missing on the headset or of another size are sent; dry run unless --run"
+    },
+    {
+      "name": "mods",
+      "summary": "Build a data-only mod pack from a mods list (tools/mods.py build); --deploy copies it to the headset",
+      "inputs": [{"arg": "--list <mods-list.json>"}],
+      "outputs": ["${VXRT_PRIVATE_ROOT}/mods-pack"],
+      "network": false,
+      "device": "only with --deploy",
+      "idempotent": "rebuilds the pack from the list (--force to replace an existing one)"
+    }
+  ]
+}

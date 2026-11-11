@@ -45,3 +45,6 @@ VXRuntime/tests/shaders12/*.h
 .env.*
 *.pem
 *.key
+
+# Personal settings (team, bundle prefix, device id, private paths): copy local.example.sh to local/env.sh
+/local/

@@ -4,8 +4,9 @@
 # usage: tools/pull_host_log.sh <destination file> [device] [bundle id]      (never while another devicectl copy is running)
 set -u
 DEST=${1:?destination file}
-DEV=${2:-${DEV:-52B8333F-A6DD-5405-B626-CDE9C2C16CC5}}
-BID=${3:-gseddon.dev.vxrt.SkyrimVR}
+DEV=${2:-${DEV:-${VXRT_DEVICE_ID:-}}}
+[ -n "$DEV" ] || { echo 'pull_host_log: set DEV or VXRT_DEVICE_ID (xcrun devicectl list devices)' >&2; exit 2; }
+BID=${3:-${BID:-${XROS_BUNDLE_PREFIX:-dev.example.vxrt}.SkyrimVR}}
 LIST=$(mktemp -t hostloglist).json
 xcrun devicectl --timeout 60 device info files --device "$DEV" --domain-type appDataContainer --domain-identifier "$BID" \
   --subdirectory Documents --no-recurse --search host_log --json-output "$LIST" >/dev/null 2>&1 || { echo "pull_host_log: file listing failed" >&2; exit 2; }

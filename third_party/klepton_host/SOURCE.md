@@ -7,7 +7,7 @@ Klepton (MIT, Copyright (c) 2026 Max Thomas; license text `third_party/klepton_o
 
 | Repository | Revision | Use |
 | --- | --- | --- |
-| `https://github.com/myMartek/Klepton` (the fork AVP Play builds the user's `gseddon.dev.klepton.target.*` apps from) | `a7bad301c10b03e7d615ae8d51033146c373bcb5` (2026-11-10, "Merge #122") | read in a shallow clone under the git-ignored `build/private/klepton-src/`; not vendored |
+| `https://github.com/myMartek/Klepton` (the fork AVP Play builds the user's own `<their prefix>.klepton.target.*` apps from) | `a7bad301c10b03e7d615ae8d51033146c373bcb5` (2026-11-10, "Merge #122") | read in a shallow clone under the git-ignored `build/private/klepton-src/`; not vendored |
 | `https://github.com/shinyquagsire23/Klepton` (upstream) | `1fe7e6caf6bb8bc90c1a5e61d5b9bfc6e110fa32` | the earlier pin of `third_party/klepton_openxr/SOURCE.md`; not fetched again |
 
 Files read in the fork, `visionos/Sources/` (SHA-256 of the fork's copies): `KleptonControllers.swift`
