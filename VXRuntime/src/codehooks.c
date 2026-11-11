@@ -38,6 +38,7 @@ static uint8_t *g_region; static size_t g_region_size, g_region_used;
 static const vx_image *g_region_image;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_region_failed;
+static int g_preload_active;                                   // (while the preload list runs: see vx_exec_region_free)
 
 static uint32_t rd32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static uint16_t rd16(const uint8_t *p) { uint16_t v; memcpy(&v, p, 2); return v; }
@@ -96,7 +97,10 @@ size_t vx_exec_region_free(const void *addr, uint8_t **base) {
     if (g_region) {
         size_t at = (g_region_used + 0xffff) & ~(size_t)0xffff;
         const uint8_t *a = addr;
-        if (at < g_region_size && a >= g_region + at && a < g_region + g_region_size) { *base = g_region + at; r = g_region_size - at; }
+        // (the extender searches downward from the program, and again from its own DLL, for room within 2 GB: the unserved part of the
+        //  region answers any query within 1.5 GB of it, above or below, so the order of the images in the arena does not matter)
+        const uint8_t *lo = g_region > (uint8_t *)0x60000000ull ? g_region - 0x60000000ull : g_region, *hi = g_region + 0x60000000ull;
+        if (at < g_region_size && ((a >= g_region + at && a < g_region + g_region_size) || (g_preload_active && a >= lo && a < hi))) { *base = g_region + at; r = g_region_size - at; }
     }
     pthread_mutex_unlock(&g_lock);
     return r;
@@ -339,7 +343,9 @@ static void preload_now(void) {
     if (!list || !*list) return;
     void *(WINAPI *load)(const char *) = (void *(WINAPI *)(const char *))vx_find_export("kernel32.dll", "LoadLibraryA");
     if (!load) return;
-    snapshot();
+    // (the pre-preload copy of the executable sections is 57+ MB for the game: only a capture or the watcher needs it)
+    if (getenv("VXRT_CODE_CAPTURE") || (getenv("VXRT_CODE_WATCH") && atoi(getenv("VXRT_CODE_WATCH")) > 0)) snapshot();
+    g_preload_active = 1;                                      // (only while the extender runs its start-up: see vx_exec_region_free)
     char *copy = strdup(list), *save = NULL;
     for (char *p = strtok_r(copy, ";", &save); p; p = strtok_r(NULL, ";", &save)) {
         void *h = load(p);
@@ -347,6 +353,7 @@ static void preload_now(void) {
         if (!h && !getenv("VXRT_PRELOAD_OPTIONAL")) { vx_log("codehooks: preload failed; stopping"); exit(3); }
     }
     free(copy);
+    g_preload_active = 0;
     int watching = getenv("VXRT_CODE_WATCH") && atoi(getenv("VXRT_CODE_WATCH")) > 0;
     if (getenv("VXRT_CODE_CAPTURE") && getenv("VXRT_CODE_CAPTURE_AT")) {
         pthread_t t; pthread_create(&t, NULL, capture_at_thread, (void *)(intptr_t)atoi(getenv("VXRT_CODE_CAPTURE_AT"))); pthread_detach(t);
