@@ -1,6 +1,6 @@
 # Third-party notices
 
-This repository preserves VeRantyx-authored source and its notices, with the following third-party components and local adaptations:
+This repository derives from [Ag3497120/VeRantyx](https://github.com/Ag3497120/VeRantyx) (MIT; independent source-only import, no upstream history; port base commit `138b1731ac998c88ea911f7742b5921a2489fd4c`; file hashes in `provenance/source-import-2026-11-08.json`). It preserves VeRantyx-authored source and its notices, with the following third-party components and local adaptations:
 
 - `VXRuntime/tests/openvr/openvr.h` (with its `LICENSE`) is the OpenVR SDK
   header, Copyright (c) Valve Corporation, used under the BSD-3-Clause license

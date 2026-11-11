@@ -126,7 +126,7 @@ def delegate(game, goal, lang, tool):
         # (run_game takes minutes: Claude Code's MCP tool timeout raised to 15 min)
         line = f'MCP_TOOL_TIMEOUT=900000 claude --mcp-config .mcp.json "$(cat {q(stem + ".md")})"'
     elif tool == "gemini":
-        # (the vxrt server and its 15-minute timeout come from .gemini/settings.json; GEMINI.md brings AGENTS.md)
+        # (the vxrt server and its 15-minute timeout come from .gemini/settings.json)
         line = f'gemini --prompt-interactive "$(cat {q(stem + ".md")})"'
     elif tool == "cursor":
         # (Cursor's agent reads .cursor/mcp.json, .cursor/rules and AGENTS.md)

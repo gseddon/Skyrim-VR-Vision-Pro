@@ -34,7 +34,7 @@ Device readiness (2026-11-10): the gaps, staged sequence (controller fixture, Sk
 The source-only checkpoint is published in `gseddon/Skyrim-VR-Vision-Pro`, branch
 `codex/standalone-import`, initial commit `a17ccd6`. The new checkout is
 `/Users/gseddon/git/Skyrim-VR-Vision-Pro`. The approved round now uses three Terra worktrees inside this new repository;
-see `MIGRATION.md`. The previous VeRantyx implementation checkout is a read-only
+the checkout list (`MIGRATION.md`, removed in the cleanup; see git history) applied then. The previous VeRantyx implementation checkout is a read-only
 reference for private artifacts and immutable evidence. Private game inputs, translated game code,
 toolchains and raw run evidence remain local. One source repository is sufficient.
 
