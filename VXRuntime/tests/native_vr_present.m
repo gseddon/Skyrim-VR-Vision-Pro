@@ -79,11 +79,11 @@ int main(void) { @autoreleasepool {
     fprintf(stderr,"dark bytes 1,2,2 via linear label on sRGB drawable (double encode): %u %u %u\n",p[0],p[1],p[2]);
     assert(p[0]>=12 && p[1]>=20);
     /* Sharpness under a fractional shift (the shimmer investigation): a 4-texel-period wave (1-texel stripes at Nyquist vanish under any filter), the head turned so the image moves half a texel.
-     * Bilinear loses about half the contrast; VXRT_REPROJ_FILTER=bicubic (Catmull-Rom) keeps more. */
+     * Bilinear (VXRT_REPROJ_FILTER=bilinear) loses about half the contrast; the default, bicubic (Catmull-Rom), keeps more. */
     uint8_t stripes[16*16*4]; for (int y=0;y<16;y++) for (int x=0;x<16;x++) { int i=(y*16+x)*4; stripes[i]=stripes[i+1]=stripes[i+2]=(uint8_t)lrintf(127.5f+127.5f*sinf((float)M_PI*0.5f*(float)x)); stripes[i+3]=255; }
     [l replaceRegion:MTLRegionMake2D(0,0,16,16) mipmapLevel:0 withBytes:stripes bytesPerRow:64];
     [r replaceRegion:MTLRegionMake2D(0,0,16,16) mipmapLevel:0 withBytes:stripes bytesPerRow:64];
-    const char *filter=getenv("VXRT_REPROJ_FILTER"); int bicubic=filter && !strcmp(filter,"bicubic");
+    const char *filter=getenv("VXRT_REPROJ_FILTER"); int bicubic=!(filter && !strcmp(filter,"bilinear"));   /* bicubic is the default */
     pair(l,r,VX_NATIVE_VR_COLOR_LINEAR,1);
     for (int step=0; step<2; step++) {
         float angle = step ? 0.0625f : 0.f;        // 8 texels per unit of tangent: 0.0625 rad is half a texel

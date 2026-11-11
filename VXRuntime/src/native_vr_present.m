@@ -222,7 +222,7 @@ static NSString *const g_native_shader = @
 " if (mr.y>.5) { float2 g=guv; float lx=mi.x, rx=1-mi.y, ty=mi.z, by=1-mi.w; float2 hc=float2((lx+rx)*.5,(ty+by)*.5), he=float2((rx-lx)*.5,(by-ty)*.5);\n"
 "  float r=mr.x*min(he.x,he.y); float2 qq=abs(g-hc)-he+r; float sd=length(max(qq,0.))+min(max(qq.x,qq.y),0.)-r; if (abs(sd)<.0016) c=float3(1,0,1); }\n"
 " return c; }\n"
-/* VXRT_REPROJ_FILTER=bicubic: Catmull-Rom (the 5-tap form: four bilinear taps around the centre plus the centre) instead of bilinear. A bilinear
+/* VXRT_REPROJ_FILTER=bicubic (the default; =bilinear selects the plain filter): Catmull-Rom (the 5-tap form: four bilinear taps around the centre plus the centre) instead of bilinear. A bilinear
  * resample at a fractional offset low-passes the picture (a half-texel shift keeps about 56% of the fine-detail energy, a whole texel 100%), and the
  * reprojected repeats of a pair sit at a different fraction every compositor frame: the sharpness pulses, which reads as shimmer on foliage. */
 "float4 catmull(texture2d<float> img, sampler smp, float2 uv) {\n"
@@ -300,8 +300,8 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
         for (int k=0; k<3; k++) p.rot[r*4+c] += source[r*4+k] * view[k*4+c];
     memcpy(p.src, g_native_frame.pose.frustum[eye], sizeof p.src);
     memcpy(p.dst, tan, sizeof p.dst);
-    {   static int bicubic = -1;                 // VXRT_REPROJ_FILTER=bicubic|bilinear (default bilinear)
-        if (bicubic < 0) { const char *f = getenv("VXRT_REPROJ_FILTER"); bicubic = f && !strcmp(f, "bicubic"); if (bicubic) vx_log("reprojection filter: Catmull-Rom (VXRT_REPROJ_FILTER=bicubic)"); }
+    {   static int bicubic = -1;                 // VXRT_REPROJ_FILTER=bicubic|bilinear (default bicubic)
+        if (bicubic < 0) { const char *f = getenv("VXRT_REPROJ_FILTER"); bicubic = !(f && !strcmp(f, "bilinear")); if (bicubic) vx_log("reprojection filter: Catmull-Rom (the default; VXRT_REPROJ_FILTER=bilinear selects bilinear)"); }
         p.probe[1] = bicubic ? 1.f : 0.f;
     }
     p.bounds[0]=e->u_min; p.bounds[1]=e->v_min; p.bounds[2]=e->u_max; p.bounds[3]=e->v_max;
