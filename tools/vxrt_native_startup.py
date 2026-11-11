@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-CODE_HOOK_ENV = {'VXRT_PRELOAD', 'VXRT_EXEC_REGION', 'VXRT_CODE_VERIFY', 'VXRT_CODE_CAPTURE', 'VXRT_PRELOAD_EXIT', 'VXRT_CODE_CAPTURE_AT', 'VXRT_CODE_CAPTURE_EXIT', 'VXRT_CODE_WATCH', 'VXRT_AOT_STRICT'}   # (VXRuntime/src/codehooks.c: SKSE VR preload, capture and verify)
+CODE_HOOK_ENV = {'VXRT_PRELOAD', 'VXRT_EXEC_REGION', 'VXRT_CODE_VERIFY', 'VXRT_CODE_CAPTURE', 'VXRT_PRELOAD_EXIT', 'VXRT_CODE_CAPTURE_AT', 'VXRT_CODE_CAPTURE_EXIT', 'VXRT_CODE_WATCH', 'VXRT_AOT_STRICT', 'VXRT_AOT_MISSES', 'VXRT_PRELOAD_AT'}   # (VXRuntime/src/codehooks.c: SKSE VR preload, capture and verify)
 DIAG_ENV = {'VXRT_KEYBOARD', 'VXRT_KEYBOARD_TEXT', 'VXRT_TRACE_FILES', 'VXRT_TRACE_INPUT', 'VXRT_STATS', 'VXRT_TRACE_WINDOWS', 'VXRT_TRACE_PASSES', 'VXRT_PASS_DUMP', 'VXRT_TRACE_DRAWS', 'VXRT_TRACE_TEXTURES', 'VXRT_TRACE_MAPS', 'VXRT_DUMP_SHADERS', 'VXRT_DRAW_SNAPSHOT', 'VXRT_TRACE_AUDIO', 'VXRT_XRIZER_DEV_DUMP_EVERY', 'VXRT_TRACE_CLEAR_STACK', 'VXRT_DIAG_RTTI_ARRAY', 'VXRT_DIAG_RTTI_ARRAY_WORDS', 'VXRT_TRACE_DRAW_STACK', 'VXRT_TRACE_INI', 'VXRT_XR_SYNC_SUBMIT', 'VXRT_XR_SUBMIT_INFLIGHT', 'VXRT_FLUSH_DRAWS', 'VXRT_XRIZER_DEV_DUMP',
             'VXRT_AOT_FPCR_HIST', 'VXRT_AOT_FPCR_ALWAYS', 'VXRT_VISMASK', 'VXRT_VISMASK_SHAPE', 'VXRT_VISMASK_PROBE'}   # (the last two: module stubs' FPCR/FPSR counters, and the switch back to the previous stubs, RECOMP.md "FPCR") # XR_SYNC_SUBMIT=1: old blocking eye submit; XR_SUBMIT_INFLIGHT bound; FLUSH_DRAWS mid-frame commit threshold; XRIZER_DEV_DUMP=<dir> eye stats/raw frames
 import re
@@ -289,7 +289,7 @@ def capture(args):
             # Per-file overlay: an entry the install does not have is linked whole; a directory the install has (Scripts, interface,
             # Textures, ...) becomes a real overlay directory (the install's spelling) holding links to the mod's files, and the
             # runtime lists overlay and install together (files.c); a FILE the install already has is still refused.
-            def link_tree(src_dir, dst_dir, inst_dir, rel, count):
+            def link_tree(src_dir, dst_dir, inst_dir, rel, count, shadow_ok=frozenset()):
                 inst = {e.name.lower(): e for e in inst_dir.iterdir()} if inst_dir is not None and inst_dir.is_dir() else {}
                 for ent in sorted(src_dir.iterdir()):
                     have = inst.get(ent.name.lower())
@@ -299,10 +299,13 @@ def capture(args):
                     elif have.is_dir() and ent.is_dir():
                         sub = dst_dir / have.name
                         sub.mkdir(exist_ok=True)
-                        link_tree(ent, sub, have, rel + have.name + '/', count)
+                        link_tree(ent, sub, have, rel + have.name + '/', count, shadow_ok)
+                    elif (rel + ent.name).lower() in shadow_ok and have.is_file() and ent.is_file():
+                        (dst_dir / have.name).symlink_to(ent)       # (listed by the pack as allowed to replace an install file)
+                        count[rel + ent.name + ' (replaces the install file)'] = 1
                     else:
                         raise ValueError(f'--mods-dir: Data/{rel}{ent.name} already exists in the install; refusing to shadow it')
-            link_tree(mdata, odata, assets / 'Data', '', linked)
+            link_tree(mdata, odata, assets / 'Data', '', linked, frozenset(x.lower() for x in (cfg.get('shadow_install') or [])) if mods_cfg else frozenset())
             # Plugins.txt: the game opens C:\users\vxrt\AppData\Local\Skyrim VR\Plugins.txt (seen in a file trace). DIR/Plugins.txt if
             # present, else one "*Name" line per .esp/.esm/.esl at the top of DIR/Data (SE-style: the star enables; the official
             # masters are implicit). Official-master-only plugins are the caller's responsibility (tools/fomod_auto.py checks).
