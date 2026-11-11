@@ -114,7 +114,7 @@ int vx_format(char *out, size_t cap, const char *fmt, const char *ap) {
 // ---- stdio ----------------------------------------------------------------------------------------------------------------
 // A FILE is this runtime's own object. The standard streams write straight to their descriptors (unbuffered, so
 // output from the program and from this runtime interleave correctly); files from fopen wrap a macOS FILE.
-// Files are always binary: no "\r\n" translation in text mode.
+// Text mode (a mode without 'b'): reads turn CR LF into LF, as the Windows C runtime does; writes are not translated.
 // base/ptr/cnt: what _get_stream_buffer_pointers hands out (the C++ library's file buffers look at them; they stay
 // empty, so it reads and writes through the functions).
 typedef struct { int fd; FILE *f; char *base, *ptr; int cnt; int text; } vx_file;   // (text: opened without 'b': reads translate CR LF to LF, as the Windows C runtime does)
