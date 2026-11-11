@@ -35,7 +35,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 def default_user_roots():
     """The player's roots (tools/vxrt_run.py USER_ROOTS): never a harness's."""
-    drive = os.path.expanduser(os.environ.get('VERANTYX_VR_DRIVE', '~/Verantyx_VR_Drive'))
+    drive = os.path.expanduser(os.environ.get('VXRT_DRIVE') or os.path.join(os.environ.get('VXRT_PRIVATE_ROOT') or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'build', 'private'), 'drive'))
     return [os.path.join(drive, 'vxrt_root'), os.path.join(drive, 'vxrt_steam_overlay')]
 
 

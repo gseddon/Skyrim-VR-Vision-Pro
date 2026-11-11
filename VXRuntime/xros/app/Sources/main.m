@@ -3,8 +3,8 @@
 // in an immersive space (CompositorServices, both eyes warped from the game's frame: VXImmersive.swift,
 // src/xros_vr.m), or with -present flat only in the window (debug).
 //
-//   xcrun devicectl device process launch --device <id> gseddon.dev.vxrt.VXRuntimeHost -test d3d12 [-present flat]
-//   xcrun devicectl device process launch --device <id> gseddon.dev.vxrt.VXRuntimeHost -game cyberpunk   (game_start below)
+//   xcrun devicectl device process launch --device <id> <bundle id> -test d3d12 [-present flat]
+//   xcrun devicectl device process launch --device <id> <bundle id> -game cyberpunk   (game_start below)
 //
 // Tests (bundle/exe): xros_clear (a swap chain cleared through the hues, 10 s), d3d12 (default), suite, hello_crt, seh_try, unwind, cxx_exceptions (stops: one address has no
 // module), none (only the memory and address-space probes). Documents/host_log.jsonl gets the probes, the
