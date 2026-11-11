@@ -41,7 +41,7 @@ launcher's follow). Inputs: `VXRT_TURN=game|snap|smooth`, `VXRT_SNAP_ANGLE`, `VX
 `vxrt.turnSpeed`, `vxrt.move`; Info.plist defaults `VXTurnDefault`, `VXMoveDefault`. The values are logged once per launch by the runtime
 (`skyrim_ini: [VRInput] bDirectMovementWithWands = 1 (VXRT_INI_SET)`), which is how to see that the game read the override.
 
-## Other settings worth exposing (suggestions, keys [exe]; none implemented)
+## Other settings (all implemented 2026-11-11 as tri-state launcher settings, default "Game default"; keys [exe])
 
 | Idea | Key | Section | Note |
 | --- | --- | --- | --- |
