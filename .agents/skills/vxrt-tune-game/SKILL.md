@@ -37,5 +37,5 @@ A game whose own size choice matters gets a ladder in its profile (`"tune": {"sc
 ## Report
 
 A table: setting → fps (run ids, observation ids), GPU %, frame checked. The best combination as a launch
-command (`scripts/launch_vxrt_alyx.sh` or `scripts/launch_vxrt_game.sh` with the environment). Mark suspicions
+command (the environment the run used). Mark suspicions
 (`inferred`, i#) as such, and list what was not measured (frame pacing, the real headset, audio).

@@ -49,13 +49,7 @@ VXRT_GPU_PROFILE=1 (Vulkan)                # every 5 s: GPU ms per frame of each
 VXRT_VK_LIVE=switches.txt ...              # Vulkan tuning switches (HOIST_TESS, TCS_PACK, ENCODE_CACHE, FRAGMENT_WAIT, RESIDENCY_SET, TESS_CONCURRENT; all 1 by default), read every second: A/B in one run
 ```
 
-Half-Life: Alyx without Wine: `scripts/launch_vxrt_alyx.sh` (repository root; Steam running on the Mac and signed
-in) starts SteamVR on vxrt, the encoder and the web UI stand-in, then the game with the Steam bridge; extra
-arguments go to the game. The first start compiles the game's shaders (a few minutes).
-
-SteamVR without Wine: `scripts/launch_vxrt_steamvr.sh` (repository root) runs vrserver, vrcompositor and the VeRantyx
-driver on vxrt next to the HEVC encoder, using the Wine prefix's SteamVR read-only. Measured on 2026-10-12 without a
-headset: the driver captures and the encoder encodes 59-60 frames a second (the Vision Pro side is untested).
+The Half-Life: Alyx and SteamVR launch scripts (`scripts/`) were removed with the legacy streaming path; they are in the git history before the `cleanup` branch.
 
 ### The Windows Steam client (research, not working yet)
 
@@ -66,7 +60,7 @@ Every other game keeps using the Mac Steam client through the bridge (`VXRT_STEA
 1. Windows Steam lives in a VXRuntime root of its own, `<VXRT_DRIVE>/vxrt_wsteam` (`VXRT_WSTEAM_ROOT`), at
    `drive_c/Program Files (x86)/Steam`, never in the Wine prefix. Installing it there (Valve's installer on
    VXRuntime) is a later step: it downloads Steam from Valve, so it waits for your go-ahead.
-2. `scripts/launch_vxrt_windows_steam.sh [<Windows Steam folder>]` (`VXRT_WSTEAM_SILENT=1` for `-silent`) starts it,
+2. The Windows Steam launcher script (`scripts/launch_vxrt_windows_steam.sh`, removed; see the git history) started it (`VXRT_WSTEAM_SILENT=1` for `-silent`),
    log in `~/Library/Logs/VeRantyx/vxrt-windows-steam.log`. You sign in yourself, in Steam's own window: VeRantyx
    never asks for, reads or keeps your password; Steam keeps its saved login itself, as on Windows (what it protects
    with DPAPI is protected less here: see below). The script refuses a Wine prefix, a 32-bit `steam.exe` and a second
@@ -144,7 +138,7 @@ download). Those runs were made in `<VXRT_DRIVE>/vxrt_wsteam` itself, not in a c
 `-forcesteamupdate -forcepackagedownload` (Steam downloads its packages again and reinstalls them over its files);
 the user had approved the download of Steam's update and, told afterwards about the runs in the root and the two forced reinstalls, said to go on (2026-10-25). Trying changes, run
 Steam in an APFS copy of the root instead (`cp -c -R <VXRT_DRIVE>/vxrt_wsteam <scratch>/wsteam_root`, then
-`VXRT_WSTEAM_ROOT=<scratch>/wsteam_root scripts/launch_vxrt_windows_steam.sh`), so whatever Steam writes (logs, web
+`VXRT_WSTEAM_ROOT=<scratch>/wsteam_root` with the removed launcher script), so whatever Steam writes (logs, web
 cache, its own updates) lands in the copy, and without those two options: Steam's own update check is enough. The
 bootstrapper checks at once when the last run did not end cleanly (its `.crash` file is still there: "Checking for
 update on startup"); after a clean end it checks from its background loop about two minutes in, so a shorter run

@@ -9,7 +9,7 @@ program is done; it never touches the Mac's real screen or mouse.
     tools/vxrt_screen.py --socket S key VK               # a key (virtual-key code), to the window clicked last
     tools/vxrt_screen.py --socket S close                # closes the window clicked last (no title bars are drawn)
 
---desktop (the harder comparison, VXRuntime/demos/m3-hard): the whole screen instead, at Retina scale (2 pixels per
+--desktop (the harder comparison): the whole screen instead, at Retina scale (2 pixels per
 point), the program's windows where they are on it and another app's window beside them (a note that mentions some of
 the same words), as a computer-use agent sees a real desktop; clicks are at pixels of that image.
 

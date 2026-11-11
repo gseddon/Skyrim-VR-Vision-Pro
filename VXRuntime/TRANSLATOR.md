@@ -54,7 +54,7 @@ CPU: since macOS 15 `HV_SYS_REG_ACTLR_EL1` exposes the EnTSO bit. Measured with 
   (`.pdata`/`.xdata`); exports, relocations and the import table give the rest. Functions are translated whole,
   ahead of time, into a cache keyed by the PE's hash; code found only at run time (Mono's JIT in Unity games,
   self-modifying code) is translated on first execution and invalidated when its page is written.
-- **One process, two instruction sets (later; docs/VISION.md).** Translated x86-64 and native ARM64 code are meant
+- **One process, two instruction sets (later).** Translated x86-64 and native ARM64 code are meant
   to call each other, as Arm64EC does on Windows. A C type alone does not bridge everything: the mixed ABI starts at
   C function boundaries (integer, pointer, floating-point and struct arguments by the Windows x64 rules) and adds
   callbacks, exceptions and unwinding across the boundary, variadic functions and TLS layout one at a time, each
