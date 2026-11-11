@@ -214,7 +214,7 @@ static int dumped(int argc, char **argv) {
 
 int main(int argc, char **argv) {
     @autoreleasepool {
-        // (VXRT_STEREO_STREAM given: that file, kept - to feed a running MacEncoder/HardwareEncoder)
+        // (VXRT_STEREO_STREAM given: that file, kept - for an external consumer)
         char stream[1024] = "/tmp/vxrt_stereo_test.XXXXXX";
         const char *given = getenv("VXRT_STEREO_STREAM");
         int fd;

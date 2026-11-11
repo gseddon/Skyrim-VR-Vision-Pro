@@ -297,7 +297,7 @@ void vx_stereo_depth_pass(void *cbp, void *texp, uint32_t draws, uint32_t writes
     pthread_mutex_unlock(&g_lock);
 }
 
-// ---- the encoder's shared frame file (MacEncoder/HardwareEncoder.swift, NativeARM/vrruntime/vr_runtime.h) ----
+// ---- the shared frame file of the former streaming encoder (its sources were removed from the repository) ----
 #pragma pack(push, 1)
 typedef struct { uint32_t sequence, width, height, format; float transform[16]; double timestamp; } stereo_shared_frame;
 #pragma pack(pop)
@@ -318,7 +318,7 @@ static int stream_map(void) {
     close(fd);
     if (m == MAP_FAILED) { vx_log("stereo: cannot map %s", g_cfg.stream); return 0; }
     g_map = m;
-    vx_log("stereo: streaming to %s (start MacEncoder/HardwareEncoder with VERANTYX_SHARED_FRAME set to it)", g_cfg.stream);
+    vx_log("stereo: streaming to %s (a consumer maps it with the same layout)", g_cfg.stream);
     return 1;
 }
 // (both eyes side by side, `w` x `h` each, BGRA8: into the free slot, then published)

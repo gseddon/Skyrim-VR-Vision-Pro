@@ -9,21 +9,10 @@ GPTK/
 *.exe
 *.o
 *.a
-VRDriver/src/d3d11.dll
-VRDriver/d3d11.dll
-VRDriver/dxgi.dll
-VRDriver/bin/
-VRDriver/deps/
 *.E
 
-# Build outputs (rebuilt by scripts/setup.sh and the launch script)
-VRDriver/driver_verantyx.dll
-MacEncoder/HardwareEncoder
 *.dll
-VRDriver/.build-*
-build/steamvr-d3d11-proxy/.build-*
 *.xcuserdatad/
-/NativeARM/build/
 __pycache__/
 runs/
 VXRuntime/tests/shaders12/*.h
