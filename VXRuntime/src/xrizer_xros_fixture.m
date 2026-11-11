@@ -207,15 +207,16 @@ int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],co
             vx_log("xrizer xros fixture: overscan %.2f per side (VXRT_OVERSCAN)",overscan);}
         float o=(vx_xros_immersive_enabled() && !immersive_mono) ? overscan : 0.f;
         for(unsigned i=0;i<8;i++)over_tan[i]=tangents[i]*(1.f+o);
-        /* VXRT_RENDER_SCALE (default 0.7, the user's choice, 2026-11-10; it was 0.8): the render size the game is asked for, as a fraction of the overscanned drawable size. Device run
+        /* VXRT_RENDER_SCALE (default 0.75 with MetalFX upscale and the hidden-area mask, 2026-11-11, user-judged sharper on the headset; it was 0.65, before that 0.55, 0.7 and 0.8): the render size the game is asked for, as a fraction of the overscanned drawable size. Device run
          * 11: the game drew at 2502x2374 per eye and the compositor was given a new pair only 17 times a second (presentation interval about
          * 60 ms, the game's submit ring at its bound 89% of the time): the GPU is the limit, and pixels are the lever. */
         static float scale=-1;
-        if(scale<0){const char *e=getenv("VXRT_RENDER_SCALE");char *end=NULL;float v=e&&*e?strtof(e,&end):0.7f;
-            scale=(e&&*e&&(!end||*end||v<0.3f||v>1.5f))?0.7f:v;
+        if(scale<0){const char *e=getenv("VXRT_RENDER_SCALE");char *end=NULL;float v=e&&*e?strtof(e,&end):0.75f;
+            scale=(e&&*e&&(!end||*end||v<0.3f||v>1.5f))?0.75f:v;
             vx_log("xrizer xros fixture: render scale %.2f (VXRT_RENDER_SCALE)",scale);}
         float sc=(vx_xros_immersive_enabled() && !immersive_mono) ? scale : 1.f;
         over_w=(uint32_t)((float)width*(1.f+o)*sc+.5f);over_h=(uint32_t)((float)height*(1.f+o)*sc+.5f);
+        { extern void vx_xros_host_set_upscale_target(uint32_t,uint32_t); vx_xros_host_set_upscale_target((uint32_t)((float)width*(1.f+o)+.5f),(uint32_t)((float)height*(1.f+o)+.5f)); }
         tangents=over_tan;width=over_w;height=over_h;
     }
     XrTime predicted=(XrTime)(prediction*1e9);
@@ -262,7 +263,11 @@ int vx_xros_fixture_offer(uint32_t width,uint32_t height,const float eyes[32],co
 void vx_xros_host_gate_stats(double *mean_ms,double *max_ms,unsigned long long *waits,unsigned long long *n);
 int vx_xros_gate_json(char *buf,uint32_t len) {
     double mean,mx;unsigned long long waits,n;vx_xros_host_gate_stats(&mean,&mx,&waits,&n);
-    return snprintf(buf,len,"\"gate_ms_mean\":%.2f,\"gate_ms_max\":%.2f,\"gate_waits\":%llu,\"gate_n\":%llu",mean,mx,waits,n);
+    extern void vx_xros_host_upscale_stats(double *,double *,unsigned long long *);
+    double um,ux;unsigned long long un;vx_xros_host_upscale_stats(&um,&ux,&un);
+    extern int vx_xros_host_gate_json(char *,uint32_t);
+    char sg[200];vx_xros_host_gate_json(sg,sizeof sg);
+    return snprintf(buf,len,"\"gate_ms_mean\":%.2f,\"gate_ms_max\":%.2f,\"gate_waits\":%llu,\"gate_n\":%llu,\"up_ms_mean\":%.3f,\"up_ms_max\":%.3f,\"up_n\":%llu,%s",mean,mx,waits,n,um,ux,un,sg);
 }
 /* Loading progress for the headset's loading screen: 0 nothing yet, 1 the xrizer host is up, 2 the game began its VR session (modules and
  * shaders loaded far enough to reach it), 3 the game has submitted a pair. 4 (the first pair shown) is the compositor's own. */

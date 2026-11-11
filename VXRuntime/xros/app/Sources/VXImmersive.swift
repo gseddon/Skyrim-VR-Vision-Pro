@@ -34,6 +34,10 @@ final class VXImmersiveRenderer: @unchecked Sendable {
     private var presentationIntervalSum = 0.0, presentationIntervalCount = 0, lastPresentationTime = 0.0
     private var fixtureMsMax = 0.0
     private var lastHead = matrix_identity_float4x4
+    // After a pause or a reopen: log the first frames' head (ARKit anchor), the stage-relative head and each eye's view offset, to compare the
+    // pose the game and the compositor see before and after (L3 2026-11-10: the wearer reported a lower position after the resume while the
+    // game's HMD height was 1.60 m before and after).
+    private var resumeFramesToLog = 0
     // Head-pose prediction for the game: the pose handed to the game is the device anchor at (presentation + horizon), the horizon being the measured
     // delay between that offer and the moment the game's pair is shown (device run 11: pair age about 150 ms at 17 game frames/s, so the picture
     // was rendered for a head 150 ms in the past and lagged a turn by tens of degrees). VXRT_PREDICT_MS fixes it ('0' off); otherwise it follows
@@ -80,9 +84,15 @@ final class VXImmersiveRenderer: @unchecked Sendable {
             return
         }
         let prior = previous
+#if XRIZER_XROS_FIXTURE
+        vx_xros_set_paused(0)
+#endif
+        VXLifecycle.spaceOpen = true   // a compositor layer exists: the space is open, whoever asked for it
+        VXImmersiveController.shared.setNeedsResume(false)
         let r = VXImmersiveRenderer(layerRenderer, q, previous: prior)
         previous = r
         if prior != nil {
+            r.resumeFramesToLog = 12
             vxrt_jlog("vr_rebind", "\"what\":\"new compositor layer on the running session\",\"tracking\":\(r.tracking),\"fixture_started\":\(r.fixtureStartedForLog)")
             let thread = Thread { r.loop() }
             thread.name = "VX compositor"
@@ -234,6 +244,9 @@ final class VXImmersiveRenderer: @unchecked Sendable {
             case .invalidated:
                 // The system ended the compositor layer (not our decision). Reopen the immersive space with a new layer and
                 // keep the provider, ARKit and the game running; only when the reopen budget is spent does the surface count as lost.
+#if XRIZER_XROS_FIXTURE
+                vx_xros_set_paused(1)   // no layer: the game idles in WaitFrame until the reopened layer's loop produces samples (start() clears it)
+#endif
                 let reopening = VXLifecycle.layerInvalidated()
                 vxrt_jlog("vr_end", "\"why\":\"layer invalidated\",\"reopening\":\(reopening),\"frames\":\(Self.frameCount)")
                 if !reopening {
@@ -249,8 +262,20 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                 // and the loop carries on. It is NOT a lost surface: the old code stopped the xrizer provider for good on the first
                 // pause, which xrizer answers with a panic once the game asks for a size. Only an invalidated layer ends this loop.
                 vxrt_jlog("vr_pause", "\"frames\":\(Self.frameCount)")
+                let pausedAt = CACurrentMediaTime()
+                VXLifecycle.pausedAt = pausedAt
+#if XRIZER_XROS_FIXTURE
+                vx_xros_set_paused(1)   // WaitFrame blocks, the audio goes quiet: a backgrounded app must idle (it was SIGKILLed 15 s into a pause)
+                vxrt_jlog("pause_idle_start", "\"frames\":\(Self.frameCount)")
+#endif
                 layerRenderer.waitUntilRunning()
+#if XRIZER_XROS_FIXTURE
+                vx_xros_set_paused(0)
+                vxrt_jlog("pause_idle_end", "\"idle_s\":\(String(format: "%.3f", CACurrentMediaTime() - pausedAt))")
+#endif
                 vxrt_jlog("vr_resume", "\"frames\":\(Self.frameCount)")
+                resumeFramesToLog = 12
+                VXImmersiveController.shared.setNeedsResume(false)   // the layer runs again: the Resume window has done its job
                 continue
             default:
                 autoreleasepool { frame() }
@@ -293,6 +318,12 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         }
         var head = anchor?.originFromAnchorTransform ?? matrix_identity_float4x4
         if anchor != nil { lastHead = head }
+        if resumeFramesToLog > 0 {
+            resumeFramesToLog -= 1
+            let t = head.columns.3
+            let l = drawables[0].views.first?.transform.columns.3 ?? .zero, r = drawables[0].views.last?.transform.columns.3 ?? .zero
+            vxrt_jlog("resume_frame", "\"left\":\(resumeFramesToLog),\"anchor\":\(anchor != nil),\"tracked\":\(anchor?.isTracked == true),\"head\":[\(t.x),\(t.y),\(t.z)],\"eyeL\":[\(l.x),\(l.y),\(l.z)],\"eyeR\":[\(r.x),\(r.y),\(r.z)]")
+        }
         // the head pose and time the GAME is given (predicted ahead by the measured pipeline delay); the drawable keeps the real anchor
         var predictedHead = head
         var predictedTime = presentation
@@ -720,7 +751,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         // on the uptime clock minus `epoch`, plus the compositor frames' queue wait and GPU time
         if vx_xros_immersive_enabled() != 0 {
             var tb = [CChar](repeating: 0, count: 1400)
-            var gb = [CChar](repeating: 0, count: 256)
+            var gb = [CChar](repeating: 0, count: 384)
             _ = vx_xros_gate_json(&gb, UInt32(gb.count))
             var left: UInt32 = 0
             // the first line carries the interval statistics, every line up to 8 pair records (the host log line limit is 1.5 KB)

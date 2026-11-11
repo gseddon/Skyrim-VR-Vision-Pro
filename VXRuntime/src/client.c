@@ -175,6 +175,73 @@ static int ini_find(const char *text, const char *app, const char *key, char *va
     }
     return 0;
 }
+// ---- Skyrim's settings: a named preset and per-key overrides, applied where the game reads its .ini files -------------------------
+// VXRT_SKYRIM_PRESET=p2|off (unset: off here; the visionOS app sets p2 by default, main.m) and VXRT_INI_SET="Section.Key=Value;..." (wins over the
+// preset). They apply to the Skyrim*.ini files only (Skyrim.ini, SkyrimPrefs.ini, SkyrimVR.ini, SkyrimCustom.ini) and replace the value of exactly the
+// keys named, whatever the file holds; every other key is read from the files as before. P2 "balanced" is research/2026-11-10-skyrim-vr-performance-
+// settings.md section 4: P1 minus bUseTAA (TAA stays on), bIndEnable and bUse64bitsHDRRenderTarget, shadows 1536 at 5000, water reflections sky-only.
+// (P1's "half" particle/decal caps are left out: their defaults are not known.)
+typedef struct { const char *section, *key, *value; } ini_set;
+static const ini_set preset_p2[] = {
+    { "Imagespace", "bDoDepthOfField", "0" },
+    { "Display", "bEnableVolumetricLighting", "0" }, { "Display", "bUseSunbeams", "0" }, { "Display", "bScreenSpaceReflectionEnabled", "0" },
+    { "Display", "iShadowMapResolution", "1536" }, { "Display", "fShadowDistance", "5000" }, { "Display", "bShadowsOnGrass", "0" },
+    { "Display", "bTreesReceiveShadows", "0" }, { "Display", "bEnableParallaxOcclusion", "0" },
+    { "Water", "bReflectLODObjects", "0" }, { "Water", "bReflectLODLand", "0" }, { "Water", "bReflectLODTrees", "0" }, { "Water", "bReflectSky", "1" },
+    { "Grass", "fGrassStartFadeDistance", "2500" },
+};
+// Reported once per launch (always, not only with VXRT_TRACE_INI): the effective value and where it came from, for the preset's keys and these.
+static const ini_set ini_watch[] = {
+    { "Display", "iShadowMapResolution", "" }, { "Display", "fShadowDistance", "" }, { "Display", "bUseTAA", "" }, { "VRPerformance", "iQualityPreset", "" },
+};
+static const char *ini_preset_name(void) {
+    static const char *name = (const char *)-1;
+    if (name == (const char *)-1) { const char *e = getenv("VXRT_SKYRIM_PRESET"); name = e && !strcasecmp(e, "p2") ? "p2" : NULL; vx_log("skyrim_ini: preset %s (VXRT_SKYRIM_PRESET=%s)%s", name ? name : "off", e ? e : "unset", name ? "; its keys replace the files' values" : ""); }
+    return name;
+}
+static int ini_is_skyrim_file(const char *file) {
+    if (!file) return 0;
+    const char *b = file, *t;
+    if ((t = strrchr(b, '\\'))) b = t + 1;
+    if ((t = strrchr(b, '/'))) b = t + 1;
+    return !strncasecmp(b, "skyrim", 6);
+}
+// The environment's VXRT_INI_SET, then the preset: the overriding value for [app] key, or NULL; *source says which.
+static const char *ini_override(const char *file, const char *app, const char *key, const char **source, char *buf, size_t cap) {
+    if (!ini_is_skyrim_file(file) || !app || !key) return NULL;
+    const char *set = getenv("VXRT_INI_SET");
+    for (const char *p = set; p && *p;) {
+        const char *end = strchr(p, ';'); size_t n = end ? (size_t)(end - p) : strlen(p);
+        const char *dot = memchr(p, '.', n), *eq = memchr(p, '=', n);
+        if (dot && eq && dot < eq && (size_t)(dot - p) == strlen(app) && !strncasecmp(p, app, strlen(app)) &&
+            (size_t)(eq - dot - 1) == strlen(key) && !strncasecmp(dot + 1, key, strlen(key))) {
+            snprintf(buf, cap, "%.*s", (int)(n - (size_t)(eq - p) - 1), eq + 1); *source = "VXRT_INI_SET"; return buf;
+        }
+        p = end ? end + 1 : p + n;
+    }
+    if (ini_preset_name())
+        for (size_t i = 0; i < sizeof preset_p2 / sizeof preset_p2[0]; i++)
+            if (!strcasecmp(app, preset_p2[i].section) && !strcasecmp(key, preset_p2[i].key)) { *source = "preset p2"; return preset_p2[i].value; }
+    return NULL;
+}
+static void ini_report(const char *file, const char *app, const char *key, const char *value, const char *source) {
+    static unsigned long long seen;
+    size_t np = sizeof preset_p2 / sizeof preset_p2[0], nw = sizeof ini_watch / sizeof ini_watch[0];
+    for (size_t i = 0; i < np + nw; i++) {
+        const ini_set *w = i < np ? &preset_p2[i] : &ini_watch[i - np];
+        if (strcasecmp(app, w->section) || strcasecmp(key, w->key) || !ini_is_skyrim_file(file)) continue;
+        if (!(seen >> i & 1)) { seen |= 1ull << i; { int f = !strcmp(source, "file"); vx_log("skyrim_ini: [%s] %s = %s (%s%s%s)", app, key, value, source, f ? " " : "", f && file ? file : ""); } }
+        break;
+    }
+}
+// The value of [app] key as the game gets it: an override, else the file's, else none. *source: "VXRT_INI_SET", "preset p2", "file" or "default".
+static int ini_lookup(const char *text, const char *file, const char *app, const char *key, char *value, size_t cap, const char **source) {
+    char ov[256]; const char *src = NULL, *o = ini_override(file, app, key, &src, ov, sizeof ov);
+    if (o) { snprintf(value, cap, "%s", o); *source = src; return 1; }
+    if (text && ini_find(text, app, key, value, cap)) { *source = "file"; return 1; }
+    *source = "default";
+    return 0;
+}
 // "name\0name\0\0" of the section names (app == NULL), the keys (keys_only) or the "key=value" lines of a section: the
 // Windows result is the length without the final terminator, cap - 2 when the list is cut.
 static DWORD ini_list(const char *text, const char *app, int keys_only, char *out, DWORD cap) {
@@ -205,12 +272,13 @@ static DWORD ini_string(const char *app, const char *key, const char *def, char 
     if (!app) { DWORD r = ini_list(text, NULL, 0, out, cap); free(text); return r; }
     if (!key) { DWORD r = ini_list(text, app, 1, out, cap); free(text); return r; }
     if (!out || !cap) { free(text); return 0; }
-    char value[2048];
-    int found = text && ini_find(text, app, key, value, sizeof value);
+    char value[2048]; const char *source;
+    int found = ini_lookup(text, file, app, key, value, sizeof value, &source);
     free(text);
     static int trace = -1;                                          // VXRT_TRACE_INI: each key asked for, and where from
     if (trace < 0) trace = getenv("VXRT_TRACE_INI") != NULL;
-    if (trace) vx_log("GetPrivateProfileString(%s) [%s] %s = %s%s", file ? file : "", app, key, found ? value : (def ? def : ""), found ? "" : " (default)");
+    if (trace) vx_log("GetPrivateProfileString(%s) [%s] %s = %s (%s)", file ? file : "", app, key, found ? value : (def ? def : ""), source);
+    ini_report(file, app, key, found ? value : (def ? def : ""), source);
     const char *s = found ? value : (def ? def : "");
     DWORD n = (DWORD)strlen(s);
     if (n >= cap) n = cap - 1;
@@ -251,10 +319,11 @@ static WINAPI DWORD GetPrivateProfileStringW(const WCHAR *app, const WCHAR *key,
 }
 static WINAPI unsigned GetPrivateProfileIntA(const char *app, const char *key, int def, const char *file) {
     if (!app || !key) return (unsigned)def;
-    char *text = ini_read(file), v[64];
-    int found = text && ini_find(text, app, key, v, sizeof v);
+    char *text = ini_read(file), v[64]; const char *source;
+    int found = ini_lookup(text, file, app, key, v, sizeof v, &source);
     free(text);
-    if (getenv("VXRT_TRACE_INI")) vx_log("GetPrivateProfileInt(%s) [%s] %s = %s%s", file ? file : "", app, key, found ? v : "", found ? "" : " (default)");
+    if (getenv("VXRT_TRACE_INI")) vx_log("GetPrivateProfileInt(%s) [%s] %s = %s (%s)", file ? file : "", app, key, found ? v : "", source);
+    { char dv[16]; snprintf(dv, sizeof dv, "%d", def); ini_report(file, app, key, found ? v : dv, source); }
     if (!found) return (unsigned)def;
     char *e; long x = strtol(v, &e, 10);
     return e == v ? 0u : (unsigned)x;                               // (text that is not a number reads as 0, a missing key as the default)

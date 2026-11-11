@@ -22,6 +22,9 @@ void vx_xros_timing_offer(uint64_t id, double predicted_display);
 void vx_xros_timing_submit(uint64_t id);
 int vx_xros_timing_submitted(void);
 int vx_xros_load_stage(void);
+void vx_xros_set_paused(int paused);   /* the app's layer is paused/invalidated: WaitFrame blocks for the whole pause and the audio output goes quiet (xrizer_xros_host.m) */
+void vx_xros_set_gate_mode(int m);   /* 0 off, 1 one, 2 smart, -1 = the environment's value (xrizer_xros_host.m, live) */
+void vx_xros_set_pairs_in_flight(int n);   /* (xrizer_xros_host.m: the latency gate, live; -1 = the VXRT_PAIRS_IN_FLIGHT value) */
 int vx_xros_gate_json(char *buf, uint32_t len);
 int vx_xros_timing_drain(char *buf, uint32_t len, double epoch, int stats, unsigned max_pairs, unsigned *left);
 /* Drawables supply their actual optical transforms and tangents; prediction is

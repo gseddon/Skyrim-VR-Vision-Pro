@@ -40,12 +40,14 @@ static inline int vx_eye_ring_writes_ok(id<MTLCommandBuffer> w) {
     return !check || [check vxProducersOK];
 }
 #define VX_EYE_RING_MAX_SLOTS 16
-typedef struct vx_eye_slot { void *tex[2]; uint32_t w[2], h[2], fmt[2]; int busy; unsigned readers; } vx_eye_slot;
+/* up[]: the upscaled eye (VXRT_UPSCALE=metalfx), same format, size r->up_w/up_h; NULL when not upscaling. The presenter reads up[] then. */
+typedef struct vx_eye_slot { void *tex[2]; void *up[2]; uint32_t w[2], h[2], fmt[2], uw[2], uh[2]; int busy; unsigned readers; } vx_eye_slot;
 typedef struct vx_eye_ring {
     pthread_mutex_t lock; pthread_cond_t cv;
     void *device;
     void (*log)(const char *);
     unsigned max_inflight, inflight, nslots;
+    uint32_t up_w, up_h;   /* set by the publisher before reserve: nonzero = give each slot upscale targets of this size (private, shader write) */
     vx_eye_slot *slots[VX_EYE_RING_MAX_SLOTS];
     uint64_t submitted, completed, failed, blocked, allocs, max_seen;
 } vx_eye_ring;
@@ -63,7 +65,7 @@ static inline vx_eye_ring *vx_eye_ring_create(void *device, unsigned max_infligh
     r->device = (void *)CFRetain(device); r->log = log; r->max_inflight = max_inflight; return r;
 }
 static inline void vx_eye_ring_free_slot(vx_eye_slot *s) {
-    for (unsigned i = 0; i < 2; i++) if (s->tex[i]) { CFRelease(s->tex[i]); s->tex[i] = NULL; }
+    for (unsigned i = 0; i < 2; i++) { if (s->tex[i]) { CFRelease(s->tex[i]); s->tex[i] = NULL; } if (s->up[i]) { CFRelease(s->up[i]); s->up[i] = NULL; } }
 }
 /* Take a slot whose textures match w/h/fmt for both eyes. Blocks while max_inflight copies are outstanding (counted in
  * `blocked`). Returns 0 and the slot, -1 on failure (out of memory, or no slot freed within 2 s: a stuck reader). */
@@ -80,7 +82,8 @@ static inline int vx_eye_ring_reserve(vx_eye_ring *r, const uint32_t w[2], const
         vx_eye_slot *pick = NULL;
         for (unsigned i = 0; i < r->nslots; i++) {
             vx_eye_slot *s = r->slots[i]; if (s->busy || s->readers) continue;
-            int match = 1; for (unsigned e = 0; e < 2; e++) match &= s->tex[e] && s->w[e] == w[e] && s->h[e] == h[e] && s->fmt[e] == fmt[e];
+            int match = 1; for (unsigned e = 0; e < 2; e++) match &= s->tex[e] && s->w[e] == w[e] && s->h[e] == h[e] && s->fmt[e] == fmt[e] &&
+                (r->up_w ? (s->up[e] && s->uw[e] == r->up_w && s->uh[e] == r->up_h) : !s->up[e]);
             if (match) { pick = s; break; }
             if (!pick) pick = s;
         }
@@ -94,6 +97,14 @@ static inline int vx_eye_ring_reserve(vx_eye_ring *r, const uint32_t w[2], const
         }
         pick->busy = 1;
         for (unsigned e = 0; e < 2; e++) {
+            if (pick->up[e] && (!r->up_w || pick->uw[e] != r->up_w || pick->uh[e] != r->up_h || pick->fmt[e] != fmt[e])) { CFRelease(pick->up[e]); pick->up[e] = NULL; }
+            if (r->up_w && !pick->up[e]) {
+                MTLTextureDescriptor *ud = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(MTLPixelFormat)fmt[e] width:r->up_w height:r->up_h mipmapped:NO];
+                ud.storageMode = MTLStorageModePrivate; ud.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
+                id<MTLTexture> ut = [(__bridge id<MTLDevice>)r->device newTextureWithDescriptor:ud];
+                if (!ut) { pick->busy = 0; pthread_cond_broadcast(&r->cv); pthread_mutex_unlock(&r->lock); return -1; }
+                pick->up[e] = (void *)CFBridgingRetain(ut); pick->uw[e] = r->up_w; pick->uh[e] = r->up_h; ++r->allocs;
+            }
             if (pick->tex[e] && pick->w[e] == w[e] && pick->h[e] == h[e] && pick->fmt[e] == fmt[e]) continue;
             if (pick->tex[e]) { CFRelease(pick->tex[e]); pick->tex[e] = NULL; }
             MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:(MTLPixelFormat)fmt[e] width:w[e] height:h[e] mipmapped:NO];
@@ -135,7 +146,7 @@ static inline void vx_eye_ring_commit(vx_eye_ring *r, id<MTLCommandBuffer> cb, v
 static inline int vx_eye_ring_reader(vx_eye_ring *r, void *tex, int delta) {
     if (!r || !tex) return 0;
     pthread_mutex_lock(&r->lock);
-    for (unsigned i = 0; i < r->nslots; i++) for (unsigned e = 0; e < 2; e++) if (r->slots[i]->tex[e] == tex) {
+    for (unsigned i = 0; i < r->nslots; i++) for (unsigned e = 0; e < 2; e++) if (r->slots[i]->tex[e] == tex || r->slots[i]->up[e] == tex) {
         if (delta > 0) ++r->slots[i]->readers; else if (r->slots[i]->readers) --r->slots[i]->readers;
         pthread_cond_broadcast(&r->cv); pthread_mutex_unlock(&r->lock); return 1;
     }

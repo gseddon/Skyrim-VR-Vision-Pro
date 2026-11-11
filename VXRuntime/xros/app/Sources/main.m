@@ -13,6 +13,7 @@
 #import <Metal/Metal.h>
 #include <crt_externs.h>
 #include <fcntl.h>
+#include <dirent.h>
 #include <mach/mach.h>
 #include <os/proc.h>
 #include <pthread.h>
@@ -200,6 +201,46 @@ static void *tee_thread(void *arg) {
     return NULL;
 }
 
+
+// One host_log file per launch, named host_log-<launch unix s>.jsonl: the name changes every session, so a pull (devicectl copy) can never hand
+// back a cached prefix of a file that is still growing (device 2026-11-10 22:30: host_log.jsonl was 25 MB, the copy returned a stale 19-20 MB prefix
+// whose last event was an old session). Documents/host_log.jsonl stays as a symlink to the current session for readers on the Mac and the simulator;
+// a pull from the device lists Documents and takes the newest host_log-*.jsonl (tools/pull_host_log.sh). A plain host_log.jsonl left by an older
+// build is archived under its last-write time. The oldest files are deleted until all of them together fit in VXRT_LOG_KEEP_MB (default 50) and at
+// most 40 remain; the current session is never limited by older ones. VXRT_LOG_APPEND=1 is the old behaviour: one host_log.jsonl, appended.
+static void session_host_log(char *path, size_t cap) {
+    char legacy[1300]; snprintf(legacy, sizeof legacy, "%s/host_log.jsonl", g_docs);
+    const char *ap = getenv("VXRT_LOG_APPEND");
+    if (ap && !strcmp(ap, "1")) { snprintf(path, cap, "%s", legacy); return; }
+    snprintf(path, cap, "%s/host_log-%lld.jsonl", g_docs, (long long)t0);
+    struct stat st;
+    if (lstat(legacy, &st) == 0) {
+        if (S_ISLNK(st.st_mode) || st.st_size == 0) unlink(legacy);
+        else { char arch[1300]; snprintf(arch, sizeof arch, "%s/host_log-%lld.jsonl", g_docs, (long long)st.st_mtimespec.tv_sec); rename(legacy, arch); }
+    }
+    symlink(strrchr(path, '/') + 1, legacy);
+    const char *e = getenv("VXRT_LOG_KEEP_MB");
+    long long keep = (e && *e ? atoll(e) : 50) * 1024 * 1024;
+    struct item { char name[300]; time_t t; off_t size; } items[256]; int n = 0;
+    DIR *d = opendir(g_docs);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d)) && n < 256) {
+        if (strncmp(de->d_name, "host_log-", 9) || !strstr(de->d_name, ".jsonl")) continue;
+        char f[1500]; snprintf(f, sizeof f, "%s/%s", g_docs, de->d_name);
+        struct stat s2; if (stat(f, &s2)) continue;
+        snprintf(items[n].name, sizeof items[n].name, "%s", de->d_name); items[n].t = s2.st_mtimespec.tv_sec; items[n].size = s2.st_size; n++;
+    }
+    closedir(d);
+    for (int i = 0; i < n; i++) for (int j = i + 1; j < n; j++) if (items[j].t > items[i].t) { struct item x = items[i]; items[i] = items[j]; items[j] = x; }
+    long long total = 0;
+    for (int i = 0; i < n; i++) {
+        total += items[i].size;
+        if (strcmp(items[i].name, strrchr(path, '/') + 1) == 0) continue;   // the current session stays
+        if (i >= 40 || (i > 0 && total > keep)) { char f[1500]; snprintf(f, sizeof f, "%s/%s", g_docs, items[i].name); unlink(f); }
+    }
+}
+
 // Before anything else maps memory (a constructor, before main): the modules' arena, then what the address space and
 // the memory limit look like. (On the Mac the runtime starts itself again until the arena is free; an app cannot.)
 __attribute__((constructor)) static void early(void) {
@@ -208,7 +249,7 @@ __attribute__((constructor)) static void early(void) {
     snprintf(g_docs, sizeof g_docs, "%s/Documents", home ? home : ".");
     mkdir(g_docs, 0755);
     char p[1200];
-    snprintf(p, sizeof p, "%s/host_log.jsonl", g_docs);
+    session_host_log(p, sizeof p);
     g_log = open(p, O_WRONLY | O_CREAT | O_APPEND, 0644);
     snprintf(p, sizeof p, "%s/vxrt.log", g_docs);
     int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -335,6 +376,63 @@ static void *memory_ticker(void *arg) {
 static UILabel *g_status;
 static void status(NSString *s) { dispatch_async(dispatch_get_main_queue(), ^{ g_status.text = s; }); }
 
+// <root>/mods.json (tools/mods.py on the Mac): what the Mac prepared. Logged once as a "mods" event in host_log.jsonl: which mods are
+// active (their files are in the overlay's Data/, the plugins in Plugins.txt) and which are not (SKSE ones, disabled ones). The runtime
+// applies nothing from this file: nothing toggles at run time. Only names made of [a-z0-9._-] are logged.
+static NSString *mods_safe(id v, NSUInteger max) {
+    if (![v isKindOfClass:NSString.class]) return @"";
+    NSMutableString *o = [NSMutableString string];
+    for (NSUInteger i = 0; i < [(NSString *)v length] && i < max; i++) {
+        unichar c = [(NSString *)v characterAtIndex:i];
+        [o appendFormat:@"%C", (unichar)(((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-') ? c : '?')];
+    }
+    return o;
+}
+// Always on: what the overlay holds, before the game asks for anything (counts only; the first opens are logged by src/files.c).
+static int count_files(const char *dir) {
+    int n = 0; DIR *d = opendir(dir); struct dirent *e;
+    if (!d) return 0;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        char p[1800]; snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(p, &st)) continue;
+        n += S_ISDIR(st.st_mode) ? count_files(p) : 1;
+    }
+    closedir(d); return n;
+}
+static void log_overlay_summary(const char *root) {
+    char p[1600]; snprintf(p, sizeof p, "%s/overlay_skyrimvr/Data", root);
+    int files = count_files(p), lines = -1;
+    snprintf(p, sizeof p, "%s/drive_c/users/vxrt/AppData/Local/Skyrim VR/Plugins.txt", root);
+    FILE *f = fopen(p, "r");
+    if (f) { lines = 0; int c; while ((c = fgetc(f)) != EOF) if (c == '\n') lines++; fclose(f); }
+    fprintf(stderr, "[vxrt] overlay: %d files under %s/overlay_skyrimvr/Data, Plugins.txt lines %d%s\n", files, root, lines < 0 ? 0 : lines, lines < 0 ? " (file absent)" : "");
+    jlog("overlay", "\"data_files\":%d,\"plugins_txt_lines\":%d", files, lines);
+}
+static void log_mods(const char *root) {
+    char path[1500]; snprintf(path, sizeof path, "%s/mods.json", root);
+    NSData *d = [NSData dataWithContentsOfFile:@(path)];
+    if (!d) { jlog("mods", "\"present\":0"); return; }
+    id j = [NSJSONSerialization JSONObjectWithData:d options:0 error:NULL];
+    NSArray *mods = [j isKindOfClass:NSDictionary.class] ? j[@"mods"] : nil;
+    if (![mods isKindOfClass:NSArray.class] || ![j[@"version"] isEqual:@1]) { jlog("mods", "\"present\":1,\"valid\":0"); return; }
+    NSMutableArray *act = [NSMutableArray array], *inact = [NSMutableArray array];
+    for (id m in mods) {
+        if (![m isKindOfClass:NSDictionary.class]) continue;
+        NSString *i = mods_safe(m[@"id"], 40);
+        if (!i.length) continue;
+        [[m[@"active"] isEqual:@YES] ? act : inact addObject:i];
+    }
+    struct stat st; char pt[1500];
+    snprintf(pt, sizeof pt, "%s/drive_c/users/vxrt/AppData/Local/Skyrim VR/Plugins.txt", root);
+    int plugins_txt = !stat(pt, &st);
+    jlog("mods", "\"present\":1,\"valid\":1,\"profile\":\"%s\",\"active\":\"%s\",\"inactive\":\"%s\",\"plugins_txt\":%d,\"active_size_bytes\":%lld,\"scope\":\"read-only report of the Mac-prepared pack; nothing applied from this file\"",
+         mods_safe(j[@"profile"], 40).UTF8String, [[act componentsJoinedByString:@","] substringToIndex:MIN([[act componentsJoinedByString:@","] length], (NSUInteger)400)].UTF8String,
+         [[inact componentsJoinedByString:@","] substringToIndex:MIN([[inact componentsJoinedByString:@","] length], (NSUInteger)400)].UTF8String,
+         plugins_txt, [j[@"totals"] isKindOfClass:NSDictionary.class] ? [j[@"totals"][@"active_size_bytes"] longLongValue] : 0LL);
+}
+
 // -game cyberpunk: Cyberpunk 2077 from Documents/root (copied there once from the user's own install; NOSTEAM.md), as a
 // Windows PC without Steam: no Steam variables, no Steam registry keys (the runtime writes none without
 // VXRT_STEAM_BRIDGE), no steamclient anywhere; steam_api finds no Steam and the engine goes on. The game's writes go to
@@ -366,8 +464,11 @@ static int skyrimvr_start(const char *root, char **exe_out, char ***argv_out, in
     for (unsigned i = 0; i < sizeof steam / sizeof *steam; i++) unsetenv(steam[i]);
     setenv("VXRT_STEAM_BRIDGE", "0", 1);
     setenv("VXRT_NO_WINE", "1", 0);
+    setenv("VXRT_SKYRIM_PRESET", "p2", 0);   // the "P2 balanced" settings preset (client.c; research/2026-11-10-skyrim-vr-performance-settings.md); VXRT_SKYRIM_PRESET=off for an A/B
     snprintf(ov, sizeof ov, "%s:%s/overlay_skyrimvr", dir_game, root);
     setenv("VXRT_OVERLAY", ov, 0);
+    log_mods(root);
+    log_overlay_summary(root);
     snprintf(dir, sizeof dir, "%s/bundle/redist", NSBundle.mainBundle.resourcePath.fileSystemRepresentation);
     if (!stat(dir, &st)) setenv("VXRT_DLL_PATH", dir, 0);
     // The visionOS shader set embedded by the build (XROS_SHADER_SET; <key>.metallib files): read-only hits load from the
@@ -495,7 +596,7 @@ static int g_booted;
     if (started) return;
     started = YES;
     CGSize s = self.view.bounds.size;
-    jlog("window", "\"w\":%.0f,\"h\":%.0f,\"scale\":%.1f", s.width, s.height, self.view.traitCollection.displayScale);
+    jlog("window", "\"w\":%.0f,\"h\":%.0f,\"scale\":%.1f,\"scene\":\"%s\",\"vc\":\"%p\"", s.width, s.height, self.view.traitCollection.displayScale, self.view.window.windowScene.session.persistentIdentifier.UTF8String ?: "none", (__bridge void *)self);
     vxrt_boot(self.view);
 }
 @end
@@ -531,4 +632,5 @@ int vxrt_present_vr(void) {
     for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "-present")) return strcmp(argv[i + 1], "flat") != 0;
     return 1;
 }
+int vxrt_default_launch(void) { return default_launch; }
 void vxrt_jlog(const char *event, const char *fields) { jlog(event, "%s", fields ? fields : ""); }

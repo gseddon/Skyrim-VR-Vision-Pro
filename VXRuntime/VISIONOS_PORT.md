@@ -31,6 +31,7 @@ The answer, with evidence, and a plan for each wall.
   size in points: 1280×720 by default); each top-level window is a subview at its rectangle (UIKit's y runs down as
   Windows' does, so no flipping); GDI pictures are layer contents as on the Mac; a swap chain gets a `CAMetalLayer`
   sublayer filling the window (`drawableSize` = bounds × display scale). Touches are the left mouse button.
+- **Host log per launch**: each launch writes `Documents/host_log-<launch unix s>.jsonl` (a new name every session, so a devicectl pull cannot return a cached prefix of a growing file); `Documents/host_log.jsonl` is a symlink to the current one for Mac/simulator readers. Pull the newest with `tools/pull_host_log.sh <dest>`. The oldest sessions are deleted beyond `VXRT_LOG_KEEP_MB` (default 50) or 40 files; an older build's plain `host_log.jsonl` is archived at the first launch. `VXRT_LOG_APPEND=1` keeps the old single appended `host_log.jsonl` (tools/device_scale_sweep.sh sets it).
 - **Logs**: `Documents/host_log.jsonl` (launch, arena, exe-base and address-space probes, a Metal capability probe,
   `os_proc_available_memory()` and the footprint every 2 s, the program's start) and `Documents/vxrt.log` (the
   runtime's stderr for that launch). `tools/xros_device_run.sh` launches each test and copies both back.
@@ -244,7 +245,7 @@ playthrough produces it; a header line `# vxrt-shader-manifest 1`, then tab sepa
 | --- | --- |
 | dxbc-sha256 | SHA-256 of the DXBC container |
 | stage | `ps` `vs` `gs` `cs` |
-| kind | `base`, `dual-source`, `pass-through`, `vs-kernel` |
+| kind | `base`, `dither`, `dual-source`, `pass-through`, `vs-kernel` |
 | params | `vs-kernel`: `reg:kind,...` of each input (0 floats, 1 signed, 2 unsigned); empty otherwise |
 | translator | `DXBC_TRANSLATOR_REV` (`src/dxbc.h`): bump when a change to `dxbc.c` changes any generated MSL |
 | cache-key | optional: the cache key the runtime made of the source (compile options included), checked when building |
@@ -457,7 +458,7 @@ What it is: with `-xrizer -immersive` (game) or `-test xrizer_xros_guest -immers
 
 ### Simulator evidence (visionOS 26.1 simulator, owned fixture `xrizer_xros_guest`, not Skyrim)
 
-Evidence files (not in git): `/tmp/claude/perf/immersive/evidence/`. Commands: `XRIZER_RUST_ROOT=<toolchain> make -C VXRuntime xros-app XROS_SDK=xrsimulator XROS_XRIZER_FIXTURE=1 XROS_CODE_SIGNING=NO`; `SIMCTL_CHILD_VXRT_XROS_TEST_HOLD=40 xcrun simctl launch --console-pty booted gseddon.dev.vxrt.VXRuntimeHost.XrizerOffscreen -test xrizer_xros_guest -immersive -console`.
+Evidence files (not in git): `/tmp/claude/perf/immersive/evidence/`. Commands: `make -C VXRuntime xros-app XROS_SDK=xrsimulator XROS_XRIZER_FIXTURE=1 XROS_CODE_SIGNING=NO`; `SIMCTL_CHILD_VXRT_XROS_TEST_HOLD=40 xcrun simctl launch --console-pty booted gseddon.dev.vxrt.VXRuntimeHost.XrizerOffscreen -test xrizer_xros_guest -immersive -console`.
 
 - Short run (2 pairs): the immersive space opened, drawable `views=1`, path `mono_inspection_injected_optics`; provider pair 0 and 1 `readback=pass`; drawable pair 0 and 1 `max_delta=0` (every left/right texel of the drawable equals the independent source formula, sRGB-encoded), drain pass, strict AOT 47 entries, 0 fallbacks.
 - Hold run (40 s): `sim-immersive-hold-1.png` shows the left half (left eye) and right half (right eye) with different colours and the R gradient across x; the screenshot's absolute values are lifted by the simulator's display (e.g. 188,104,163 left, 186,192,189 right where the pattern has R equal in both eyes, G about 130 higher in the right) so it is qualitative; exact pixels are the GPU readbacks above. Last 3 seconds: about 22 fresh and 38 repeated presentations per second (compositor about 60 Hz in the simulator), 0 stale, fresh pair age mean 19 ms, max 33 ms, repeat age max 67 ms; 6937 AOT entries, 0 fallbacks.

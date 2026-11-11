@@ -6,8 +6,8 @@ import json
 import os
 from pathlib import Path
 
-DIAG_ENV = {'VXRT_TRACE_INPUT', 'VXRT_STATS', 'VXRT_TRACE_WINDOWS', 'VXRT_TRACE_PASSES', 'VXRT_PASS_DUMP', 'VXRT_TRACE_DRAWS', 'VXRT_TRACE_TEXTURES', 'VXRT_TRACE_MAPS', 'VXRT_DUMP_SHADERS', 'VXRT_DRAW_SNAPSHOT', 'VXRT_TRACE_AUDIO', 'VXRT_XRIZER_DEV_DUMP_EVERY', 'VXRT_TRACE_CLEAR_STACK', 'VXRT_DIAG_RTTI_ARRAY', 'VXRT_DIAG_RTTI_ARRAY_WORDS', 'VXRT_TRACE_DRAW_STACK', 'VXRT_TRACE_INI', 'VXRT_XR_SYNC_SUBMIT', 'VXRT_XR_SUBMIT_INFLIGHT', 'VXRT_FLUSH_DRAWS', 'VXRT_XRIZER_DEV_DUMP',
-            'VXRT_AOT_FPCR_HIST', 'VXRT_AOT_FPCR_ALWAYS'}   # (the last two: module stubs' FPCR/FPSR counters, and the switch back to the previous stubs, RECOMP.md "FPCR") # XR_SYNC_SUBMIT=1: old blocking eye submit; XR_SUBMIT_INFLIGHT bound; FLUSH_DRAWS mid-frame commit threshold; XRIZER_DEV_DUMP=<dir> eye stats/raw frames
+DIAG_ENV = {'VXRT_SKYRIM_PRESET', 'VXRT_INI_SET', 'VXRT_TRACE_INI', 'VXRT_KEYBOARD', 'VXRT_KEYBOARD_TEXT', 'VXRT_TRACE_FILES', 'VXRT_TRACE_INPUT', 'VXRT_STATS', 'VXRT_TRACE_WINDOWS', 'VXRT_TRACE_PASSES', 'VXRT_PASS_DUMP', 'VXRT_TRACE_DRAWS', 'VXRT_TRACE_TEXTURES', 'VXRT_TRACE_MAPS', 'VXRT_DUMP_SHADERS', 'VXRT_DRAW_SNAPSHOT', 'VXRT_TRACE_AUDIO', 'VXRT_XRIZER_DEV_DUMP_EVERY', 'VXRT_TRACE_CLEAR_STACK', 'VXRT_DIAG_RTTI_ARRAY', 'VXRT_DIAG_RTTI_ARRAY_WORDS', 'VXRT_TRACE_DRAW_STACK', 'VXRT_TRACE_INI', 'VXRT_XR_SYNC_SUBMIT', 'VXRT_XR_SUBMIT_INFLIGHT', 'VXRT_FLUSH_DRAWS', 'VXRT_XRIZER_DEV_DUMP',
+            'VXRT_AOT_FPCR_HIST', 'VXRT_AOT_FPCR_ALWAYS', 'VXRT_VISMASK', 'VXRT_VISMASK_SHAPE', 'VXRT_VISMASK_PROBE'}   # (the last two: module stubs' FPCR/FPSR counters, and the switch back to the previous stubs, RECOMP.md "FPCR") # XR_SYNC_SUBMIT=1: old blocking eye submit; XR_SUBMIT_INFLIGHT bound; FLUSH_DRAWS mid-frame commit threshold; XRIZER_DEV_DUMP=<dir> eye stats/raw frames
 import re
 import signal
 import struct
@@ -247,6 +247,61 @@ def capture(args):
                 copied[str(src.relative_to(seed_dir))] = digest(src)
             result.setdefault('diagnostic', {})['prefs_seed'] = dict(source=str(seed_dir), files=copied,
                 scope='authored settings copied into the private root before start; not game files')
+        # --saves-dir DIR: the game's "My Games/Skyrim VR/Saves" in this run's private root becomes a symlink to DIR, so saves
+        # (and a save copied in by hand) outlive the run; the root itself is per-run. DIR is private user data, never committed.
+        saves = getattr(args, 'saves_dir', None)
+        if saves:
+            target = Path(saves).resolve()
+            target.mkdir(parents=True, exist_ok=True)
+            link = root / 'drive_c/users/vxrt/Documents/My Games/Skyrim VR/Saves'
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(target, target_is_directory=True)
+            result.setdefault('diagnostic', {})['saves_dir'] = dict(link=str(link), target=str(target),
+                scope='persistent saves directory linked into the private root; contents are user data, not recorded')
+        # --mods-dir DIR: DIR/Data holds a flattened loose-file mod tree (textures, meshes, ...). Each top-level entry of
+        # DIR/Data becomes a symlink inside this run's overlay Data, so the game finds it through the overlay; the install
+        # is only read. DIR is private user data (git-ignored), never committed. No ESP/BSA handling: those need plugins.txt.
+        mods = getattr(args, 'mods_dir', None)
+        mods_cfg = getattr(args, 'mods_config', None)
+        if mods_cfg:
+            # --mods-config PACK/mods.json (tools/mods.py): the pack's merged tree (priority resolved on the Mac) and its
+            # Plugins.txt are applied exactly like --mods-dir; the list (active or not, with reasons) is recorded.
+            if mods:
+                raise ValueError('--mods-config and --mods-dir are alternatives')
+            cfgp = Path(mods_cfg).resolve(strict=True); cfg = json.loads(cfgp.read_text())
+            if cfg.get('version') != 1 or not isinstance(cfg.get('mods'), list):
+                raise ValueError('--mods-config: expected a version 1 mods.json from tools/mods.py')
+            mroot = (cfgp.parent / cfg['merged']).resolve(strict=True)
+            if not mroot.is_relative_to(cfgp.parent.resolve()):
+                raise ValueError('--mods-config: merged tree must be inside the pack')
+            mods = str(mroot)
+            result.setdefault('diagnostic', {})['mods_config'] = dict(file=str(cfgp), profile=cfg.get('profile'), plugins=cfg.get('plugins'),
+                mods=[dict(id=m['id'], kind=m['kind'], enabled=m['enabled'], active=m['active'], size_bytes=m.get('size_bytes'), note=m.get('note')) for m in cfg['mods']],
+                scope='priority resolved by tools/mods.py when the pack was built; the runtime keeps one overlay layer')
+        if mods:
+            mdata = Path(mods).resolve(strict=True) / 'Data'
+            if not mdata.is_dir():
+                raise ValueError('--mods-dir: expected DIR/Data')
+            odata = overlay / assets.relative_to(source) / 'Data'
+            odata.mkdir(parents=True, exist_ok=True)
+            linked = {}
+            for ent in sorted(mdata.iterdir()):
+                if (assets / 'Data' / ent.name).exists():
+                    raise ValueError(f'--mods-dir: Data/{ent.name} already exists in the install; refusing to shadow it')
+                (odata / ent.name).symlink_to(ent, target_is_directory=ent.is_dir())
+                linked[ent.name] = sum(1 for p in ent.rglob('*') if p.is_file()) if ent.is_dir() else 1
+            # Plugins.txt: the game opens C:\users\vxrt\AppData\Local\Skyrim VR\Plugins.txt (seen in a file trace). DIR/Plugins.txt if
+            # present, else one "*Name" line per .esp/.esm/.esl at the top of DIR/Data (SE-style: the star enables; the official
+            # masters are implicit). Official-master-only plugins are the caller's responsibility (tools/fomod_auto.py checks).
+            plug = [e.name for e in sorted(mdata.iterdir()) if e.is_file() and e.suffix.lower() in ('.esp', '.esm', '.esl')]
+            ptxt = Path(mods).resolve() / 'Plugins.txt'
+            if ptxt.is_file() or plug:
+                pdst = root / 'drive_c/users/vxrt/AppData/Local/Skyrim VR/Plugins.txt'
+                pdst.parent.mkdir(parents=True, exist_ok=True)
+                pdst.write_text(ptxt.read_text() if ptxt.is_file() else ''.join(f'*{n}\r\n' for n in plug), newline='')
+                result.setdefault('diagnostic', {})['plugins_txt'] = dict(path=str(pdst), plugins=plug, from_file=ptxt.is_file())
+            result.setdefault('diagnostic', {})['mods_dir'] = dict(source=str(mdata), linked_entries=linked,
+                scope='loose files linked into the run overlay; install untouched; effect on the game unverified until a file trace shows the opens')
         # --overlay-ini FILE:SECTION:KEY=VALUE: a per-run copy of an ini of the asset tree (FILE is relative to --asset-root)
         # inside this run's overlay with one key set; the original is only read. The game reads the copy through the overlay.
         for spec in getattr(args, 'overlay_ini', None) or []:
@@ -476,6 +531,9 @@ def main():
     ap.add_argument('--dev-keymap', metavar='SPEC|/FILE', help='diagnostic only: VXRT_XRIZER_DEV_KEYMAP override of the dev keyboard map')
     ap.add_argument('--audio-capture', metavar='FILE', help='diagnostic only: VXRT_XAUDIO2_CAPTURE, the XAudio2 mastering mix ("VXCA" header, float32) written to FILE; keep game audio private')
     ap.add_argument('--prefs-seed', metavar='DIR|none', help='a tree copied into the run\'s private root (drive_c/...) before start; default for --experimental-xrizer: tools/prefs_seed/<appid> when present; none: no seed')
+    ap.add_argument('--saves-dir', metavar='DIR', help='link C:\\users\\vxrt\\Documents\\My Games\\Skyrim VR\\Saves of the run\'s private root to DIR (created if missing) so saves persist across runs')
+    ap.add_argument('--mods-config', metavar='PACK/mods.json', help='diagnostic: a mod pack built by tools/mods.py; its merged tree and Plugins.txt are applied like --mods-dir and its list is recorded in the result')
+    ap.add_argument('--mods-dir', metavar='DIR', help='diagnostic: link each top-level entry of DIR/Data (a flattened loose-file mod tree) into the run\'s overlay Data; the install is not touched')
     ap.add_argument('--overlay-ini', action='append', metavar='FILE:SECTION:KEY=VALUE', help='diagnostic only, repeatable: set one ini key in a per-run copy of FILE (from the asset root) inside the run\'s overlay, e.g. Skyrim.ini:General:sIntroSequence= (empty value); the original is not touched')
     ap.add_argument('--dump-eyes', action='store_true', help='diagnostic only: the experimental dev host writes raw RGBA of the published eyes for frames 1, 2, 60, 300 and 600 under <out>/eyes')
     ap.add_argument('--diag-env', action='append', metavar='NAME[=VALUE]', help='diagnostic only, repeatable: one of the renderer tracing knobs (%s)' % ', '.join(sorted(DIAG_ENV)))

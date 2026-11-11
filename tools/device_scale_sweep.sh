@@ -58,7 +58,7 @@ for s in $ORDER; do
   mkdir -p "$A"
   cur=$(running_pid || true)
   if [ -n "$cur" ]; then say "APP ALREADY RUNNING (pid $cur): not launching, not touching it"; exit 3; fi
-  env_json="{\"VXRT_RENDER_SCALE\":\"$s\",\"VXRT_STATS\":\"1\",\"VXRT_LOG_TEE\":\"1\""
+  env_json="{\"VXRT_RENDER_SCALE\":\"$s\",\"VXRT_STATS\":\"1\",\"VXRT_LOG_TEE\":\"1\",\"VXRT_LOG_APPEND\":\"1\""
   [ -n "${PROFILE:-}" ] && env_json="$env_json,\"VXRT_GPU_PROFILE\":\"1\""
   for kv in ${EXTRA_ENV:-}; do env_json="$env_json,\"${kv%%=*}\":\"${kv#*=}\""; done
   env_json="$env_json}"

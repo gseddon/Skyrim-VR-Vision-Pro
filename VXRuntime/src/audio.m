@@ -129,6 +129,7 @@ typedef struct {
     d3d_object *render, *clock, *vol;
 } client;
 
+volatile int vx_pause_audio __attribute__((weak));   // set by xrizer_xros_host.m while the app is paused: silence, the ring is still consumed (a weak definition in each file that uses it: not every build links the host)
 static OSStatus render_callback(void *ctx, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus, UInt32 nframes, AudioBufferList *io) {
     (void)flags; (void)ts; (void)bus;
     client *c = ctx;
@@ -154,7 +155,7 @@ static OSStatus render_callback(void *ctx, AudioUnitRenderActionFlags *flags, co
     }
     static int muted = -1;                                      // VXRT_MUTE=1: silence (for unattended runs)
     if (muted < 0) muted = getenv("VXRT_MUTE") && atoi(getenv("VXRT_MUTE"));
-    if (muted) memset(out, 0, (size_t)nframes * c->frame_bytes);
+    if (muted || vx_pause_audio) memset(out, 0, (size_t)nframes * c->frame_bytes);
     else if (c->mute || c->volume != 1.0f) {
         if (format_kind(&c->fmt) == 3) {
             float *f = (float *)out, v = c->mute ? 0 : c->volume;
