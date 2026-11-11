@@ -223,6 +223,30 @@ lstrcat-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/lstrcat/lstrcat_a.exe
 
 .PHONY: lstrcat-check
 
+build/dynamic_code/dynamic_code_a.exe: tests/dynamic_code_a.c
+	@mkdir -p build/dynamic_code
+	$(MINGW) -O1 -nostdlib -e mainCRTStartup -o $@ $< -lkernel32
+
+dynamic-code-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/dynamic_code/dynamic_code_a.exe
+	python3 tests/dynamic_code_check.py
+
+.PHONY: dynamic-code-check
+
+# LuaJIT's code-area search (SkyUI VR) at the Mac's old module layout and at the device layout: prints how often each finds room (a probe, not a pass/fail check).
+build/dynamic_code/mcode_window_a.exe: tests/mcode_window_a.c
+	@mkdir -p build/dynamic_code
+	$(MINGW) -O1 -nostdlib -e mainCRTStartup -o $@ $< -lkernel32
+
+mcode-window-probe: $(VXRT_ARM64_TARGET) build/vxrt-aot build/dynamic_code/mcode_window_a.exe
+	@mkdir -p build/dynamic_code/mcode_aot build/dynamic_code/probe-root
+	tools/aot_build.sh build/dynamic_code/mcode_window_a.exe build/dynamic_code/mcode_aot > /dev/null
+	@for cfg in "30f024729 300000000 512" "7004294729 7000000000 1024"; do set -- $$cfg; \
+	  env -i HOME=$$HOME PATH=$$PATH VXRT_ROOT=build/dynamic_code/probe-root VXRT_NO_WINE=1 VXRT_STEAM_BRIDGE=0 VXRT_NO_ACTIVATE=1 VXRT_MUTE=1 \
+	    VXRT_AOT_DIR=build/dynamic_code/mcode_aot VXRT_AOT_ARENA=$$2 VXRT_AOT_ARENA_MB=$$3 MCODE_TARGET=$$1 \
+	    /usr/bin/arch -arm64 $(VXRT_ARM64_TARGET) build/dynamic_code/mcode_window_a.exe 2>&1 | grep 'mcode window'; done
+
+.PHONY: mcode-window-probe
+
 # The static script-extender scheme on an owned fixture (research/2026-11-11-skse-vr-on-aot.md): arena bases 0x306/307/308000000.
 skse-fixture-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/skse/skse_fixture_host.exe build/skse/skse_fixture_ext.dll
 	python3 tests/skse_fixture_check.py
