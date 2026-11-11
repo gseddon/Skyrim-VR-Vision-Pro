@@ -16,7 +16,7 @@
       "inputs": [],
       "outputs": ["${XRIZER_RUST_ROOT}/cargo/bin/rustc"],
       "network": true,
-      "network_note": "static.rust-lang.org, crates.io; with --with-steamless also github.com/atom0s/Steamless (CC BY-NC-ND 4.0) and dot.net, the .NET SDK and NuGet. Asks before downloading Steamless unless --yes",
+      "network_note": "static.rust-lang.org, crates.io; with --with-steamless also github.com/atom0s/Steamless (CC BY-NC-ND 4.0) and dot.net, the .NET SDK and NuGet. Prints what it downloads and goes ahead; --confirm asks first",
       "idempotent": "setup_rust.sh --check passes (and steamless-bin exists for --with-steamless)"
     },
     {
