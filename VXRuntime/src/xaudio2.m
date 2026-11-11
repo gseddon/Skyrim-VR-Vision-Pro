@@ -411,6 +411,20 @@ static void **g_xapo_vtbl;
 static int is_reverb_xapo(void *xapo) { return xapo && *(void ***)xapo == g_xapo_vtbl; }
 typedef struct __attribute__((packed)) { void *effect; int32_t initial_state; uint32_t out_channels; } EFFECT_DESCRIPTOR;
 typedef struct __attribute__((packed)) { uint32_t count; const EFFECT_DESCRIPTOR *descs; } EFFECT_CHAIN;
+// VXRT_TRACE_AUDIO: what a program's own XAPO is (IXAPO::GetRegistrationProperties, a guest call: the friendly name and buffer counts).
+static void fx_trace_guest_xapo(void *xapo) {
+    void **vt = *(void ***)xapo;
+    typedef struct { GUID clsid; uint16_t name[256], copyright[256]; uint32_t major, minor, flags, min_in, max_in, min_out, max_out; } REG;
+    REG *reg = NULL;
+    HRESULT (WINAPI *get_props)(void *, REG **) = (HRESULT (WINAPI *)(void *, REG **))vt[3];
+    HRESULT hr = VX_X86FN(get_props)(xapo, &reg);
+    char name[64] = "?";
+    if (hr == S_OK && reg) { for (int i = 0; i < 63 && reg->name[i]; i++) { name[i] = (char)reg->name[i]; name[i + 1] = 0; } }
+    vx_log("XAudio2: guest XAPO %p: vtable %p, GetRegistrationProperties -> %#x \"%s\"%s", xapo, (void *)vt, (unsigned)hr, name,
+           hr == S_OK && reg ? "" : "");
+    if (hr == S_OK && reg) vx_log("XAudio2: guest XAPO %p: clsid %08X-%04X-%04X, flags %#x, input buffers %u..%u, output buffers %u..%u", xapo,
+                                  reg->clsid.d1, reg->clsid.d2, reg->clsid.d3, reg->flags, reg->min_in, reg->max_in, reg->min_out, reg->max_out);
+}
 static void fx_trace_params(uint32_t i, const void *p, uint32_t n) {
     char hex[3 * 64 + 1]; uint32_t k = n < 64 ? n : 64;
     for (uint32_t j = 0; j < k; j++) sprintf(hex + 3 * j, "%02x ", ((const uint8_t *)p)[j]);
@@ -450,7 +464,8 @@ static WINAPI HRESULT voice_set_effects(void *this, const void *chain) {
                 memcpy(f->params, &q, sizeof q); f->params_size = sizeof q;
                 if (d.out_channels == v->channels) f->rv = xa_reverb_new((float)v->rate, (int)v->channels);
                 if (!f->rv) { static int noted; if (!noted++) vx_log("XAudio2: reverb on a voice of %u channels / %u output channels is not supported: it passes the sound through (logged once)", v->channels, d.out_channels); }
-            } else { static int noted; if (!noted++) vx_log("XAudio2: an effect that is not the built-in reverb (XAPO %p) is not run: it passes the sound through (logged once)", d.effect); }
+            } else { if (xa_trace()) fx_trace_guest_xapo(d.effect);
+                static int noted; if (!noted++) vx_log("XAudio2: an effect that is not the built-in reverb (XAPO %p) is not run: it passes the sound through (logged once)", d.effect); }
         }
         for (int i = 0; i < n; i++) if (fresh[i].xapo) { d3d_addref(fresh[i].xapo); fx_apply_params(&fresh[i]); }
     }
