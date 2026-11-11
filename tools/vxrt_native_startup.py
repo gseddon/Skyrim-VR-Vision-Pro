@@ -314,7 +314,7 @@ def capture(args):
             if ptxt.is_file() or plug:
                 pdst = root / 'drive_c/users/vxrt/AppData/Local/Skyrim VR/Plugins.txt'
                 pdst.parent.mkdir(parents=True, exist_ok=True)
-                pdst.write_text(ptxt.read_text() if ptxt.is_file() else ''.join(f'*{n}\r\n' for n in plug), newline='')
+                pdst.write_bytes(ptxt.read_bytes() if ptxt.is_file() else ''.join(f'*{n}\r\n' for n in plug).encode())   # (bytes: the Windows line endings must reach the game as they are)
                 result.setdefault('diagnostic', {})['plugins_txt'] = dict(path=str(pdst), plugins=plug, from_file=ptxt.is_file())
             result.setdefault('diagnostic', {})['mods_dir'] = dict(source=str(mdata), linked_entries=linked,
                 scope='loose files linked into the run overlay; install untouched; effect on the game unverified until a file trace shows the opens')
