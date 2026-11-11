@@ -1,158 +1,178 @@
-# Skyrim VR on Vision Pro
+# Skyrim VR on Apple Vision Pro
 
-Experimental work toward running an owned Windows x86-64 Skyrim VR build locally on Apple Vision Pro: ahead-of-time ARM64 recompilation, VXRuntime Windows compatibility and D3D11→Metal, with native xrizer and a Klepton-derived OpenXR provider.
+This project runs the Windows PC version of **Skyrim VR** directly on an Apple Vision Pro. Nothing is streamed from a gaming PC, and no Mac has to stay connected while you play. A Mac does the one-time preparation and installs the app. After that, the headset runs the game by itself.
 
-## Status
+You need your own copy of Skyrim VR. This repository holds only the tools that do the conversion. It contains no game files, and it can't be used to play without owning the game.
 
-Skyrim VR runs standalone on Apple Vision Pro and goes in-game. The game is recompiled ahead of time to ARM64 on a Mac, installed in a signed visionOS app, and executed on the headset with no streaming, no Mac or PC helper and no external SteamVR. There is no JIT: the accepted path is strict AOT.
+## Does it work?
 
-What has been observed (subject: the physical headset, played by a person):
+Yes, with rough edges. The game starts on the headset and plays in-game: it has been played through the opening cart ride into Helgen. Head tracking, the PlayStation VR2 Sense controllers and sound all work. The mods listed below install and load on the headset too.
 
-- In-game play through the Helgen cart ride, with head tracking and PS VR2 Sense controllers, at 0.75 render scale with MetalFX spatial upscaling, a 100 Hz compositor and audio.
-- The full mods build (below) was installed on the headset on 2026-11-11. HIGGS, PLANCK and VRIK were verified loading there (strict AOT, 0 fallbacks). SkyUI's menus have not yet been exercised in the headset.
+What we know is still rough:
 
-Known open issues:
+- **Performance.** The game draws around 35 frames per second (one image for each eye per frame). That's playable, but well short of the headset's display rate. The Vision Pro's GPU is the limit, so the game renders at 75% of the headset's resolution and Apple's MetalFX upscales it to full size.
+- **Controllers connected late.** If the controllers connect after the game has started, their buttons work but the thumbsticks don't. Connect them before you launch.
+- **Not fully tested.** SkyUI's menus haven't been tried in the headset yet, and nobody has played far beyond the opening.
 
-- Controllers connected after the game has launched lose their analog sticks.
-- Performance is pixel-bound at about 35 stereo pairs/s.
+This is a hobby project, not a finished product.
 
-This is an experimental development project, not a release. It does not establish that the whole game is playable beyond what is listed above. The plans are the source of truth: [main plan](plans/2026-11-08-skyrim-vr-native-darwin-aot.md), [decision log](history/2026-11-09-10-decision-log.md), [AOT feasibility](plans/2026-11-08-skyrim-vr-prepared-input-aot-feasibility.md), [xrizer/Klepton](plans/2026-11-08-xrizer-klepton-native-openxr.md).
+## How it works
 
-## Requirements
+Skyrim VR is a Windows program. It's built for Intel/AMD processors, draws with Microsoft's Direct3D 11 and talks to VR headsets through Valve's SteamVR. The Vision Pro has none of those: it has an Apple chip, Apple's Metal graphics and Apple's own way of drawing into the headset. Four pieces translate between the two worlds.
 
-- Your own copy of Skyrim VR (Steam app 611670, the pinned Windows build) and SteamVR (app 250820, for `msvcp140.dll`). Nothing derived from them is committed or shared.
-- A paid Apple Developer Program team. The app needs the `increased-memory-limit` and `extended-virtual-addressing` entitlements, which free teams do not get.
-- An Apple-silicon Mac (macOS 14 or newer, about 40 GB free) with Xcode 26.x and the visionOS platform, to build.
-- A Vision Pro in Developer Mode, paired with Xcode, and PS VR2 Sense controllers paired to it.
-- `local/env.sh` with your team and device IDs (see below).
+1. **Recompiling the game ahead of time.** The game's machine code is translated from x86-64 (Intel/AMD) to ARM64 (Apple silicon) on the Mac, before the app is installed. This is different from how Rosetta or emulators usually work: they translate while the program runs, often with a just-in-time (JIT) compiler. visionOS doesn't allow apps to generate code while they run, so every piece of code the game will execute has to be translated in advance. That includes the code that mods add. The translated code is packaged as ordinary Apple frameworks inside the app.
 
-### Dependencies
+2. **Windows compatibility (VXRuntime).** The game expects Windows: its files, memory, threads, and system libraries. VXRuntime provides those on Apple's operating system. It's a similar idea to Wine, written for this purpose, and a few parts are adapted from Wine and FFmpeg. Among other things, it decodes the game's xWMA audio for Skyrim's XAudio2 sound engine.
 
-Install the Homebrew packages with one command:
+3. **Direct3D 11 → Metal.** VXRuntime's renderer takes the game's Direct3D 11 drawing commands and replays them with Metal. It also converts the game's 10,807 shaders (the small GPU programs that draw everything) into Metal shaders, which are built once and shipped inside the app. Apple's **MetalFX** then upscales each frame.
+
+4. **SteamVR → visionOS (xrizer and OpenXR).** The game asks SteamVR (the OpenVR interface) for headset and controller positions, and hands it a finished image for each eye. **[xrizer](https://github.com/Supreeeme/xrizer)** is an open-source project that answers those OpenVR calls using OpenXR, the industry-standard VR interface. Underneath it, an OpenXR provider adapted from the open-source **Klepton** project maps OpenXR onto visionOS's CompositorServices and ARKit. That provider handles the headset view, controller tracking and haptics. A compositor running at the headset's 100 Hz keeps head movement smooth even when the game itself runs slower.
+
+## What you need
+
+- **Your own Skyrim VR on Steam**, plus SteamVR installed (a couple of Windows libraries are taken from it). Nothing from either is ever committed or shared.
+- **A paid Apple Developer account** ($99/year). The app needs extra memory and a larger address space, and Apple grants those only to paid accounts.
+- **An Apple-silicon Mac** with Xcode 26 and the visionOS platform installed, and about 40 GB of free space.
+- **A Vision Pro** in Developer Mode, paired with Xcode, and **PlayStation VR2 Sense controllers** paired to it.
+
+### Installing the tools
+
+Install Xcode from the App Store, then add the visionOS platform in Xcode's settings. Then install the rest with [Homebrew](https://brew.sh):
 
 ```sh
 brew install xcodegen python mingw-w64 steamcmd p7zip
 ```
 
-- `xcodegen` and `python` (3.9 or newer) are required; the doctor checks both.
-- `mingw-w64` (provides `x86_64-w64-mingw32-gcc`) is only needed for `make check` and the owned Windows test programs, not for building the Skyrim app. The doctor reports it as a warning if missing.
-- `steamcmd` is only needed for `tools/vxrt_steam.py fetch`; skip it if you copy the game from an existing Steam library. Formula name unverified (it may be a cask on your Homebrew).
-- `p7zip` is used for some archive types by the mod tools; macOS `bsdtar` handles the rest. Formula name and exact need unverified.
+- **xcodegen** and **python** are needed to build the app.
+- **mingw-w64** is a Windows C compiler. It's only needed to run the project's own test suite (`make check`), not to build the game.
+- **steamcmd** is only needed if you want the tools to download the game from Steam. Skip it if you'll copy the game from an existing Steam library. (On some setups it's a cask: `brew install --cask steamcmd`.)
+- **p7zip** unpacks some mod archives.
 
-Not from Homebrew:
+The setup itself downloads Rust and, if needed, Steamless and a private .NET runtime into the project folder. You don't need to install those yourself.
 
-- From Xcode: the visionOS SDKs (`xros`, `xrsimulator`), `xcrun`, `devicectl`, the Metal toolchain and `clang` (`xcode-select --install` for the command line tools).
-- Fetched by the `toolchain` stage into git-ignored `build/toolchains` and `build/private`: Rust 1.99.1 with the Apple targets and the locked crates, and with `--with-steamless` Steamless and a private .NET 8 SDK. Do not install these yourself.
+## Setting it up
 
-I found no use of nasm, cmake, ninja or git-lfs in the scripts or Makefiles.
+There's a longer guide in [docs/SETUP_SKYRIM.md](docs/SETUP_SKYRIM.md).
 
-## Setup
-
-Full detail: [docs/SETUP_SKYRIM.md](docs/SETUP_SKYRIM.md).
-
-1. Your settings, once:
+### 1. Tell it about your account, headset and game
 
 ```sh
-mkdir -p local && cp local.example.sh local/env.sh      # local/ is git-ignored
-$EDITOR local/env.sh
-python3 tools/vxrt_build.py doctor                       # what is still missing, and how to fix it
+mkdir -p local && cp local.example.sh local/env.sh
+open -e local/env.sh
 ```
 
-`local/env.sh` holds `export` lines (placeholders shown):
+Fill in the values. The `local/` folder is never committed.
 
 ```sh
-export XROS_TEAM_ID=ABCDE12345                                 # your 10-character Apple team ID
-export XROS_BUNDLE_PREFIX=com.yourname.vxrt                    # the app becomes <prefix>.SkyrimVR
-export VXRT_DEVICE_ID=00000000-0000-0000-0000-000000000000     # xcrun devicectl list devices, Identifier column
-export SKYRIM_ASSET_ROOT="$HOME/path/to/steamapps/common/SkyrimVR"   # your install; read only
-export STEAMVR_WIN64_DLLS="$HOME/path/to/SteamVR/bin/vrwebhelper/win64"   # read only
+export XROS_TEAM_ID=ABCDE12345                       # your Apple team ID (developer.apple.com → Membership)
+export XROS_BUNDLE_PREFIX=com.yourname.vxrt          # any reverse-domain name; the app becomes <prefix>.SkyrimVR
+export VXRT_DEVICE_ID=00000000-0000-0000-0000-000000000000   # from: xcrun devicectl list devices
+export SKYRIM_ASSET_ROOT="$HOME/path/to/steamapps/common/SkyrimVR"    # your game install (only read, never changed)
+export STEAMVR_WIN64_DLLS="$HOME/path/to/SteamVR/bin/vrwebhelper/win64"
 ```
 
-The build tools and doctor read `local/env.sh` themselves; for plain `make` run `. local/env.sh` first. Your own Skyrim VR comes from `SKYRIM_ASSET_ROOT` (copy it from a Steam library, or `python3 tools/vxrt_steam.py fetch <steam-login> 611670 250820`, where SteamCMD asks for your password and Steam confirms ownership). The doctor checks the game is the pinned build.
+If the game isn't on this Mac, the tools can fetch it with your Steam login: `python3 tools/vxrt_steam.py fetch <steam-login> 611670 250820`. Steam asks for your password and checks that you own it.
 
-2. The stages. Each is `python3 tools/vxrt_build.py <stage>`; each is idempotent (a finished stage does nothing unless `--force`). Exit 0 means done, 2 a missing input (the message names it), 1 a failure. `--json` prints one result object. `python3 tools/vxrt_build.py list` shows every stage and its state.
-
-| Stage | What it does | Output |
-| --- | --- | --- |
-| `doctor` | checks prerequisites, settings and inputs | a report |
-| `toolchain [--with-steamless] [--confirm]` | Rust and the locked crates; with `--with-steamless` also Steamless and .NET 8. It lists what it downloads and goes ahead; `--confirm` asks first. Network | `build/toolchains/xrizer-rust` |
-| `prepare` | unpacks your SkyrimVR.exe with Steamless (hash-checked) and collects the input DLLs | prepared exe and inputs under `build/private` |
-| `aot` | compiles the prepared exe and DLLs to ARM64 frameworks | `build/private/game_fw-xros` |
-| `shaders` | builds the Metal shader set from the committed manifest and your Main.bsa | `build/private/shadercache-xros-manifest` |
-| `app [--unsigned] [--install]` | builds and signs the visionOS app; `--install` installs it with devicectl | `VXRuntime/build/xros-xrizer-fixture/derived/Build/Products/Debug-xros/VXRuntimeHost.app` |
-| `stage-to-device [--run]` | copies the game tree (about 14 GB) into the app's container; a dry run unless `--run` | on the headset |
-| `mods-fetch --list L` | fetches the Nexus files named in a mods list (below) | `build/private/downloads/nexus`, `mods-src` |
-| `mods --list L [--out DIR] [--deploy]` | builds a mod pack; `--deploy` copies it to the headset | `build/private/mods-pack` |
-
-There is no all-in-one auto-yes flag: the stages do not prompt, except `toolchain --confirm` (opt-in) and, on a terminal, the Nexus fetch prompts. Only `app --install`, `stage-to-device --run` and `mods --deploy` touch the headset, and only `toolchain` and `mods-fetch` (with a key) use the network.
-
-Typical first run:
+Then check that everything is in place:
 
 ```sh
-python3 tools/vxrt_build.py toolchain --with-steamless
-python3 tools/vxrt_build.py prepare
-python3 tools/vxrt_build.py aot
-python3 tools/vxrt_build.py shaders
-python3 tools/vxrt_build.py app --install
-python3 tools/vxrt_build.py stage-to-device --run
+python3 tools/vxrt_build.py doctor
 ```
 
-Then start the app from the Vision Pro Home view. For a development run on the Mac with keyboard controllers there is `tools/play_skyrim_dev.sh` (see its header for flags).
+The doctor lists anything that's missing and tells you how to fix it, including whether your copy of the game is the version these tools expect.
+
+### 2. Build and install
+
+Everything runs through one script, `tools/vxrt_build.py`, in steps. Run them in this order:
+
+```sh
+python3 tools/vxrt_build.py toolchain --with-steamless   # downloads Rust, Steamless and .NET into the project
+python3 tools/vxrt_build.py prepare                      # removes Steam's DRM wrapper from your SkyrimVR.exe (a private copy)
+python3 tools/vxrt_build.py aot                          # recompiles the game for Apple silicon
+python3 tools/vxrt_build.py shaders                      # builds the Metal shaders from your game data
+python3 tools/vxrt_build.py app --install                # builds, signs and installs the app on your Vision Pro
+python3 tools/vxrt_build.py stage-to-device --run        # copies the game data (about 14 GB) to the headset
+```
+
+Then open **Skyrim VR** from the Vision Pro's Home view.
+
+Good to know:
+
+- **Steps skip finished work.** A step that has already finished does nothing next time, so it's safe to rerun the whole list. Add `--force` to redo one.
+- **Status and errors.** `python3 tools/vxrt_build.py list` shows each step's status. A step that's missing something says what, and exits with code 2.
+- **No questions asked.** The steps run without prompting. The only exceptions: `toolchain --confirm` asks before downloading, and the mod download step asks you to download files in your browser.
+- **What touches the headset:** only `app --install`, `stage-to-device --run` and `mods --deploy`. **What uses the internet:** only `toolchain` and `mods-fetch`.
+- **Settings.** The app has a start screen with settings: render scale, upscaling, sharpening, snap or smooth turning, teleport or walking, and a range of Skyrim's own settings. Each one defaults to the game's usual value.
 
 ## Mods
 
-`tools/mods.py` builds a mod pack from a mods list (`mods-list.json`, format documented at the top of `tools/mods.py`). A mod can name a Nexus file (`game`, `mod_id`, `file_id`); `tools/nexus.py` fetches it. This works without Nexus Premium and without an API key:
+Mods are supported, including the ones that make Skyrim VR feel physical. These are on by default:
 
-1. `python3 tools/vxrt_build.py mods-fetch --list mods-list.json` prints, for each mod, the Nexus Files page to open.
-2. Download the file in your browser. The tool watches `~/Downloads` (`VXRT_DOWNLOADS_DIR` to change), matches the archive by mod ID, checks its md5 against the pinned value (and pins it on first fetch), and unpacks it under `build/private/mods-src`. A file whose md5 differs from the pin is refused.
-3. An nxm:// handler is optional (`python3 tools/nexus.py install-handler`, `handler-status`, `uninstall-handler`). A personal `NEXUS_API_KEY` is also optional; with Premium it makes downloads automatic.
-4. `python3 tools/vxrt_build.py mods --list mods-list.json [--deploy]` builds the pack and optionally copies it to the headset.
-
-Mods are for your personal use under Nexus's terms; they are not in this repository and must not be redistributed. The mods list itself is not committed, because it holds local paths. The default set built for the 2026-11-11 headset install, read from that build's list and pack (`mods.json`), is:
-
-| Mod | Version | Purpose |
+| Mod | Version | What it does |
 | --- | --- | --- |
-| SKSE VR (Papyrus scripts and loader support) | 2.0.12 | script extender that the other plugins load through |
-| SkyrimVRTools | 2.3 BETA | in-game VR settings and configuration overlay |
-| HIGGS | 1.10.10 | physical hand interaction: grab, pull and throw objects |
-| PLANCK | 0.8.2 | physics-based active ragdoll and collision; requires HIGGS |
-| VRIK | 0.8.8 | full-body player avatar driven by head and hands |
-| SkyUI VR | 1.2.2 | the menu interface; a small overlay mod adds `jit.off()` to its `MainEntry.lua` (`tools/skyui_nojit.py`), because strict AOT cannot run LuaJIT-generated code |
-| Skyland AIO 1k | | texture and visual overhaul (Lit Road Signs and Watercolor plugins active) |
+| SKSE VR | 2.0.12 | The script extender most other mods need |
+| SkyrimVRTools | 2.3 beta | A shared helper library that VR mods build on |
+| HIGGS | 1.10.10 | Use your hands: grab, pull and throw objects |
+| PLANCK | 0.8.2 | Physical combat: weapons and bodies collide and react (needs HIGGS) |
+| VRIK | 0.8.8 | Gives you a full body you can see, moved by your head and hands |
+| SkyUI VR | 1.2.2 | A better menu and inventory interface |
+| Skyland AIO | 1k | Higher-quality landscape and architecture textures |
 
-The build also carries an owned diagnostic plugin (`modlist-dump`) that logs the loaded plugin list. Skyland's version string is not recorded in the list. HIGGS, PLANCK and VRIK are verified loading on the headset; the rest are installed but not individually verified there.
+HIGGS, PLANCK and VRIK have been confirmed loading on the headset. The others are installed but haven't been checked one by one.
 
-## Source layout
+Mods that add code (SKSE plugins) are recompiled ahead of time along with the game. Changing the set of code mods means rerunning that step. SkyUI contains a small scripting engine (LuaJIT) that normally generates code while it runs. The tools add a tiny patch that switches that off.
 
-| Directory | Purpose |
-| --- | --- |
-| `VXRuntime/` | Windows compatibility, x64→ARM64 compiler, Metal renderer, visionOS host, owned fixtures |
-| `third_party/xrizer/` | Pinned GPL xrizer source and Apple port |
-| `third_party/klepton_openxr/` | Pinned/adapted MIT OpenXR provider and owned native Metal fixtures |
-| `tools/`, `tests/` | Static audits, reproducible AOT pipeline, native startup evidence and unit tests |
-| `plans/`, `research/` | Decisions, verified results, provenance and remaining risks |
+### Getting the mod files
 
-The target here is standalone headset execution. See [UPSTREAM.md](UPSTREAM.md) for source provenance and [MIGRATION.md](MIGRATION.md) for the active workspaces.
-
-## Initial checks
-
-On an Apple silicon Mac with Xcode and the visionOS SDK installed:
+The mod files themselves aren't included. You download them from [Nexus Mods](https://www.nexusmods.com) under its terms, for your own use. **A free Nexus account is enough: no Premium and no API key needed.**
 
 ```sh
-mkdir -p build
-make -C VXRuntime build/vxrt-aot build/native_vr_test
-VXRuntime/build/native_vr_test
-python3 -m unittest discover -s tests -p 'skyrim*_test.py'
-python3 -m unittest discover -s tests -p 'vxrt_native_startup_test.py'
-third_party/klepton_openxr/build-test.sh
+python3 tools/vxrt_build.py mods-fetch --list mods/default.json
 ```
 
-The full runtime also requires the existing MinGW cross-compiler. Rust checks use the repository-local toolchain in `build/toolchains/xrizer-rust` (override with `XRIZER_RUST_ROOT`); component scripts document targets/features. The experimental `owned-apple-test` route is for owned integration fixtures. Ordinary Apple initialization remains unavailable while required behaviors are incomplete.
+For each mod, this shows a link to its Nexus download page. Open it and click the download button in your browser as usual. The tool watches your Downloads folder, recognises each file, checks that it's exactly the expected file, and unpacks it. Then build the mod pack and send it to the headset:
 
-## Private inputs and artifacts
+```sh
+python3 tools/vxrt_build.py mods --list mods/default.json --deploy
+```
 
-This repository contains source and owned test inputs. Game executables/data, Microsoft/Valve runtime DLLs, prepared images, translated game code, toolchains, downloaded tool packages, build outputs and raw run directories remain local and ignored. Do not redistribute them. Private-input tools require local hashes/paths and preserve original installations.
+You can copy the default list and add or remove mods. Its format is described at the top of `tools/mods.py`. If you have Nexus Premium, setting `NEXUS_API_KEY` makes the downloads automatic. You can also register a handler for Nexus's "Mod Manager Download" buttons: `python3 tools/nexus.py install-handler`.
 
-## Licensing
+## What's in this repository
 
-The original MIT notice of the upstream project this derives from is retained in [LICENSE](LICENSE). xrizer is GPL-3.0-or-later; Klepton and Khronos/OpenVR headers retain their own licenses and notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and each component's source record. The original project README is retained under `docs/VERANTYX_UPSTREAM_README.md`.
+| Folder | What's in it |
+| --- | --- |
+| `VXRuntime/` | The recompiler, the Windows compatibility layer, the Direct3D → Metal renderer and the visionOS app |
+| `third_party/xrizer/` | xrizer (SteamVR/OpenVR → OpenXR), with the changes for Apple platforms |
+| `third_party/klepton_openxr/` | The OpenXR provider for visionOS, adapted from Klepton |
+| `tools/` | The build script, the mod tools and developer utilities |
+| `tests/` | Automated tests |
+| `plans/`, `research/`, `history/` | Design notes, measurements and a decision log |
+
+### For developers
+
+- **Plans.** Start with [the main plan](plans/2026-11-08-skyrim-vr-native-darwin-aot.md) and [the decision log](history/2026-11-09-10-decision-log.md).
+- **Playing on the Mac.** `tools/play_skyrim_dev.sh` runs the game on the Mac with keyboard controls, which is handy for testing. See the top of the script for options.
+- **Tests:**
+
+```sh
+make -C VXRuntime check                                  # needs mingw-w64
+make -C VXRuntime xros-app XROS_CODE_SIGNING=NO          # builds the app without signing
+python3 -m unittest discover -s tests -p 'skyrim*_test.py'
+```
+
+## Credits and licensing
+
+This project grew out of **[VeRantyx](https://github.com/Ag3497120/VeRantyx)** (its original README is kept in [docs/VERANTYX_UPSTREAM_README.md](docs/VERANTYX_UPSTREAM_README.md)), whose x86-64 → ARM64 recompiler and Windows compatibility layer it builds on. VeRantyx's original MIT notice is kept in [LICENSE](LICENSE).
+
+It also uses, with their own licences:
+
+- **xrizer** (GPL-3.0-or-later);
+- **Klepton**'s OpenXR and controller code (MIT);
+- parts adapted from **Wine** and **FFmpeg** (LGPL-2.1-or-later);
+- **AMD FidelityFX CAS** (MIT);
+- the Khronos OpenXR and Valve OpenVR headers.
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the full list and each component's licence.
+
+Skyrim VR is © Bethesda Softworks. SteamVR and OpenVR are Valve's. This project isn't affiliated with Bethesda, Valve, Apple or Nexus Mods. Game files, Valve and Microsoft libraries, and the recompiled game code all stay on your own machine and headset. Never redistribute them.
