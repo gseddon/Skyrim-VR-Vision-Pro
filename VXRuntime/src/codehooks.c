@@ -288,9 +288,14 @@ static void watch_start(void) {
     g_rused0 = g_region_used; g_rbase = malloc(g_rused0 ? g_rused0 : 1);
     if (g_region) memcpy(g_rbase, g_region, g_rused0);
     pthread_mutex_unlock(&g_lock);
-    if (getenv("VXRT_CODE_VERIFY")) watch_load(getenv("VXRT_CODE_VERIFY"));
+    const int have_capture = getenv("VXRT_CODE_VERIFY") != NULL;
+    if (have_capture) watch_load(getenv("VXRT_CODE_VERIFY"));
+    else {                                                      // (observe only: everything written later is reported, nothing is expected)
+        g_rwant_len = g_rused0; g_rwant = malloc(g_rused0 ? g_rused0 : 1);
+        if (g_region) memcpy(g_rwant, g_region, g_rused0);
+    }
     // what the preload list wrote must already be the capture's (a site not yet written still holds the original)
-    for (int i = 0; i < g_nwatch; i++) {
+    for (int i = 0; have_capture && i < g_nwatch; i++) {
         snap_sec *e = g_watch[i].s;
         for (uint32_t k = 0; k < e->n; k++) {
             uint8_t b = g_watch[i].base[k];
@@ -300,7 +305,7 @@ static void watch_start(void) {
             }
         }
     }
-    for (size_t k = 0; g_region && k < g_rused0; k++) {
+    for (size_t k = 0; have_capture && g_region && k < g_rused0; k++) {
         if (g_rbase[k] && (k >= g_rwant_len || g_rbase[k] != g_rwant[k])) {
             vx_log("codehooks: verify: %s +%#zx differs from the capture (have %02x)", g_region_image->name, k + 0x1000, g_rbase[k]);
             vx_log("codehooks: VXRT_CODE_VERIFY: the code in memory is not the capture the modules were made from; stopping"); fflush(NULL); _exit(3);
