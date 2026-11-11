@@ -129,11 +129,20 @@ def build(a):
         else:
             r['note'] = r['note'] or 'disabled in the list'
         res.append(r)
+    # SKSE VR itself: the core DLL, the stub module and the capture the AOT modules were made from, at the root of the overlay (the app
+    # preloads them: xros/app main.m skyrimvr_start). Given as paths in the list's "skse_runtime"; private files, hashed here.
+    root_files = []
+    if cfg.get('skse_runtime'):
+        (out / 'overlay_root').mkdir()
+        for want, name in (('core', 'sksevr_1_4_15.dll'), ('hooks', 'vxrt_hooks.dll'), ('capture', 'skse_capture.txt')):
+            src = Path(cfg['skse_runtime'][want]).resolve(strict=True)
+            subprocess.run(['cp', '-c', str(src), str(out / 'overlay_root' / name)], check=True)
+            root_files.append(dict(name=name, sha256=sha256(out / 'overlay_root' / name), size=src.stat().st_size))
     ptxt = ''.join(f'*{p}\r\n' for p in plugins)
     (out / 'Plugins.txt').write_text(ptxt, newline=''); (out / 'merged' / 'Plugins.txt').write_text(ptxt, newline='')
     act = [r for r in res if r['active']]
     doc = dict(version=1, profile=cfg.get('profile', 'default'), merged='merged', plugins_txt='Plugins.txt', plugins=plugins, mods=res,
-               skse_plugins=skse_plugins, shadow_install=shadow,
+               skse_plugins=skse_plugins, shadow_install=shadow, overlay_root_files=root_files,
                totals=dict(active_mods=len(act), active_files=sum(r['files'] for r in act), active_size_bytes=sum(r['size_bytes'] for r in act),
                            active_memory_hint_mb=sum(r['memory_hint_mb'] or 0 for r in act)))
     (out / 'mods.json').write_text(json.dumps(doc, indent=1))
@@ -175,6 +184,8 @@ def deploy(a):
              (str(pack / 'Plugins.txt'), f'{root}/drive_c/users/vxrt/AppData/Local/Skyrim VR/Plugins.txt')]
     for e in sorted((pack / 'merged' / 'Data').iterdir()):
         steps.append((str(e), f'{root}/overlay_skyrimvr/Data/{e.name}'))
+    for f in d.get('overlay_root_files', []):
+        steps.append((str(pack / 'overlay_root' / f['name']), f"{root}/overlay_skyrimvr/{f['name']}"))
     cmds = [base + ['--source', s, '--destination', t] for s, t in steps]
     for c in cmds: print(' '.join(shlex.quote(x) for x in c))
     if not a.yes:
