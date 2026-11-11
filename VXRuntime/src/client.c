@@ -196,6 +196,12 @@ static const ini_set ini_watch[] = {
     // the gameplay settings the launcher can set (VXSettings.swift): turning and movement
     { "VRInput", "bGamepadLookAngleSnapping", "" }, { "VRInput", "bGamepadLookAngleSnapSmoothing", "" }, { "VRInput", "fGamepadLookAngleSnapAmount", "" },
     { "VRInput", "fGamepadLookAngleSnapSmoothingSpeed", "" }, { "VRInput", "bDirectMovementWithWands", "" }, { "VRInput", "bUseWandDirectionalMovement", "" },
+    { "VRInput", "bLeftHandedMode", "" }, { "Controls", "bAlwaysRunByDefault", "" },
+    { "VRComfort", "bComfortModeWhileTurning", "" }, { "VRComfort", "bComfortModeWhileMoving", "" }, { "VRComfort", "fComfortModeSize", "" }, { "VR", "bComfortSneak", "" },
+    { "VR", "fCharacterHeightOffset", "" }, { "VR", "fDefaultEyeHeight", "" }, { "VRInput", "bShowHandsWhileSheathed", "" }, { "VR", "bAlwaysShowHands", "" },
+    { "Interface", "bGeneralSubtitles", "" }, { "Interface", "bDialogueSubtitles", "" }, { "Interface", "bShowSubtitleSpeakerName", "" },
+    { "Interface", "bShowCompass", "" }, { "Interface", "bShowCrosshair", "" }, { "Interface", "bShowHUDMessages", "" },
+    { "VRTeleport", "bTeleportFade", "" }, { "VRTeleport", "fMaxTeleportDistance", "" },
     { "VR", "fGamepadLookAngleSnapAmountMin", "" }, { "VR", "fGamepadLookAngleSnapAmountMax", "" },
     { "VR", "fGamepadLookAngleSnapSmoothingSpeedMin", "" }, { "VR", "fGamepadLookAngleSnapSmoothingSpeedMax", "" },
 };
