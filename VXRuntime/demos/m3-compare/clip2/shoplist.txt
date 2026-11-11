@@ -1,4 +1,0 @@
-eggs
-flour
-sugar
-butter

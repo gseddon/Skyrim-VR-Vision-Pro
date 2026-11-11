@@ -468,6 +468,9 @@ def run(game, scenario=None, quality="", seconds=None, extra_args=(), press_ever
     result["preconditions"] = checks
     if sc is None and spec:
         checks.append({"code": "scenario_known", "ok": False, "detail": f"{scenario}: not one of {sorted(spec['scenarios'])}"})
+    launcher = "launch_vxrt_alyx.sh" if spec and spec.get("launcher") == "alyx" else "launch_vxrt_game.sh"
+    checks.append({"code": "launcher_present", "ok": os.path.exists(os.path.join(REPO, "scripts", launcher)),
+                   "detail": "scripts/%s (removed with the legacy streaming path; this harness cannot start games until a launcher exists)" % launcher})
     if not all(c["ok"] for c in checks):
         result["status"] = "refused"
         result["refused"] = [c["code"] for c in checks if not c["ok"]]

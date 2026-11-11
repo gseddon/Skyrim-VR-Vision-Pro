@@ -98,6 +98,9 @@ def main():
         return
     if sys.argv[1:] != ["check"]:
         sys.exit(__doc__)
+    if not os.path.isdir(GAMES_DIR):
+        print("game profiles: no games/ folder (the legacy profiles were removed) -> ok")
+        return
     bad = 0
     for f in sorted(os.listdir(GAMES_DIR)):
         if not f.endswith(".json") or f == "profile.schema.json":
