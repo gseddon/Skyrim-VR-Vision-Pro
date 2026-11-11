@@ -16,7 +16,7 @@ The answer, with evidence, and a plan for each wall.
   the SDK, so most macOS-only calls are answered there instead of in the sources.
 - **The app "VX Runtime"** (`xros/app`, bundle id `<XROS_BUNDLE_PREFIX>.VXRuntimeHost`, your own team in `XROS_TEAM_ID`, xcodegen;
   `make xros-app`). Separate from VX Proto and the streaming client
-  (`marimokodai.VisionSpatialTools`). One flat UIKit window; the Windows program named by `-test <name>` runs in it.
+  (`dev.example.vxrt.VisionSpatialTools`). One flat UIKit window; the Windows program named by `-test <name>` runs in it.
   Entitlements: `increased-memory-limit`, `extended-virtual-addressing` (both granted by the team's automatic
   profile, checked with `codesign -d --entitlements`). 19 MB installed, of which 15.6 MB is the executable.
 - **AOT only** (`translator/engine_nojit.c` replaces `engine.c`): nothing is translated at run time. An x86 address
