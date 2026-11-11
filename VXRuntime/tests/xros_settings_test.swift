@@ -55,6 +55,23 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         check(getenv("VXRT_INI_SET").map { String(cString: $0) } == "Display.bUseTAA=0;VRInput.bDirectMovementWithWands=1", "applyEnvironment merges VXRT_INI_SET")
         for n in ["VXRT_INI_SET", "VXRT_RENDER_SCALE", "VXRT_UPSCALE", "VXRT_GATE"] { unsetenv(n) }
 
+        // the further settings: all game default (nothing exported) until picked
+        d = fresh()
+        s = VXSettings(defaults: d, info: [:], environment: [:])
+        check(s.iniValues.isEmpty && map(s)["VXRT_INI_SET"] == nil && VXIniSetting.all.count == 19, "extra settings default to game default")
+        s.setFlag("leftHanded", true); s.setFlag("compass", false); s.setNumber("comfortSize", 0.5); s.setNumber("eyeHeight", 500); s.setNumber("heightOffset", -3)
+        check(map(s)["VXRT_INI_SET"] == "VRInput.bLeftHandedMode=1;VRComfort.fComfortModeSize=0.50;VR.fCharacterHeightOffset=-3;VR.fDefaultEyeHeight=160;Interface.bShowCompass=0", "extra ini \(map(s)["VXRT_INI_SET"] ?? "nil")")
+        check(d.string(forKey: "vxrt.ini.leftHanded") == "1" && d.string(forKey: "vxrt.ini.compass") == "0", "extra stored under vxrt.ini.*")
+        let e1 = VXSettings(defaults: d, info: [:], environment: [:])
+        check(e1.flag("leftHanded") == true && e1.flag("compass") == false && e1.flag("crosshair") == nil && e1.number("comfortSize") == 0.5, "extra read back")
+        e1.setFlag("leftHanded", nil); e1.setFlag("compass", nil)
+        check(d.object(forKey: "vxrt.ini.leftHanded") == nil && d.object(forKey: "vxrt.ini.compass") == nil, "back to game default removes the stored value")
+        // env beats saved, "game" means default; plist default sits below
+        s = VXSettings(defaults: d, info: ["VXIni.crosshair": "0", "VXIni.alwaysRun": "1"], environment: ["VXRT_CROSSHAIR": "on", "VXRT_COMFORT_SIZE": "game", "VXRT_TELEPORT_DISTANCE": "9999"])
+        check(s.flag("crosshair") == true && s.flag("alwaysRun") == true && s.number("comfortSize") == nil && s.number("teleportDistance") == 3000, "extra env/plist precedence")
+        // every key is distinct and names a section.key
+        check(Set(VXIniSetting.all.map { $0.iniName }).count == VXIniSetting.all.count && Set(VXIniSetting.all.map { $0.env }).count == VXIniSetting.all.count, "extra keys distinct")
+
         // clamping and steps
         check(VXSettings.clampScale(0.1) == 0.5 && VXSettings.clampScale(3) == 1.0 && abs(VXSettings.clampScale(0.73) - 0.75) < 1e-9, "clamp")
         d = fresh(); d.set(0.2, forKey: "klepton.renderScale")
