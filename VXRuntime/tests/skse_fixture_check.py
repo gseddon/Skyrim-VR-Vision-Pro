@@ -35,34 +35,41 @@ def sh(*a, env=None):
 def main():
     argparse.ArgumentParser(description=__doc__).parse_args()
     pe = ROOT.parent / 'tools/skse_hooks_pe.py'
-    if not pe.exists():
-        pe = ROOT / '../tools/skse_hooks_pe.py'
-    (B / 'blank').mkdir(exist_ok=True); (B / 'real').mkdir(exist_ok=True)
-    cap = B / 'capture.txt'
-    sh('python3', '-I', pe, '--base', '0x307000000', '--size', '0x100000', '--out', B / 'blank/vxrt_hooks.dll')
-    run('cap', dict(VXRT_PRELOAD=f'{B}/blank/vxrt_hooks.dll;{DLL}', VXRT_EXEC_REGION='vxrt_hooks.dll', VXRT_CODE_CAPTURE=str(cap)),
-        0, 'hooks fired')
-    sh('python3', '-I', pe, '--base', '0x307000000', '--size', '0x100000', '--out', B / 'real/vxrt_hooks.dll', '--capture', cap,
-       '--image', 'skse_fixture_host.exe=0x308000000', '--roots', B / 'roots.txt')
-    for d in ('aot', 'aot-unpatched'):
+    for d in ('blank', 'real', 'aot', 'aot-early', 'aot-unpatched'):
         (B / d).mkdir(exist_ok=True)
-    sh('tools/aot_build.sh', EXE, B / 'aot', env=dict(VXRT_AOT_PATCHES=str(cap)))
+    full, early = B / 'capture.txt', B / 'capture-early.txt'
+    sh('python3', '-I', pe, '--base', '0x307000000', '--size', '0x100000', '--out', B / 'blank/vxrt_hooks.dll')
+    pre = dict(VXRT_PRELOAD=f'{B}/blank/vxrt_hooks.dll;{DLL}', VXRT_EXEC_REGION='vxrt_hooks.dll')
+    # 1. dev captures (translator allowed, a development reference): at the end of the preload list, and 3 s later, after the late hook
+    run('cap-early', dict(pre, VXRT_CODE_CAPTURE=str(early)), 0, 'hooks fired')
+    run('cap-full', dict(pre, VXRT_CODE_CAPTURE=str(full), VXRT_CODE_CAPTURE_AT='3'), 0, 'hooks fired')
+    assert early.read_text().count('\nP ') + early.read_text().startswith('P ') == 1, 'the early capture should hold site 1 only'
+    assert full.read_text().count('P skse_fixture_host') == 2, 'the full capture should hold both sites'
+    # 2. modules from the full capture (the exe with its patches, the extension DLL, the hooks module with the stubs)
+    sh('python3', '-I', pe, '--base', '0x307000000', '--size', '0x100000', '--out', B / 'real/vxrt_hooks.dll', '--capture', full,
+       '--image', 'skse_fixture_host.exe=0x308000000', '--roots', B / 'roots.txt')
+    sh('tools/aot_build.sh', EXE, B / 'aot', env=dict(VXRT_AOT_PATCHES=str(full)))
     sh('tools/aot_build.sh', DLL, B / 'aot')
     sh('tools/aot_build.sh', B / 'real/vxrt_hooks.dll', B / 'aot', env=dict(VXRT_AOT_ROOTS=str(B / 'roots.txt')))
+    # controls' modules: the host without patches; the host with the early capture only (the late hook is missing from it)
     sh('tools/aot_build.sh', EXE, B / 'aot-unpatched')
-    for f in list((B / 'aot').glob('skse_fixture_ext*')) + list((B / 'aot').glob('vxrt_hooks*')):
-        (B / 'aot-unpatched' / f.name).write_bytes(f.read_bytes())
+    sh('tools/aot_build.sh', EXE, B / 'aot-early', env=dict(VXRT_AOT_PATCHES=str(early)))
+    for d in ('aot-unpatched', 'aot-early'):
+        for f in list((B / 'aot').glob('skse_fixture_ext*')) + list((B / 'aot').glob('vxrt_hooks*')):
+            (B / d / f.name).write_bytes(f.read_bytes())
     common = lambda d, c: dict(VXRT_AOT_DIR=str(B / d), VXRT_AOT_STRICT='1', VXRT_PRELOAD=f'{B}/real/vxrt_hooks.dll;{DLL}',
-                               VXRT_EXEC_REGION='vxrt_hooks.dll', VXRT_CODE_VERIFY=str(c))
-    t = run('strict', common('aot', cap), 0, 'hooks fired (work=110 work2=1005)')
+                               VXRT_EXEC_REGION='vxrt_hooks.dll', VXRT_CODE_VERIFY=str(c), VXRT_CODE_WATCH='100')
+    t = run('strict', common('aot', full), 0, 'hooks fired (work=110 work2=1005)')
     m = re.findall(r'aot: (\d+) entries into recompiled code,.*? (\d+) fallbacks to the translator', t)
     assert m and int(m[-1][0]) > 0 and int(m[-1][1]) == 0, 'AOT counters missing or fallbacks present'
-    assert 'verify' in t and '0 differ' in t
-    run('unpatched', common('aot-unpatched', cap), 1, 'not hooked')
+    assert 'watching' in t and 'LATE CODE WRITE' not in t
+    run('unpatched', common('aot-unpatched', full), 1, 'not hooked')
+    run('late', common('aot-early', early), 3, 'LATE CODE WRITE not in the capture')
     bad = B / 'capture-bad.txt'
-    bad.write_text(cap.read_text().replace('ff250000000000100006', 'ff250000000000100007'))
+    bad.write_text(full.read_text().replace('ff250000000000100006', 'ff250000000000100007'))
     run('tampered', common('aot', bad), 3, 'differs from the capture')
-    print('skse_fixture: capture -> patched strict AOT, hooks fire, 0 fallbacks, verify ok; unpatched control not hooked; tampered capture stops -> ok')
+    print('skse_fixture: capture (early and at +3 s) -> patched strict AOT, hooks fire incl. the late one, 0 fallbacks, watch ok; '
+          'controls: unpatched not hooked, capture missing the late hook stops with its address, tampered capture stops -> ok')
 
 
 main()

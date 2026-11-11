@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+CODE_HOOK_ENV = {'VXRT_PRELOAD', 'VXRT_EXEC_REGION', 'VXRT_CODE_VERIFY', 'VXRT_CODE_CAPTURE', 'VXRT_PRELOAD_EXIT'}   # (VXRuntime/src/codehooks.c: SKSE VR preload, capture and verify)
 DIAG_ENV = {'VXRT_KEYBOARD', 'VXRT_KEYBOARD_TEXT', 'VXRT_TRACE_FILES', 'VXRT_TRACE_INPUT', 'VXRT_STATS', 'VXRT_TRACE_WINDOWS', 'VXRT_TRACE_PASSES', 'VXRT_PASS_DUMP', 'VXRT_TRACE_DRAWS', 'VXRT_TRACE_TEXTURES', 'VXRT_TRACE_MAPS', 'VXRT_DUMP_SHADERS', 'VXRT_DRAW_SNAPSHOT', 'VXRT_TRACE_AUDIO', 'VXRT_XRIZER_DEV_DUMP_EVERY', 'VXRT_TRACE_CLEAR_STACK', 'VXRT_DIAG_RTTI_ARRAY', 'VXRT_DIAG_RTTI_ARRAY_WORDS', 'VXRT_TRACE_DRAW_STACK', 'VXRT_TRACE_INI', 'VXRT_XR_SYNC_SUBMIT', 'VXRT_XR_SUBMIT_INFLIGHT', 'VXRT_FLUSH_DRAWS', 'VXRT_XRIZER_DEV_DUMP',
             'VXRT_AOT_FPCR_HIST', 'VXRT_AOT_FPCR_ALWAYS', 'VXRT_VISMASK', 'VXRT_VISMASK_SHAPE', 'VXRT_VISMASK_PROBE'}   # (the last two: module stubs' FPCR/FPSR counters, and the switch back to the previous stubs, RECOMP.md "FPCR") # XR_SYNC_SUBMIT=1: old blocking eye submit; XR_SUBMIT_INFLIGHT bound; FLUSH_DRAWS mid-frame commit threshold; XRIZER_DEV_DUMP=<dir> eye stats/raw frames
 import re
@@ -387,6 +388,12 @@ def capture(args):
                 raise ValueError('--diag-env %s: only %s are allowed (read-only tracing of the renderer)' % (name, ', '.join(sorted(DIAG_ENV))))
             env[name] = value or '1'
             result.setdefault('diagnostic', {}).setdefault('diag_env', {})[name] = env[name]
+        for item in getattr(args, 'code_hook', None) or []:   # the static script-extender scheme (research/2026-11-11-skse-vr-on-aot.md)
+            name, _, value = item.partition('=')
+            if name not in CODE_HOOK_ENV or not value:
+                raise ValueError('--code-hook %s: NAME=VALUE with NAME one of %s' % (name, ', '.join(sorted(CODE_HOOK_ENV))))
+            env[name] = value
+            result.setdefault('diagnostic', {}).setdefault('code_hook', {})[name] = value
         if getattr(args, 'aot_splits', None):
             splits = os.path.abspath(args.aot_splits)
             env['VXRT_AOT_SPLITS'] = splits
@@ -490,6 +497,7 @@ def main():
     ap.add_argument('--saves-dir', metavar='DIR', help='link C:\\users\\vxrt\\Documents\\My Games\\Skyrim VR\\Saves of the run\'s private root to DIR (created if missing) so saves persist across runs')
     ap.add_argument('--overlay-ini', action='append', metavar='FILE:SECTION:KEY=VALUE', help='diagnostic only, repeatable: set one ini key in a per-run copy of FILE (from the asset root) inside the run\'s overlay, e.g. Skyrim.ini:General:sIntroSequence= (empty value); the original is not touched')
     ap.add_argument('--dump-eyes', action='store_true', help='diagnostic only: the experimental dev host writes raw RGBA of the published eyes for frames 1, 2, 60, 300 and 600 under <out>/eyes')
+    ap.add_argument('--code-hook', action='append', metavar='NAME=VALUE', help='repeatable: %s (SKSE VR preload; research/2026-11-11-skse-vr-on-aot.md)' % ', '.join(sorted(CODE_HOOK_ENV)))
     ap.add_argument('--diag-env', action='append', metavar='NAME[=VALUE]', help='diagnostic only, repeatable: one of the renderer tracing knobs (%s)' % ', '.join(sorted(DIAG_ENV)))
     ap.add_argument('--xinput-script', default=None, metavar='SPEC', help='diagnostic only: VXRT_XINPUT_SCRIPT, a scripted virtual gamepad START_S:BUTTONS:HOLD_S[,...] (e.g. 40:A:0.3) with times from process start')
     ap.add_argument('--xinput-repeat', default=None, metavar='SPEC', help='diagnostic only: press a scripted-gamepad button repeatedly, BUTTONS@FROM_S-TO_S/EVERY_S[:HOLD_S] (e.g. A@30-120/3), merged with --xinput-script; the same virtual gamepad as --xinput-script')

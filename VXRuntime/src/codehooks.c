@@ -23,12 +23,13 @@
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include <time.h>
 #include <stdint.h>
 #include <pthread.h>
 #include "vx.h"
 
 #define MAXIMG 64
-typedef struct { const vx_image *im; uint32_t va, n; uint8_t *copy; } snap_sec;
+typedef struct { const vx_image *im; uint32_t va, n; uint8_t *copy; int exec; } snap_sec;
 static snap_sec g_snap[MAXIMG * 8];
 static int g_nsnap;
 static uint8_t *g_region; static size_t g_region_size, g_region_used;
@@ -106,11 +107,13 @@ static void snapshot(void) {
         int n = 0;
         const uint8_t *s = sections(list[i], &n);
         for (int k = 0; s && k < n && g_nsnap < MAXIMG * 8; k++, s += 40) {
-            if (!(rd32(s + 36) & 0x20000000)) continue;                // IMAGE_SCN_MEM_EXECUTE
+            uint32_t ch = rd32(s + 36);
+            int exec = (ch & 0x20000000) != 0;                          // IMAGE_SCN_MEM_EXECUTE; writable data too (vtable swaps that point into the region)
+            if (!exec && !(ch & 0x80000000)) continue;
             uint32_t va = rd32(s + 12), len = rd32(s + 8);
             if (va + (uint64_t)len > list[i]->size) continue;
             snap_sec *e = &g_snap[g_nsnap++];
-            e->im = list[i]; e->va = va; e->n = len; e->copy = malloc(len ? len : 1);
+            e->im = list[i]; e->va = va; e->n = len; e->exec = exec; e->copy = malloc(len ? len : 1);
             memcpy(e->copy, list[i]->base + va, len);
         }
     }
@@ -125,18 +128,36 @@ static int capture(const char *path) {
     for (int i = 0; i < g_nsnap; i++) {
         const snap_sec *e = &g_snap[i];
         const uint8_t *now = e->im->base + e->va;
+        if (!e->exec) continue;
         for (uint32_t k = 0; k < e->n;) {
             if (now[k] == e->copy[k]) { k++; continue; }
             uint32_t last = k;                                  // (a run: gaps of up to 3 equal bytes stay inside it)
             for (uint32_t j = k; j < e->n && j - last <= 3; j++) if (now[j] != e->copy[j]) last = j;
-            uint32_t a = k >= 2 ? k - 2 : k;                           // (two unchanged bytes of context: the opcode of a rel32 branch or FF 15)
+            uint32_t a = k >= 6 ? k - 6 : 0;                           // (up to six unchanged bytes of context: the opcode of a rel32 branch or FF 15 even when low displacement bytes happen to match)
             fprintf(f, "P %s %x ", e->im->name, e->va + a);
             hex_out(f, now + a, last + 1 - a);
             fprintf(f, "\n");
             runs++; bytes += last + 1 - a; k = last + 1;
         }
     }
-    if (g_region && g_region_used) {
+    if (g_region && g_region_used) {   // "T <image> <rva> <qword>": every pointer into the used region in a writable data section of any loaded image
+        const vx_image *list[MAXIMG];                           // (the extender's own globals: the address of a stub that calls the original code; vtable swaps)
+        int total = vx_image_list(list, MAXIMG);
+        for (int i = 0; i < total && i < MAXIMG; i++) {
+            int n = 0;
+            const uint8_t *s = sections(list[i], &n);
+            for (int q = 0; s && q < n; q++, s += 40) {
+                uint32_t ch = rd32(s + 36);
+                if ((ch & 0x20000000) || !(ch & 0x80000000)) continue;
+                uint32_t va = rd32(s + 12), len = rd32(s + 8);
+                if (va + (uint64_t)len > list[i]->size) continue;
+                for (uint32_t k = 0; k + 8 <= len; k += 8) {
+                    uint64_t v; memcpy(&v, list[i]->base + va + k, 8);
+                    if (v >= (uint64_t)(uintptr_t)g_region && v < (uint64_t)(uintptr_t)g_region + g_region_used)
+                        fprintf(f, "T %s %x %016llx\n", list[i]->name, va + k, (unsigned long long)v);
+                }
+            }
+        }
         fprintf(f, "R %s %x ", g_region_image->name, (unsigned)(g_region - g_region_image->base));
         hex_out(f, g_region, g_region_used);
         fprintf(f, "\n");
@@ -163,6 +184,7 @@ static int verify(const char *path) {
     while (fgets(line, (int)cap, f)) {
         char kind, name[128]; unsigned off; int used = 0;
         if (sscanf(line, "%c %127s %x %n", &kind, name, &off, &used) != 3 || !used) continue;
+        if (kind == 'T') continue;                                      // (a pointer into the region written into data: roots for the module only)
         size_t hn = strcspn(line + used, "\r\n") / 2;
         uint8_t *want = malloc(hn ? hn : 1);
         if (!unhex(line + used, want, hn)) { bad++; free(want); continue; }
@@ -181,6 +203,113 @@ static int verify(const char *path) {
     return bad ? 1 : 0;
 }
 
+
+// ---- late writes -------------------------------------------------------------------------------------------------------
+// Plugins install hooks in their messaging handlers (kPostLoad, kDataLoaded, after the main menu), on first use or on a config
+// reload, not only in DllMain. Two pieces keep a missing capture from being silent:
+//  VXRT_CODE_CAPTURE_AT=<seconds>  the capture is written that many seconds after the preload list (the dev run goes on to the
+//                                  main menu or past kDataLoaded); VXRT_CODE_CAPTURE_EXIT=1 then ends the run.
+//  VXRT_CODE_WATCH=<ms>            a thread compares every executable section of the images loaded before the preload, and the
+//                                  region, with what they held after it (baseline) every <ms> milliseconds. A byte that is not
+//                                  the baseline's and not the capture's (VXRT_CODE_VERIFY) is a code write the modules were not
+//                                  made from: logged with the address, and with VXRT_AOT_STRICT the run stops (exit 3).
+//                                  The initial verify is replaced by this: a site not yet written is fine, a wrong one is not.
+typedef struct { snap_sec *s; uint8_t *base, *want; } watch_sec;
+static watch_sec g_watch[MAXIMG * 8]; static int g_nwatch;
+static uint8_t *g_rbase, *g_rwant; static size_t g_rused0, g_rwant_len;
+static int g_watch_ms;
+
+static void watch_load(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) { vx_log("codehooks: cannot read %s", path); exit(3); }
+    size_t cap = 1 << 22; char *line = malloc(cap);
+    while (fgets(line, (int)cap, f)) {
+        char kind, name[128]; unsigned off; int used = 0;
+        if (sscanf(line, "%c %127s %x %n", &kind, name, &off, &used) != 3 || !used || (kind != 'P' && kind != 'R')) continue;
+        size_t hn = strcspn(line + used, "\r\n") / 2;
+        uint8_t *b = malloc(hn ? hn : 1);
+        if (!unhex(line + used, b, hn)) { free(b); continue; }
+        if (kind == 'R') { g_rwant = b; g_rwant_len = hn; continue; }
+        for (int i = 0; i < g_nwatch; i++) {
+            snap_sec *e = g_watch[i].s;
+            if (strcasecmp(e->im->name, name) || off + hn <= e->va || off >= e->va + e->n) continue;
+            for (size_t k = 0; k < hn; k++) if (off + k >= e->va && off + k < e->va + e->n) g_watch[i].want[off + k - e->va] = b[k];
+        }
+        free(b);
+    }
+    fclose(f); free(line);
+}
+static void late_fail(const char *what, const char *image, uint32_t at, int live, int base, int want) {
+    vx_log("codehooks: LATE CODE WRITE not in the capture: %s %s +%#x (live %02x, after preload %02x, capture %02x): "
+           "capture a run that reaches the code that writes it (VXRT_CODE_CAPTURE_AT)", what, image, at, live, base, want);
+    const char *st = getenv("VXRT_AOT_STRICT");
+    if (st && atoi(st)) { vx_log("codehooks: VXRT_AOT_STRICT: stopping"); fflush(NULL); _exit(3); }
+}
+static void watch_once(void) {
+    for (int i = 0; i < g_nwatch; i++) {
+        snap_sec *e = g_watch[i].s; const uint8_t *live = e->im->base + e->va;
+        if (!memcmp(live, g_watch[i].base, e->n) || !memcmp(live, g_watch[i].want, e->n)) continue;
+        for (uint32_t k = 0; k < e->n; k++)
+            if (live[k] != g_watch[i].base[k] && live[k] != g_watch[i].want[k]) { late_fail("code", e->im->name, e->va + k, live[k], g_watch[i].base[k], g_watch[i].want[k]); break; }
+        // (writes that are in the capture are fine; the log says nothing about them)
+    }
+    if (g_region) {
+        pthread_mutex_lock(&g_lock); size_t used = g_region_used; pthread_mutex_unlock(&g_lock);
+        if (used > g_rwant_len) late_fail("executable allocation beyond the capture's region", g_region_image->name, (uint32_t)used, 0, 0, 0);
+        for (size_t k = 0; k < used && k < g_rwant_len; k++) {
+            uint8_t l = g_region[k], b = k < g_rused0 ? g_rbase[k] : 0, w = g_rwant[k];
+            if (l != b && l != w) { late_fail("region", g_region_image->name, (uint32_t)k + 0x1000, l, b, w); break; }
+        }
+    }
+}
+static void *watch_thread(void *arg) {
+    (void)arg;
+    for (;;) { struct timespec ts = { g_watch_ms / 1000, (g_watch_ms % 1000) * 1000000L }; nanosleep(&ts, NULL); watch_once(); }
+    return NULL;
+}
+static void *capture_at_thread(void *arg) {
+    int secs = (int)(intptr_t)arg;
+    sleep((unsigned)secs);
+    capture(getenv("VXRT_CODE_CAPTURE"));
+    if (getenv("VXRT_CODE_CAPTURE_EXIT") && atoi(getenv("VXRT_CODE_CAPTURE_EXIT"))) { fflush(NULL); _exit(0); }
+    return NULL;
+}
+static void watch_start(void) {
+    g_watch_ms = atoi(getenv("VXRT_CODE_WATCH"));
+    if (g_watch_ms < 50) g_watch_ms = 50;
+    for (int i = 0; i < g_nsnap; i++) {
+        snap_sec *e = &g_snap[i];
+        if (!e->exec) continue;
+        watch_sec *w = &g_watch[g_nwatch++];
+        w->s = e; w->base = malloc(e->n ? e->n : 1); w->want = malloc(e->n ? e->n : 1);
+        memcpy(w->base, e->im->base + e->va, e->n); memcpy(w->want, w->base, e->n);
+    }
+    pthread_mutex_lock(&g_lock);
+    g_rused0 = g_region_used; g_rbase = malloc(g_rused0 ? g_rused0 : 1);
+    if (g_region) memcpy(g_rbase, g_region, g_rused0);
+    pthread_mutex_unlock(&g_lock);
+    if (getenv("VXRT_CODE_VERIFY")) watch_load(getenv("VXRT_CODE_VERIFY"));
+    // what the preload list wrote must already be the capture's (a site not yet written still holds the original)
+    for (int i = 0; i < g_nwatch; i++) {
+        snap_sec *e = g_watch[i].s;
+        for (uint32_t k = 0; k < e->n; k++) {
+            uint8_t b = g_watch[i].base[k];
+            if (b != e->copy[k] && b != g_watch[i].want[k]) {
+                vx_log("codehooks: verify: %s +%#x differs from the capture (have %02x, original %02x, capture %02x)", e->im->name, e->va + k, b, e->copy[k], g_watch[i].want[k]);
+                vx_log("codehooks: VXRT_CODE_VERIFY: the code in memory is not the capture the modules were made from; stopping"); fflush(NULL); _exit(3);
+            }
+        }
+    }
+    for (size_t k = 0; g_region && k < g_rused0; k++) {
+        if (g_rbase[k] && (k >= g_rwant_len || g_rbase[k] != g_rwant[k])) {
+            vx_log("codehooks: verify: %s +%#zx differs from the capture (have %02x)", g_region_image->name, k + 0x1000, g_rbase[k]);
+            vx_log("codehooks: VXRT_CODE_VERIFY: the code in memory is not the capture the modules were made from; stopping"); fflush(NULL); _exit(3);
+        }
+    }
+    pthread_t t; pthread_create(&t, NULL, watch_thread, NULL); pthread_detach(t);
+    vx_log("codehooks: watching %d executable sections and the region every %d ms for code writes outside the capture", g_nwatch, g_watch_ms);
+}
+
 // Called by the loader once the program's image is mapped and its imports are bound.
 void vx_codehooks_preload(void) {
     const char *list = getenv("VXRT_PRELOAD");
@@ -195,8 +324,12 @@ void vx_codehooks_preload(void) {
         if (!h && !getenv("VXRT_PRELOAD_OPTIONAL")) { vx_log("codehooks: preload failed; stopping"); exit(3); }
     }
     free(copy);
-    if (getenv("VXRT_CODE_CAPTURE")) capture(getenv("VXRT_CODE_CAPTURE"));
-    if (getenv("VXRT_CODE_VERIFY") && verify(getenv("VXRT_CODE_VERIFY"))) {
+    int watching = getenv("VXRT_CODE_WATCH") && atoi(getenv("VXRT_CODE_WATCH")) > 0;
+    if (getenv("VXRT_CODE_CAPTURE") && getenv("VXRT_CODE_CAPTURE_AT")) {
+        pthread_t t; pthread_create(&t, NULL, capture_at_thread, (void *)(intptr_t)atoi(getenv("VXRT_CODE_CAPTURE_AT"))); pthread_detach(t);
+    } else if (getenv("VXRT_CODE_CAPTURE")) capture(getenv("VXRT_CODE_CAPTURE"));
+    if (watching) watch_start();
+    else if (getenv("VXRT_CODE_VERIFY") && verify(getenv("VXRT_CODE_VERIFY"))) {
         vx_log("codehooks: VXRT_CODE_VERIFY: the code in memory is not the capture the modules were made from; stopping");
         exit(3);
     }

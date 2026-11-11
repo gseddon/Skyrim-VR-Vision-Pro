@@ -20,7 +20,10 @@ static void say(const char *s) {
 }
 void mainCRTStartup(void) {
     // (the extension DLL is loaded by VXRT_PRELOAD before this point; with no preload nothing is hooked)
-    int a = work(10), b = work2(5);
+    int a = work(10);
+    HMODULE ext = GetModuleHandleA("skse_fixture_ext.dll");   // (the late hook: a plugin's kDataLoaded handler)
+    if (ext) { int (*late)(void) = (int (*)(void))GetProcAddress(ext, "ext_late"); Sleep(2500); if (late) late(); Sleep(1500); }
+    int b = work2(5);
     if (a == 110 && b == 1005) { say("skse_fixture: hooks fired (work=110 work2=1005) -> ok\n"); ExitProcess(0); }
     if (a == 11 && b == 5) say("skse_fixture: not hooked (work=11 work2=5)\n");
     else say("skse_fixture: unexpected results\n");
