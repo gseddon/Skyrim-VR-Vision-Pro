@@ -115,8 +115,11 @@ def xros_settings(target, arena, arena_mb):
     base_value = base(arena)
     if type(arena_mb) is not int or not 1 <= arena_mb <= 16384:
         raise ValueError('arena-mb must be an integer from 1 to 16384')
+    prefix = os.environ.get('XROS_BUNDLE_PREFIX') or 'dev.example.vxrt'    # as tools/xros_aot.sh: ids are <prefix>.VXRuntimeHost.aot.<name>
+    if not re.fullmatch(r'[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*', prefix):
+        raise ValueError('XROS_BUNDLE_PREFIX is not a reverse-DNS prefix: %r' % prefix)
     return {'sdk': target, 'triple': XROS_TARGETS[target], 'platform': XROS_PLATFORM[target],
-            'arena': base_value, 'arena_mb': arena_mb}
+            'arena': base_value, 'arena_mb': arena_mb, 'bundle_prefix': prefix}
 
 
 def framework_name(stem, part):
@@ -392,7 +395,8 @@ def key_for(module, ctx):
             'builder': BUILDER, 'jobs': ctx['jobs'], 'target': 'macos-arm64'}
     if ctx.get('xros'):    # (keys of the Mac set are unchanged: these entries exist only for the visionOS targets)
         x = ctx['xros']
-        data.update(builder=XROS_BUILDER, target=x['sdk'], triple=x['triple'], arena=x['arena'], arena_mb=x['arena_mb'])
+        data.update(builder=XROS_BUILDER, target=x['sdk'], triple=x['triple'], arena=x['arena'], arena_mb=x['arena_mb'],
+                    bundle_prefix=x['bundle_prefix'])
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest(), data
 
 
@@ -484,7 +488,7 @@ def compile_module(module, compiler, jobs, work, log, xros=None):
             d = work/'fw'/(dylib + '.framework')
             d.mkdir()
             (d/'Info.plist').write_text(INFO_PLIST % {
-                'fw': dylib, 'id': 'marimokodai.VXRuntimeHost.aot.' + dylib.replace('_', '-'), 'platform': xros['platform']})
+                'fw': dylib, 'id': xros['bundle_prefix'] + '.VXRuntimeHost.aot.' + dylib.replace('_', '-'), 'platform': xros['platform']})
             steps = [cc + ['-c', '-o', str(obj), str(s)],
                      cc + ['-dynamiclib', '-install_name', '@rpath/%s.framework/%s' % (dylib, dylib),
                            '-o', str(d/dylib), str(obj)]]
