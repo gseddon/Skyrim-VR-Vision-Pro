@@ -1,24 +1,25 @@
 #!/usr/bin/env python3
-"""vxrt tune: finds the best picture a game holds at the display rate on this Mac, by running it with the harness
-(tools/vxrt_run.py: own roots, simulated headset, evidence) up a ladder of settings, from the fewest pixels per eye to
-the most, and confirming the choice in alternating runs.
+"""vxrt tune: finds the richest Skyrim setting that holds the dev host's rate on this Mac, by running the game with the
+harness (tools/vxrt_run.py: Mac dev host, strict AOT, evidence) up a ladder of settings, cheapest to richest, and
+confirming the choice in alternating runs.
 
-    tools/vxrt_tune.py alyx                     # the profile's tune scenario and ladder (or the default ladder)
-    tools/vxrt_tune.py thelab --plan            # what it would run, and about how long it takes; runs nothing
-    tools/vxrt_tune.py earth --max-runs 6 --apply   # write the choice into games/<appid>.json ("tuned", this Mac)
-    tools/vxrt_tune.py --show alyx              # the launch command tuned for this Mac, if there is one
+    tools/vxrt_tune.py skyrim                   # the profile's tune scenario and ladder (or the default ladder)
+    tools/vxrt_tune.py skyrim --plan            # what it would run, and about how long it takes; runs nothing
+    tools/vxrt_tune.py skyrim --max-runs 6 --apply   # write the choice into games/611670.json ("tuned", this Mac)
+    tools/vxrt_tune.py --show skyrim            # the launch command tuned for this Mac, if there is one
 
-A candidate holds when every run of it is healthy (the game reached SteamVR, ran the whole scenario, drew something)
-and the median of its runs' fps_median is at least 95 % of the display rate. The tuner climbs while candidates hold;
-the highest one that holds is run again, alternating with the next one up when that one came within 10 % (B A A B),
-until each has --repeats runs; a candidate that stops holding sends it one step down. It stops when the choice is
-confirmed, at --max-runs, or when the harness refuses a run (the user started playing, SteamVR is up, ...): it never
-works around a refusal. Everything is written to runs/<tune id>/tune.json (each run's id and the observation the fps
-comes from), sealed into runs/ledger.jsonl.
+A candidate holds when every run of it is healthy (strict AOT with zero fallback, frames submitted, the whole scenario,
+no crash signals) and the median of its runs' pairs_per_s_median is at least 95 % of the host rate (60). The tuner
+climbs while candidates hold; the highest one that holds is run again, alternating with the next one up when that one
+came within 10 % (B A A B), until each has --repeats runs; a candidate that stops holding sends it one step down. It
+stops when the choice is confirmed, at --max-runs, or when the harness refuses a run (the user started playing,
+another Skyrim run is active, ...): it never works around a refusal. Everything is written to runs/<tune id>/tune.json
+(each run's id and the observation the rate comes from), sealed into runs/ledger.jsonl.
 
-What it does not know: how the stream looks and feels in the headset over the user's Wi-Fi (the harness has no
-headset), and picture quality beyond pixel counts. The game may also pick its own size (Half-Life: Alyx's fidelity
-levels): the per-eye size is what the driver asks for.
+The settings are Skyrim ini overrides and the dev host's submit knobs (TUNABLES in tools/vxrt_run.py). Removed with the
+streaming path: render-scale and quality presets, display Hz, encoder and bitrate settings (nothing natively
+corresponds). What it does not know: how the picture looks and feels in a headset (the harness has none) and picture
+quality beyond the settings named; the 60 Hz host rate is the dev window's, not a headset's.
 
 Exit status: 0 a confirmed choice, 1 none holds, 2 not confirmed (runs ran out), 3 refused, 4 error.
 """
@@ -31,44 +32,32 @@ import vxrt_games as profiles_db                                # noqa: E402
 import vxrt_ledger as ledger                                    # noqa: E402
 
 REPO = doctor.REPO
-DRIVER_EYE = (800, 900)                 # the driver's default per-eye size (driver_verantyx.cpp); presets scale it
-PRESET_SCALE = {"": 1.0, "3k": 1.8, "2.5k": 3.2, "max": 4.0}    # VXRT_VR_RENDER_SCALE each preset sets (launch_vxrt_steamvr.sh)
-HOLD, NEAR = 0.95, 0.90                 # of the display rate: holds; close enough to deserve a second look
-DEFAULT_LADDER = [
-    {"quality": ""},
-    {"quality": "3k"},
-    {"quality": "3k", "settings": {"VXRT_VR_RENDER_SCALE": "2.4"}},
-    {"quality": "2.5k"},
-    {"quality": "max"},
+HOST_HZ = 60                            # the dev host's display rate (its window title: "host 60 Hz")
+HOLD, NEAR = 0.95, 0.90                 # of the host rate: holds; close enough to deserve a second look
+DEFAULT_LADDER = [                      # cheapest to richest (research/2026-11-10-skyrim-vr-performance-settings.md; unmeasured here)
+    {"settings": {"VXRT_SKYRIM_PRESET": "p2"}},
+    {"settings": {}},
+    {"settings": {"VXRT_INI_SET": "Display.iShadowMapResolution=2048;Display.fShadowDistance=8000"}},
 ]
-OVERHEAD_S = 75                         # a run's start and stop around its scenario (SteamVR, the game, cleanup)
+OVERHEAD_S = 90                         # a run's start and stop around its scenario (hashing the inputs, the launch)
 
 # ---- candidates -------------------------------------------------------------------------------------------------------------
-def per_eye(c):
-    s = float(c.get("settings", {}).get("VXRT_VR_RENDER_SCALE", PRESET_SCALE.get(c.get("quality", ""), 1.0)))
-    return round(DRIVER_EYE[0] * s), round(DRIVER_EYE[1] * s)
-
-def display_hz(c):
-    return float(c.get("settings", {}).get("VERANTYX_DISPLAY_HZ", 60))
-
 def label(c):
-    w, h = per_eye(c)
     extra = " ".join(f"{k}={v}" for k, v in sorted(c.get("settings", {}).items()))
-    return f"{c.get('quality') or 'default'} {w}x{h}" + (f" ({extra})" if extra else "")
+    return extra or "dev-host defaults"
 
 def ladder_for(profile):
-    """The profile's ladder (games/<appid>.json "tune"), or the default; sorted by pixels per eye."""
-    lad = (profile or {}).get("tune", {}).get("ladder") or DEFAULT_LADDER
-    return sorted(lad, key=lambda c: per_eye(c)[0] * per_eye(c)[1])
+    """The profile's ladder (games/<appid>.json "tune"), cheapest first, or the default."""
+    return (profile or {}).get("tune", {}).get("ladder") or DEFAULT_LADDER
 
 # ---- what a run says ----------------------------------------------------------------------------------------------------------
 def run_facts(result):
-    """{run_id, status, fps, fps_ref, healthy, why} from a harness result. Healthy: every derived claim but the fps
+    """{run_id, status, fps (pairs/s), fps_ref, healthy, why} from a harness result. Healthy: every derived claim but the pairs
     baseline holds (the baseline belongs to another setting)."""
     obs = {o["metric"]: o for o in result.get("observed", [])}
-    fps = obs.get("fps_median", {}).get("value")
-    bad = [d["claim"] for d in result.get("derived", []) if d["claim"] != "fps_meets_baseline" and not d["holds"]]
-    return {"run_id": result["run_id"], "status": result["status"], "fps": fps, "fps_ref": obs.get("fps_median", {}).get("id"),
+    fps = obs.get("pairs_per_s_median", {}).get("value")
+    bad = [d["claim"] for d in result.get("derived", []) if d["claim"] != "pairs_meet_baseline" and not d["holds"]]
+    return {"run_id": result["run_id"], "status": result["status"], "fps": fps, "fps_ref": obs.get("pairs_per_s_median", {}).get("id"),
             "healthy": result["status"] != "refused" and not bad and fps is not None, "why": bad or ([] if fps is not None else ["no fps"])}
 
 def verdict(c, runs):
@@ -77,12 +66,12 @@ def verdict(c, runs):
         return "untested", None
     fpss = [r["fps"] for r in runs if r["fps"] is not None]
     med = statistics.median(fpss) if fpss else None
-    ok = all(r["healthy"] for r in runs) and med is not None and med >= HOLD * display_hz(c)
+    ok = all(r["healthy"] for r in runs) and med is not None and med >= HOLD * HOST_HZ
     return ("holds" if ok else "fails"), med
 
 def near(c, runs):
     v, med = verdict(c, runs)
-    return v == "fails" and all(r["healthy"] for r in runs) and med is not None and med >= NEAR * display_hz(c)
+    return v == "fails" and all(r["healthy"] for r in runs) and med is not None and med >= NEAR * HOST_HZ
 
 def next_step(ladder, runs, repeats):
     """The index of the candidate to run next, or None when done. runs: {index: [run facts]}."""
@@ -111,12 +100,9 @@ def choice(ladder, runs, repeats):
     return h, len(runs[h]) >= repeats
 
 def command_for(key, c):
-    """The player's launch command for a candidate."""
-    import vxrt_run
-    _, _, inst = vxrt_run.resolve(key)
-    env = " ".join(f"{k}={json.dumps(v) if ' ' in v or '{' in v else v}" for k, v in sorted(c.get("settings", {}).items()))
-    cmd = doctor.launch_command(inst["exe"], c.get("quality", "")) if inst else f"tools/vxrt_run.py {key}"
-    return cmd.replace(" && ", f" && {env} ", 1) if env else cmd
+    """The player's launch command for a candidate (the dev launcher; settings as renderer/ini overrides)."""
+    flags = " ".join(f"--diag-env {k}={json.dumps(v) if ' ' in v or ';' in v else v}" for k, v in sorted(c.get("settings", {}).items()))
+    return f'cd "{REPO}" && tools/play_skyrim_dev.sh --no-build' + (f" -- {flags}" if flags else "")
 
 def machine_key(mi=None):
     mi = mi or doctor.machine_info()
@@ -131,13 +117,13 @@ def tune(game, scenario=None, max_runs=8, repeats=2, seconds=None, runner=None, 
         raise ValueError(f"{game}: unknown game (tools/vxrt_run.py --list)")
     scenario = scenario or profile.get("tune", {}).get("scenario") or profile["default_scenario"]
     ladder = ladder_for(profile)
-    runner = runner or (lambda c: vxrt_run.run(key, scenario, c.get("quality", ""), seconds, settings=c.get("settings"), quiet=True))
+    runner = runner or (lambda c: vxrt_run.run(key, scenario, seconds, settings=c.get("settings"), quiet=True))
     tune_id = tune_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"-tune-{key}"
     path = os.path.join(REPO, "runs", tune_id, "tune.json")
     rec = {"tune_id": tune_id, "game": key, "appid": profile["appid"], "scenario": scenario, "machine": machine_key(),
-           "rule": {"holds": f"every run healthy and median fps_median >= {HOLD} x display rate", "near": f">= {NEAR} x display rate",
+           "rule": {"holds": f"every run healthy and median pairs_per_s_median >= {HOLD} x host rate ({HOST_HZ})", "near": f">= {NEAR} x host rate",
                     "repeats": repeats, "max_runs": max_runs},
-           "ladder": [{"candidate": label(c), **c, "per_eye": per_eye(c), "display_hz": display_hz(c)} for c in ladder],
+           "ladder": [{"candidate": label(c), **c} for c in ladder],
            "runs": [], "status": "running", "started": datetime.now(timezone.utc).isoformat()}
     runs = {}
 
@@ -179,17 +165,15 @@ def tune(game, scenario=None, max_runs=8, repeats=2, seconds=None, runner=None, 
             rec["status"] = "none_holds"
             fastest = max(((i, verdict(ladder[i], runs[i])[1]) for i in runs if all(r["healthy"] for r in runs[i])), key=lambda x: x[1] or 0, default=None)
             if fastest:                                       # (not a choice: what came closest)
-                rec["closest"] = {"candidate": label(ladder[fastest[0]]), "median_fps": fastest[1], "target_fps": HOLD * display_hz(ladder[fastest[0]])}
+                rec["closest"] = {"candidate": label(ladder[fastest[0]]), "median_fps": fastest[1], "target_fps": HOLD * HOST_HZ}
         else:
             c = ladder[best]
             rec["status"] = "confirmed" if confirmed else "unconfirmed"
-            rec["choice"] = {"candidate": label(c), "quality": c.get("quality", ""), "settings": c.get("settings", {}),
-                             "per_eye": per_eye(c), "display_hz": display_hz(c), "median_fps": verdict(c, runs[best])[1],
+            rec["choice"] = {"candidate": label(c), "settings": c.get("settings", {}), "host_hz": HOST_HZ, "median_fps": verdict(c, runs[best])[1],
                              "runs": [{"run_id": r["run_id"], "fps": r["fps"], "observation": r["fps_ref"]} for r in runs[best]],
                              "command": command_for(key, c)}
-    rec["unknown"] = ["the picture and its smoothness in the headset over the user's Wi-Fi (no headset in the harness)",
-                      "picture quality beyond pixels per eye; the game may choose its own size (per_eye is what the driver asks for)",
-                      "other scenes of the game than the scenario measured"]
+    rec["unknown"] = ["the picture and its smoothness in a headset (the harness has none; the 60 Hz is the Mac dev window's)",
+                      "picture quality beyond the settings named", "other scenes of the game than the scenario measured"]
     rec["ended"] = datetime.now(timezone.utc).isoformat()
     save()
     if write:
@@ -206,8 +190,8 @@ def apply(rec):
     p = json.load(open(f))
     ch = rec["choice"]
     p.setdefault("tuned", {})[rec["machine"]] = {
-        "quality": ch["quality"], "settings": ch["settings"], "scenario": rec["scenario"], "median_fps": ch["median_fps"],
-        "per_eye": ch["per_eye"], "display_hz": ch["display_hz"], "checked": rec["ended"][:10],
+        "settings": ch["settings"], "scenario": rec["scenario"], "median_fps": ch["median_fps"],
+        "host_hz": ch["host_hz"], "checked": rec["ended"][:10],
         "source": f"tools/vxrt_tune.py {rec['tune_id']} (runs {', '.join(r['run_id'] for r in ch['runs'])})"}
     problems = profiles_db.problems(p, f)
     if problems:
@@ -230,8 +214,8 @@ def selftest():
             n[0] += 1
             fps = fps_by_quality[label(c)]
             fps = fps.pop(0) if isinstance(fps, list) else fps
-            return {"run_id": f"r{n[0]}", "status": "no_baseline", "observed": [{"id": "o1", "metric": "fps_median", "value": fps}],
-                    "derived": [{"claim": "game_connected_to_steamvr", "holds": healthy}]}
+            return {"run_id": f"r{n[0]}", "status": "no_baseline", "observed": [{"id": "o1", "metric": "pairs_per_s_median", "value": fps}],
+                    "derived": [{"claim": "frames_submitted", "holds": healthy}]}
         return runner
     ladder = ladder_for(None)
     L = [label(c) for c in ladder]
@@ -245,17 +229,17 @@ def selftest():
         finally:
             vxrt_run.resolve = real
     checks = []
-    # holds up to 2.5k, max far below: climbs, stops at max, confirms 2.5k (B A then B)
-    r = go({L[0]: 60, L[1]: 60, L[2]: 59, L[3]: 58, L[4]: 20})
-    checks.append(("climbs and confirms", r["status"] == "confirmed" and r["choice"]["quality"] == "2.5k" and len(r["runs"]) == 6))
-    # 2.5k just out of reach (55 >= 54): looked at twice, alternating with the choice (B A B A)
-    r = go({L[0]: 60, L[1]: 60, L[2]: 59, L[3]: [55, 55], L[4]: 10})
-    checks.append(("near one gets a second look", r["choice"]["candidate"] == L[2] and [x["candidate"] for x in r["runs"]][-3:] == [3, 2, 3]))
+    # holds up to the 3rd... (3 rungs): climbs, stops at the top, confirms it (B A then B)
+    r = go({L[0]: 60, L[1]: 59, L[2]: 20})
+    checks.append(("climbs and confirms", r["status"] == "confirmed" and r["choice"]["candidate"] == L[1] and len(r["runs"]) == 4))
+    # the richest just out of reach (55 >= 54): looked at twice, alternating with the choice
+    r = go({L[0]: 60, L[1]: 59, L[2]: [55, 55]})
+    checks.append(("near one gets a second look", r["choice"]["candidate"] == L[1] and [x["candidate"] for x in r["runs"]][-3:] == [2, 1, 2]))
     # the choice does not hold on its second run: one step down
-    r = go({L[0]: 60, L[1]: 60, L[2]: [59, 40], L[3]: 30, L[4]: 10})
-    checks.append(("steps down", r["choice"]["candidate"] == L[1] and r["status"] == "confirmed"))
+    r = go({L[0]: 60, L[1]: [59, 40], L[2]: 30})
+    checks.append(("steps down", r["choice"]["candidate"] == L[0] and r["status"] == "confirmed"))
     # nothing holds
-    r = go({L[0]: 30, L[1]: 20, L[2]: 10, L[3]: 5, L[4]: 1})
+    r = go({L[0]: 30, L[1]: 20, L[2]: 10})
     checks.append(("none holds", r["status"] == "none_holds" and len(r["runs"]) == 1))
     # unhealthy runs never hold
     r = go({x: 60 for x in L}, healthy=False)
@@ -269,7 +253,7 @@ def selftest():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("game", nargs="?", help="a profile key or Steam app id (tools/vxrt_run.py --list)")
+    ap.add_argument("game", nargs="?", help="skyrim or 611670 (tools/vxrt_run.py --list)")
     ap.add_argument("scenario", nargs="?", help="default: the profile's tune scenario, else its default scenario")
     ap.add_argument("--max-runs", type=int, default=8)
     ap.add_argument("--repeats", type=int, default=2, help="runs the choice needs (default 2)")
@@ -289,7 +273,7 @@ def main():
         key, t = tuned_for(a.game)
         if not t:
             sys.exit(f"{a.game}: not tuned for {machine_key()} yet (tools/vxrt_tune.py {a.game})")
-        print(command_for(key, t)); print(f"# {t['median_fps']} fps at {t['per_eye'][0]}x{t['per_eye'][1]} per eye; {t['source']}", file=sys.stderr)
+        print(command_for(key, t)); print(f"# {t['median_fps']} pairs/s; {t['source']}", file=sys.stderr)
         return
     p = profiles_db.by_key(a.game) or next((x for x in profiles_db.load_all().values() if x["appid"] == a.game), None)
     if a.plan:
@@ -300,7 +284,7 @@ def main():
         print(f"{p['name']}, scenario {sc}: up to {a.max_runs} runs of about {round((secs + OVERHEAD_S) / 60, 1)} min "
               f"(at most {round(a.max_runs * (secs + OVERHEAD_S) / 60)} min); the ladder:")
         for c in ladder_for(p):
-            print(f"  {label(c)}  target {HOLD * display_hz(c):.0f} fps")
+            print(f"  {label(c)}  target {HOLD * HOST_HZ:.0f} fps")
         return
     try:
         rec = tune(a.game, a.scenario, a.max_runs, a.repeats, a.seconds, tune_id=a.id, say=(lambda *x: print(*x, file=sys.stderr)))

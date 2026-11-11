@@ -1433,8 +1433,8 @@ shaders12: build/vxrt build/dxc.exe
 	  VXRT_ROOT=build/root build/vxrt build/dxc.exe '$(DXCOMPILER)' tests/shaders12/$$n.hlsl main $$p tests/shaders12/$$n.h $$n || exit 1; \
 	  VXRT_ROOT=build/root build/vxrt build/dxc.exe -dis '$(DXCOMPILER)' tests/shaders12/$$n.dxil tests/shaders12/$$n.dis.txt || exit 1; done
 
-# Games in VR against their profiles' baselines, games/*.json (tools/vxrt_run.py: own roots, simulated headset, evidence in runs/):
-# minutes per scenario; Mac Steam must be signed in and nothing else running. GAME=alyx|thelab|earth: only that one.
+# Skyrim VR on the Mac dev host against the baselines in games/611670.json (tools/vxrt_run.py: tools/play_skyrim_dev.sh, strict AOT,
+# evidence in runs/): minutes per scenario; needs the private inputs (local/env.sh) and no other Skyrim run. GAME=skyrim|611670.
 vr-check: build/vxrt
 	python3 ../tools/vxrt_run.py --baselines $(GAME)
 

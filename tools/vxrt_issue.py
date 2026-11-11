@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """vxrt issue: when a game still does not run (or runs badly) after an AI agent has tried, this writes a GitHub issue
-for the VeRantyx repository from the evidence: the harness's result, the first problem and the log around it, the
+for this repository from the evidence: the harness's result, the first problem and the log around it, the
 doctor's facts, the game profile, the machine, the commit, and what was tried. Personal details are taken out (home
 folder, user and machine names, Steam names and ids, network addresses).
 
@@ -18,7 +18,7 @@ import vxrt_games                                               # noqa: E402
 
 REPO = doctor.REPO
 RUNS = os.path.join(REPO, "runs")
-DEFAULT_REPOSITORY = "Ag3497120/VeRantyx"
+DEFAULT_REPOSITORY = os.environ.get("VXRT_ISSUE_REPOSITORY", "gseddon/Skyrim-VR-Vision-Pro")
 KINDS = {"support": "does not run", "crash": "crashes", "performance": "runs slowly", "rendering": "draws wrongly"}
 MARK = "<!-- vxrt-issue v1 -->"
 
@@ -59,7 +59,7 @@ def latest_run(key):
     return os.path.join(RUNS, runs[0]) if runs else None
 
 def game_lines(path, exe):
-    """The game's own lines of its log (not the SteamVR helpers it started), numbered."""
+    """The game's own lines of its startup log (not helper processes it started), numbered."""
     out = []
     for n, line in enumerate(open(path, errors="replace"), 1):
         tag = re.match(r"\[vxrt ([^\]:]+):\d+\]", line)
@@ -83,7 +83,7 @@ def build(game, run_dir=None, kind="support", tried="", repository=DEFAULT_REPOS
     facts = doctor.analyze(inst["exe"])
     obs = {o["metric"]: o for o in (result or {}).get("observed", [])}
     exe = (result or {}).get("exe") or os.path.basename(inst["exe"])
-    log = next((os.path.join(run_dir, "logs", f) for f in os.listdir(os.path.join(run_dir, "logs")) if f.startswith("vxrt-") and f not in ("vxrt-steamvr.log", "vxrt-steamvr-launch.log")), None) if run_dir else None
+    log = os.path.join(run_dir, "native", "startup.log") if run_dir and os.path.isfile(os.path.join(run_dir, "native", "startup.log")) else None
     lines = game_lines(log, exe) if log else []
     fp = (obs.get("first_problem") or {}).get("value")
     texts = [open(log, errors="replace").read(2_000_000)] if log else []
@@ -94,16 +94,16 @@ def build(game, run_dir=None, kind="support", tried="", repository=DEFAULT_REPOS
     state = (result or {}).get("status", "no run")
     title = f"[{kind}] {profile['name']} ({profile['appid']}) {KINDS.get(kind, kind)} on VXRuntime"
     if fp: title += ": " + re.sub(r"^\[vxrt[^\]]*\]\s*[0-9:.]*\s*", "", fp["text"])[:90]
-    B = [MARK, f"**Game:** {profile['name']} (Steam {profile['appid']}), `{os.path.relpath(inst['exe'], inst['folder'])}`, engine {', '.join(facts['engine']) or '?'}",
+    B = [MARK, f"**Game:** {profile['name']} (Steam {profile['appid']}), `{os.path.relpath(inst['exe'], inst['folder'])}`",
          f"**Machine:** {mi['chip']}, GPU {mi['gpu_cores']} cores, {mi['memory_gb']} GB, macOS {mi['macos']}",
          f"**VXRuntime:** commit {head}{' (with uncommitted changes)' if dirty else ''}",
          f"**Profile:** " + (f"`games/{profile['appid']}.json`: {profile['status']['state']} ({profile['status']['summary']['en']})" if os.path.exists(os.path.join(vxrt_games.GAMES_DIR, profile['appid'] + '.json')) else "none yet"),
          "", "## What happens"]
     if result:
-        B.append(f"Harness run `{result['run_id']}` ({result['scenario']}{'@' + result['quality'] if result.get('quality') else ''}, {result.get('duration_s', '?')} s): **{state}**" +
+        B.append(f"Harness run `{result['run_id']}` (Mac dev host, not a headset) ({result['scenario']}, {result.get('duration_s', '?')} s): **{state}**" +
                  (f" (refused: {', '.join(result.get('refused', []))})" if result.get("refused") else ""))
-        for m in ("exited_early", "connected_after_s", "fps_median", "gpu_utilization_median", "frame_bright_fraction", "unhandled_exceptions",
-                  "native_signals_outside_program", "unimplemented_calls", "managed_exceptions", "exit"):
+        for m in ("exited_early", "aot_executed", "zero_fallback_reported", "pairs_per_s_median", "xr_submit_ring", "gpu_utilization_median",
+                  "eye_non_black_percent_median", "unhandled_exceptions", "native_signals", "unimplemented_calls", "exit"):
             if m in obs: B.append(f"- {obs[m]['id']} `{m}` = `{json.dumps(obs[m]['value'], ensure_ascii=False)[:200]}`")
         for d in result.get("derived", []): B.append(f"- {d['id']} {d['claim']}: {'yes' if d['holds'] else '**no**'} ({d['rule']})")
         for i in result.get("inferred", []): B.append(f"- {i['id']} (suspicion, {i['confidence']}): {i['claim']}")

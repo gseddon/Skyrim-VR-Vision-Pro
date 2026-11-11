@@ -1,41 +1,40 @@
 ---
 name: vxrt-tune-game
-description: Tune a Windows VR game on VXRuntime (vxrt) for this Mac — settings only, measured with the harness in alternating runs, reported with evidence. Use when asked to optimize, raise fps or resolution, or pick the best quality preset for a game.
+description: Tune Skyrim VR on VXRuntime's Mac dev host for this Mac — settings only, measured with the harness in alternating runs, reported with evidence. Use when asked to optimize, raise the rate, or pick the best Skyrim settings.
 ---
 
-# Tuning a game on VXRuntime (settings only)
+# Tuning Skyrim VR on VXRuntime (settings only)
 
-Read AGENTS.md first. A tune changes settings, never the runtime's code.
+Read AGENTS.md first. A tune changes settings, never the runtime's code. Every number here is the Mac dev host's
+(60 Hz window, synthetic head), not a headset's.
 
 ## Start with the auto-tuner
 
-`tools/vxrt_tune.py <game>` (MCP: `tune_game`, then `read_tune` now and then; `--plan` shows the ladder and the time
-first). It runs the harness up a ladder (default, 3k, 3k at render scale 2.4, 2.5k, max: fewest pixels per eye
-first), stops climbing where a candidate no longer holds 95 % of the display rate with healthy runs, and confirms the
-highest one that holds in alternating runs. A confirmed choice goes into the profile's `tuned` entry for this Mac
-with `--apply`. It stops on a refusal (the user started playing): report that and do not restart it while they play.
-A game whose own size choice matters gets a ladder in its profile (`"tune": {"scenario": ..., "ladder": [...]}`).
+`tools/vxrt_tune.py skyrim` (MCP: `tune_game`, then `read_tune` now and then; `--plan` shows the ladder and the time
+first). It runs the harness up the profile's ladder (`games/611670.json` `tune.ladder`: the p2 preset, the defaults,
+bigger shadows; cheapest first), stops climbing where a candidate no longer holds 95 % of the host rate (60 fresh
+pairs/s) with healthy runs, and confirms the richest one that holds in alternating runs. A confirmed choice goes into
+the profile's `tuned` entry for this Mac with `--apply`. It stops on a refusal (the user is playing, another Skyrim run
+is active): report that and do not restart it while they play.
 
 ## Measure by hand (settings outside the ladder)
 
-- `tools/vxrt_run.py <game> [scenario] --quality 3k --set NAME=VALUE ...` (MCP: `run_game` with `quality` and
-  `settings`). Only the settings AGENTS.md lists are accepted; others are refused (`settings_allowed`).
-- Each run's `fps_median` is over the last part of the run (after loading), from the game's own Submit calls where
-  the capture proxy exists (Half-Life: Alyx), otherwise from the frames the encoder took from SteamVR.
-  `gpu_utilization_median` tells GPU-bound (≥ 90 %) from paced or CPU-bound (< 60 %).
-- Use the scenario that matters: Alyx `menu` is a light scene with a known 20 fps limit; `chapter` is gameplay.
+- `tools/vxrt_run.py skyrim [scenario] --set NAME=VALUE ...` (MCP: `run_game` with `settings`). Only the tunables in
+  `tools/vxrt_run.py` are accepted (`VXRT_SKYRIM_PRESET`, `VXRT_INI_SET`, `VXRT_XR_SUBMIT_INFLIGHT`,
+  `VXRT_XR_SYNC_SUBMIT`, `VXRT_FLUSH_DRAWS`, `VXRT_STATS`); others are refused (`settings_allowed`).
+- `pairs_per_s_median` is over the last part of the run (after loading), from the dev host's fresh producer pairs.
+  `gpu_utilization_median` tells GPU-bound (>= 90 %) from paced or CPU-bound (< 60 %).
+- Use the scenario that matters: `boot` is the menu; `helgen` reaches the cart intro.
+- There is no render-scale, quality-preset or encoder/bitrate setting any more: those belonged to the streaming path.
 
 ## Compare fairly
 
 - One run per setting is not a comparison: run A B B A (or more) and compare medians (`compare_runs`).
-  Differences of a few fps are noise unless they repeat.
-- Check `uptime`/`top` first: other programs (Photos' mediaanalysisd, other sessions) change GPU numbers.
-- The goal: fps at the display rate (`VERANTYX_DISPLAY_HZ`, 60 by default for the presets), then the highest
-  resolution that keeps it. A render size larger than the stream's budget (about 2880x1620 at 60 fps for one HEVC
-  session) only supersamples.
+  Differences of a few pairs/s are noise unless they repeat.
+- Check `uptime`/`top` first: other programs change GPU numbers. Never measure while compiling or while another Skyrim run is going (the harness refuses the latter).
 
 ## Report
 
-A table: setting → fps (run ids, observation ids), GPU %, frame checked. The best combination as a launch
-command (the environment the run used). Mark suspicions
-(`inferred`, i#) as such, and list what was not measured (frame pacing, the real headset, audio).
+A table: setting -> pairs/s (run ids, observation ids), GPU %. The best combination as a launch command
+(`tools/play_skyrim_dev.sh -- --diag-env NAME=VALUE`). Mark suspicions (`inferred`, i#) as such, and list what was
+not measured (frame pacing, a real headset, audio, other scenes).

@@ -1,9 +1,7 @@
 ---
-description: Make a Windows VR game run on VXRuntime — measure it with the harness, fix what stops it, prove it with a run
-argument-hint: <game: profile key, Steam app id, or the game's folder or .exe>
+description: Make Skyrim VR run on VXRuntime's Mac dev host — measure it with the harness, fix what stops it, prove it with a run
+argument-hint: (optional: the problem to look at)
 ---
-Make the Windows VR game `{{args}}` run on VXRuntime.
+Make Skyrim VR run its harness scenario on VXRuntime's Mac dev host. {{args}}
 
-1. If no game was named, list the installed games (vxrt MCP `list_games`, or `python3 tools/vxrt_run.py --list`) and ask which one; stop until the user answers.
-2. Get the brief: `python3 tools/vxrt_doctor.py "{{args}}" --goal support --lang en --agent {{agent}}`. It gives the goal, when the task is done, the facts, the tools to use first, the rules and when to stop. Follow it.
-3. Talk to the user in their language.
+1. Get the brief: `python3 tools/vxrt_doctor.py skyrim --goal support --agent {{agent}}`. It gives the goal, when the task is done, the facts, the tools to use first, the rules and when to stop. Follow it.

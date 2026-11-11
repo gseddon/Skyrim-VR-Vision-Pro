@@ -1,9 +1,7 @@
 ---
-description: Tune a Windows VR game on VXRuntime for this Mac — settings only, alternating harness runs, a launch command as the result
-argument-hint: <game: profile key, Steam app id, or the game's folder or .exe>
+description: Tune Skyrim VR on VXRuntime for this Mac — settings only, alternating harness runs, a launch command as the result
+argument-hint: (no arguments)
 ---
-Tune the Windows VR game `{{args}}` on VXRuntime for this Mac, with settings only.
+Tune Skyrim VR on VXRuntime's Mac dev host for this Mac, with settings only. {{args}}
 
-1. If no game was named, list the installed games (vxrt MCP `list_games`, or `python3 tools/vxrt_run.py --list`) and ask which one; stop until the user answers.
-2. Get the brief: `python3 tools/vxrt_doctor.py "{{args}}" --goal tune --lang en --agent {{agent}}`. It gives the goal, when the task is done, the facts, the tools to use first, the rules and when to stop. Follow it.
-3. Talk to the user in their language.
+1. Get the brief: `python3 tools/vxrt_doctor.py skyrim --goal tune --agent {{agent}}`. It gives the goal, when the task is done, the facts, the tools to use first, the rules and when to stop. Follow it.

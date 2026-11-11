@@ -1,69 +1,57 @@
 #!/usr/bin/env python3
-"""Game profiles: games/<Steam app id>.json, one per game, checked against games/profile.schema.json. They say how a
-game starts, the scenarios tools/vxrt_run.py measures, its frozen baselines and what is known about it. Anyone can add
-or change one (with a run that shows it); the harness, the MCP server and VXRT Studio read them.
+"""Game profiles: games/<Steam app id>.json (today: games/611670.json, Skyrim VR). A profile says how tools/vxrt_run.py
+runs the game (its scenarios, seconds), the frozen baselines, what is known about it and, once confirmed, the settings
+tuned for a Mac. The harness, the MCP server, the tuner and the playtest read them.
 
-    tools/vxrt_games.py check          # every profile against the schema and the rules below (make check runs it)
+    tools/vxrt_games.py check          # every profile against the rules below (make check runs it)
     tools/vxrt_games.py list
 """
 import json, os, re, sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GAMES_DIR = os.path.join(REPO, "games")
-SCHEMA = os.path.join(GAMES_DIR, "profile.schema.json")
+BASELINE_FIELDS = {"min_pairs_per_s": (int, float), "zero_fallback": bool, "non_black": bool}
 
-# ---- a small JSON Schema check (the keywords profile.schema.json uses) --------------------------------------------------
-_TYPES = {"string": str, "number": (int, float), "boolean": bool, "object": dict, "array": list, "null": type(None)}
-
-def _is(value, name):
-    if name == "number" and isinstance(value, bool):
-        return False
-    return isinstance(value, _TYPES[name])
-
-def schema_problems(value, schema, at="$"):
-    out = []
-    t = schema.get("type")
-    if t and not any(_is(value, x) for x in ([t] if isinstance(t, str) else t)):
-        return [f"{at}: should be {t}"]
-    if "enum" in schema and value not in schema["enum"]:
-        out.append(f"{at}: {value!r} is not one of {schema['enum']}")
-    if isinstance(value, str) and "pattern" in schema and not re.search(schema["pattern"], value):
-        out.append(f"{at}: {value!r} does not match {schema['pattern']}")
-    if _is(value, "number"):
-        if "minimum" in schema and value < schema["minimum"]: out.append(f"{at}: below {schema['minimum']}")
-        if "maximum" in schema and value > schema["maximum"]: out.append(f"{at}: above {schema['maximum']}")
-    if isinstance(value, list) and "items" in schema:
-        for i, item in enumerate(value):
-            out += schema_problems(item, schema["items"], f"{at}[{i}]")
-    if isinstance(value, dict):
-        for key in schema.get("required", []):
-            if key not in value: out.append(f"{at}: missing {key}")
-        if len(value) < schema.get("minProperties", 0): out.append(f"{at}: needs at least {schema['minProperties']} entries")
-        props = schema.get("properties", {})
-        for key, v in value.items():
-            if "propertyNames" in schema:
-                out += schema_problems(key, schema["propertyNames"], f"{at} key {key!r}")
-            if key in props:
-                out += schema_problems(v, props[key], f"{at}.{key}")
-            elif schema.get("additionalProperties") is False:
-                out.append(f"{at}: unknown field {key}")
-            elif isinstance(schema.get("additionalProperties"), dict):
-                out += schema_problems(v, schema["additionalProperties"], f"{at}.{key}")
-    return out
-
-# ---- profiles --------------------------------------------------------------------------------------------------------------
 def problems(profile, filename=None):
-    """What is wrong with a profile: the schema, then rules a schema cannot say."""
-    out = schema_problems(profile, json.load(open(SCHEMA)))
+    """What is wrong with a profile."""
+    out = []
+    def need(obj, key, kind, at):
+        if not isinstance(obj, dict) or not isinstance(obj.get(key), kind) or isinstance(obj.get(key), bool) and kind is not bool:
+            out.append(f"{at}.{key}: missing or not {kind.__name__ if isinstance(kind, type) else kind}")
+            return False
+        return True
+    for key, kind in (("appid", str), ("key", str), ("name", str), ("launcher", str), ("default_scenario", str),
+                      ("scenarios", dict), ("status", dict), ("baselines", dict), ("known_issues", list), ("notes", list)):
+        need(profile, key, kind, "$")
     if out:
         return out
+    if not re.fullmatch(r"[0-9]+", profile["appid"]):
+        out.append("appid: digits only")
     if filename and os.path.splitext(os.path.basename(filename))[0] != profile["appid"]:
         out.append(f"the file should be named {profile['appid']}.json")
+    if not profile["scenarios"]:
+        out.append("scenarios: needs at least one")
+    for name, sc in profile["scenarios"].items():
+        if not need(sc, "seconds", (int, float), f"scenarios.{name}") or not 10 <= sc["seconds"] <= 3600:
+            out.append(f"scenarios.{name}.seconds: 10..3600")
+        if "helgen" in sc and not isinstance(sc["helgen"], bool):
+            out.append(f"scenarios.{name}.helgen: boolean")
     if profile["default_scenario"] not in profile["scenarios"]:
         out.append(f"default_scenario {profile['default_scenario']!r} is not in scenarios")
-    for name in profile["baselines"]:
-        if name.split("@")[0] not in profile["scenarios"]:
-            out.append(f"baseline {name!r}: no scenario {name.split('@')[0]!r}")
+    st = profile["status"]
+    need(st, "state", str, "status")
+    if not isinstance(st.get("summary"), dict) or not isinstance(st["summary"].get("en"), str):
+        out.append("status.summary.en: missing")
+    for name, base in profile["baselines"].items():
+        if name not in profile["scenarios"]:
+            out.append(f"baseline {name!r}: no such scenario")
+        for field, value in (base or {}).items():
+            kind = BASELINE_FIELDS.get(field)
+            if kind is None or not isinstance(value, kind):
+                out.append(f"baseline {name!r}: unknown or mistyped field {field}")
+    for i, k in enumerate(profile["known_issues"]):
+        if not isinstance(k, dict) or not isinstance(k.get("summary"), str):
+            out.append(f"known_issues[{i}].summary: missing")
     return out
 
 def load_all():
@@ -85,12 +73,6 @@ def load_all():
 def by_key(key):
     return next((p for p in load_all().values() if p["key"] == key or p["appid"] == key), None)
 
-def default_profile(appid, name=None):
-    """What an installed game without a profile gets: the generic launcher, one scenario, nothing known."""
-    return {"appid": appid, "key": appid, "name": name or appid, "launcher": "game", "engine": "vxrt", "default_scenario": "start",
-            "scenarios": {"start": {"args": [], "seconds": 150}}, "status": {"state": "untested", "summary": {"ja": "未確認", "en": "Not tried yet"},
-            "checked": None, "machine": None}, "baselines": {}, "known_issues": [], "notes": []}
-
 def main():
     if sys.argv[1:] == ["list"]:
         for p in load_all().values():
@@ -98,12 +80,9 @@ def main():
         return
     if sys.argv[1:] != ["check"]:
         sys.exit(__doc__)
-    if not os.path.isdir(GAMES_DIR):
-        print("game profiles: no games/ folder (the legacy profiles were removed) -> ok")
-        return
     bad = 0
-    for f in sorted(os.listdir(GAMES_DIR)):
-        if not f.endswith(".json") or f == "profile.schema.json":
+    for f in sorted(os.listdir(GAMES_DIR)) if os.path.isdir(GAMES_DIR) else []:
+        if not f.endswith(".json"):
             continue
         try:
             p = json.load(open(os.path.join(GAMES_DIR, f)))

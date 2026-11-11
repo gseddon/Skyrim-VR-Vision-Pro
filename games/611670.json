@@ -1,0 +1,36 @@
+{
+  "appid": "611670",
+  "key": "skyrim",
+  "name": "The Elder Scrolls V: Skyrim VR",
+  "launcher": "tools/play_skyrim_dev.sh",
+  "default_scenario": "helgen",
+  "scenarios": {
+    "boot": {"seconds": 120, "helgen": false, "about": "boot to the main menu with no keys sent; the shortest startup and AOT-coverage check"},
+    "helgen": {"seconds": 180, "helgen": true, "about": "new game to the Helgen cart intro with pad A pressed every 2 s from 6 s to 140 s (tools/play_skyrim_dev.sh --helgen)"}
+  },
+  "status": {
+    "state": "dev-host",
+    "level": "draws",
+    "summary": {"en": "Runs on the Mac dev host (strict AOT, xrizer, keyboard dev controllers); no physical-headset playtest recorded by this harness"},
+    "checked": null,
+    "machine": null
+  },
+  "baselines": {
+    "helgen": {"min_pairs_per_s": 30, "zero_fallback": true, "non_black": true},
+    "boot": {"zero_fallback": true}
+  },
+  "known_issues": [],
+  "notes": [
+    "The harness launches tools/play_skyrim_dev.sh (Mac, strict AOT, xrizer dev host, seeded prefs, keyboard dev controllers) and reads tools/vxrt_native_startup.py's evidence; it is a diagnostic development host, not SteamVR and not a headset.",
+    "Baselines are floors from dev-host runs (60 pairs/s is the host rate), not a playability claim. Only a human physical-headset playtest establishes playable (AGENTS.md).",
+    "Saves are isolated per run (runs/<id>/saves); the player's saves under build/private/saves/611670 are never used by the harness."
+  ],
+  "tune": {
+    "scenario": "helgen",
+    "ladder": [
+      {"settings": {"VXRT_SKYRIM_PRESET": "p2"}},
+      {"settings": {}},
+      {"settings": {"VXRT_INI_SET": "Display.iShadowMapResolution=2048;Display.fShadowDistance=8000"}}
+    ]
+  }
+}

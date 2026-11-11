@@ -1,62 +1,52 @@
 ---
 name: vxrt-support-game
-description: Make a Windows VR game run on VXRuntime (vxrt) — measure with the harness, find what stops it, implement the missing Windows behaviour, prove it with a run. Use when asked to "make <game> run", to support a new title, or when a game crashes, exits or draws nothing on vxrt.
+description: Make Skyrim VR run on VXRuntime's Mac dev host (strict AOT, xrizer) — measure with the harness, find what stops it, implement the missing behaviour, prove it with a run. Use when asked to make the game run, or when it crashes, exits, falls back to the translator or draws nothing.
 ---
 
-# Making a game run on VXRuntime
+# Making Skyrim VR run on VXRuntime
 
 Read AGENTS.md first; its rules always apply (no DRM or anti-cheat work, game files untouched, commit only what a
-run shows).
+run shows). The harness runs the actual game through `tools/play_skyrim_dev.sh` (Mac, strict AOT, xrizer dev host,
+keyboard dev controllers, muted, saves isolated per run). A result is a dev-host result: never a headset claim and
+never "playable".
 
 ## The loop
 
-1. **Measure first.** `tools/vxrt_run.py <game or app id>` (MCP: `run_game`). It refuses unfair runs with a typed
-   reason (`user_not_playing`, `steamvr_not_running`, `steam_running`, `roots_isolated`, `vr_mode`,
-   `settings_allowed`): report the reason and stop; never stop the user's game, never point it at their roots.
-2. **Find the first blocker** in the result, in this order: `first_problem` (with its log line), `unimplemented_calls`,
-   `unhandled_exceptions`, `native_signals_outside_program`, `managed_exceptions`, `exit`; then
-   `connected_after_s` (null: never reached SteamVR) and `frame_bright_fraction` (black: connects but draws nothing).
-   Read around it: `tools/vxrt_run.py` keeps the logs in `runs/<run_id>/logs/` (MCP: `read_log` with
-   `process: "game"` — the game's log also holds lines of SteamVR helpers it started, vrmonitor and vrwebhelper,
-   which are noise).
-3. **Fix it where it belongs** (AGENTS.md lists the files), the way Windows behaves (return values, last error,
-   reference counts). Add a test in `VXRuntime/tests` when it is not trivial; `make -C VXRuntime check`.
-4. **Measure again** and compare (`compare_runs`). Then `make -C VXRuntime vr-check` (or at least the games that
-   worked) so nothing else broke. Report with run ids and observation ids; say what is still unknown.
+1. **Measure first.** `tools/vxrt_run.py skyrim [boot|helgen]` (MCP: `run_game`). It refuses unfair runs with a typed
+   reason (`user_not_playing`, `no_other_skyrim_run`, `private_inputs`, `game_installed`, `settings_allowed`,
+   `args_allowed`): report the reason and stop; never stop another session (wait for it). Use `--check` first.
+2. **Find the first blocker** in the result, in this order: `first_problem` (with its log line), `native_signals`,
+   `unhandled_exceptions`, `unimplemented_calls`, `xrizer_panics`, `xrizer_bridge_stops`, `missing_code` and
+   `aot_summaries` (fallbacks or missing addresses: strict AOT acceptance needs real AOT entries and zero fallback;
+   absent counters are a failure, not zero), then `xr_submit_ring` (nothing submitted) and
+   `eye_non_black_percent_median` (frames submitted but black). Read around it: the evidence is in
+   `runs/<run_id>/native/startup.log` (MCP `read_log` with `file: "native/startup.log"`, `pattern`).
+3. **Fix it where it belongs** (AGENTS.md and VXRuntime/RECOMP.md), the way Windows behaves (return values, last
+   error, reference counts). Add a test in `VXRuntime/tests` when it is not trivial; `make -C VXRuntime check`.
+4. **Measure again** and compare (`compare_runs`). Then `make -C VXRuntime vr-check` so the profile's baselines hold.
+   Report with run ids and observation ids; say what is still unknown.
+5. **Record it** in `games/611670.json`: status, known issues, a baseline only with a run id behind it. **Stuck?**
+   After three attempts without progress, `tools/vxrt_issue.py draft` (MCP `prepare_issue`) with what you tried; show
+   the user the draft and stop (only they post it).
 
-5. **Record it** in the game's profile (`games/<appid>.json`, when the game has one): scenarios, status, a baseline from your runs, known
-   issues. **Stuck?** After three attempts without progress, `tools/vxrt_issue.py draft` (MCP `prepare_issue`) with what
-   you tried; show the user the draft and stop (only they post it).
-
-`vxrt_doctor` / `analyze_game` lists functions the game imports that vxrt lacks: a static list. Most are never
+`vxrt_doctor` / `analyze_game` lists functions the executable imports that vxrt lacks: a static list. Most are never
 called; implement what a run shows being called.
 
-## Finding out more (there is no debugger: lldb does not attach to Rosetta processes here)
+## Finding out more (there is no debugger on the accepted path)
 
-- **Who calls what:** `--trace` (VXRT_TRACE=1) logs loads and failures; `--set VXRT_TRACE_CALLS=N` logs the first N
-  calls of every runtime function with arguments and the return address (`image+offset`). The last calls before a
-  crash are usually the answer.
+- **Who calls what:** `--trace-calls N` (MCP `trace_calls`) logs the first N calls of every runtime function with
+  arguments and the return address (`image+offset`); it costs about 20 % CPU, so do not take timings from such a run.
+  The last calls before a crash are usually the answer.
 - **Native code at an offset:** `xcrun llvm-objdump -d --start-address=0x<imagebase+rva> --stop-address=... <dll>`
   (image base: `xcrun llvm-objdump -p`). Crash reports print `image+0xRVA` frames.
 - **Where a message comes from:** find the string's address in `.rdata`, then the `lea reg, [rip+X]` that loads it
   in `.text` (search the disassembly for the address).
-- **abort():** with VXRT_TRACE, a macOS abort (malloc's "pointer being freed was not allocated", libc++) prints a
-  backtrace naming the program's frames.
-- **Stack overflows** print the program's frames found on the stack.
-- **REA** (github.com/morluto/rea, MCP, optional) decompiles DLLs (Ghidra) and reads .NET assemblies; it needs
-  Node ≥ 22.19, JDK 21 and Ghidra — ask the user before downloading anything.
+- **Eye images:** the run keeps raw eye files under `runs/<run_id>/native/eyes` (every 3000th frame); the log has
+  statistics for every 30th frame. They are game-derived and private: never commit them.
+- **abort() and stack overflows** print a backtrace naming the program's frames.
 
-## Things learned the hard way
+## Things to keep in mind
 
-- **Unity (Mono):** the Boehm GC finds each thread's stack with VirtualQuery (walking down while pages are
-  PAGE_READWRITE) and stops threads with SuspendThread/GetThreadContext; Mono's JIT reads TLS at gs:0x1480+8i.
-  Wrong answers there show up far away: methods called on the wrong objects, NullReferenceExceptions every frame.
-  Many managed exceptions in a run: look at the first one, then suspect the runtime before the game.
-- **Unity plugins** load from `<Game>_Data/Plugins/x86_64` through SetDllDirectory. Unity initializes OpenVR twice:
-  openvr_api unloads vrclient in between (FreeLibrary must really detach a DLL that only LoadLibrary brought in).
-- **Unity skinning** uses stream output with vertex shader code (CreateGeometryShaderWithStreamOutput).
-- **Source 2 (Alyx)** needs `-vr`; without it, it starts in desktop mode and fails in ways that look like
-  regressions (the harness passes the right arguments; do not run hlvr.exe by hand).
-- **SteamVR's vrserver** sometimes dies at start ("unwind did not reach its target frame"): run again before
-  concluding anything.
-- A game's own vrclient may start vrmonitor/vrwebhelper; their unimplemented functions do not matter.
+- Only one Skyrim run at a time on this Mac: the user's session or another agent's run makes the harness refuse.
+- Fresh producer pairs/s (`pairs_per_s_median`) are not compositor repeats; the host window runs at 60 Hz.
+- Streaming, SteamVR, Alyx and the other Windows games of the old harness are gone; do not look for their launchers.

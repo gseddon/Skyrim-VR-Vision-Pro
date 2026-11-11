@@ -9,6 +9,7 @@
 #   tools/play_skyrim_dev.sh --no-build      skip the builds
 #   tools/play_skyrim_dev.sh --build-only    build, do not start
 #   tools/play_skyrim_dev.sh --seconds N     time limit (default 3600; max 3600)
+#   tools/play_skyrim_dev.sh --out DIR       evidence directory inside this checkout, new (default build/play-HHMMSS; tools/vxrt_run.py uses runs/<id>/native)
 #   tools/play_skyrim_dev.sh --mute          no sound
 #   tools/play_skyrim_dev.sh --hud           Apple's Metal Performance HUD (MTL_HUD_ENABLED=1)
 #   tools/play_skyrim_dev.sh --helgen        to the Helgen cart intro with no keys: pad A every 2 s from 6 s to 140 s
@@ -35,14 +36,14 @@ B=${SKYRIM_AOT_BASE:-${VXRT_SKYRIM_DIR:-${VXRT_PRIVATE_ROOT:-$R/build/private}/s
 ASSETS=${SKYRIM_ASSET_ROOT:?set SKYRIM_ASSET_ROOT to your SkyrimVR folder (local/env.sh; docs/SETUP_SKYRIM.md)}
 VRWEB=${STEAMVR_WIN64_DLLS:?set STEAMVR_WIN64_DLLS to the bin/vrwebhelper/win64 folder of SteamVR (local/env.sh)}
 XRIZER_ENV_DIR=$R/third_party/xrizer; . "$XRIZER_ENV_DIR/rust-env.sh"; T=$XRIZER_RUST_ROOT
-SECONDS_LIMIT=3600; BUILD=1; RUN=1; MUTE=0; HUD=0; KEYSCRIPT=; TRACE_CALLS=0; HELGEN=0; XRIZER_PROFILE=release; MODS=; MODSCFG=
+SECONDS_LIMIT=3600; BUILD=1; RUN=1; MUTE=0; HUD=0; KEYSCRIPT=; TRACE_CALLS=0; HELGEN=0; XRIZER_PROFILE=release; MODS=; MODSCFG=; OUT=
 while [ $# -gt 0 ]; do
   case $1 in
     --no-build) BUILD=0;; --build-only) RUN=0;; --mute) MUTE=1;; --hud) HUD=1;;
-    --seconds) SECONDS_LIMIT=$2; shift;; --key-script) KEYSCRIPT=$2; shift;;
+    --seconds) SECONDS_LIMIT=$2; shift;; --out) OUT=$2; shift;; --key-script) KEYSCRIPT=$2; shift;;
     --trace-calls) TRACE_CALLS=$2; shift;; --helgen) HELGEN=1;; --mods-dir) MODS=$2; shift;; --mods-config) MODSCFG=$2; shift;; --xrizer-debug) XRIZER_PROFILE=debug;;
     --) shift; break;;
-    -h|--help) sed -n 2,23p "$0"; exit 0;;
+    -h|--help) sed -n 2,24p "$0"; exit 0;;
     *) echo "unknown option $1" >&2; exit 2;;
   esac; shift
 done
@@ -92,7 +93,7 @@ RUNTIME=$O/vxrt-arm64; DYLIB=$D/aarch64-apple-darwin/$XRIZER_PROFILE/libxrizer.d
 [ -x "$RUNTIME" ] && [ -f "$DYLIB" ] || { echo "not built yet: run without --no-build" >&2; exit 2; }
 [ $RUN = 1 ] || { echo "built: $RUNTIME $DYLIB"; exit 0; }
 
-OUT=$R/build/play-$(date +%H%M%S)
+[ -n "$OUT" ] || OUT=$R/build/play-$(date +%H%M%S)
 SESS=/tmp/play_skyrim_dev.sessions.$$
 if ! python3 "$R/tools/vxrt_runtime_sessions.py" --own "$OUT" --json > "$SESS" 2>&1; then
   echo "Another Skyrim / VXRuntime / SteamVR session is running, so this will not start. Details:" >&2
