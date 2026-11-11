@@ -92,6 +92,8 @@ python3 tools/vxrt_build.py app --install                # builds, signs and ins
 python3 tools/vxrt_build.py stage-to-device --run        # copies the game data (about 14 GB) to the headset
 ```
 
+The `aot` step also needs a list of places in the game where it does a kind of memory access that Apple chips can't do in one go. The recompiler has to know them in advance. A list for the supported version of the game comes with this repository (`tools/profiles/`), and `aot` uses it automatically. If you want your own, or want to add to the shipped one, run `python3 tools/skyrim_splits.py record --force`: it watches the game run on your Mac for about 10 minutes. It plays plain Skyrim, with no mods and no SKSE, and the list only holds places inside `SkyrimVR.exe`. If your `SkyrimVR.exe` isn't the supported version, `aot` records the list for you the first time.
+
 Then open **Skyrim VR** from the Vision Pro's Home view.
 
 Good to know:
@@ -135,6 +137,16 @@ python3 tools/vxrt_build.py mods --deploy
 ```
 
 Without `--list`, these use the default list in [mods/default.json](mods/default.json). To change the mods, copy it, add or remove entries, and pass your copy with `--list`. Its format is described at the top of `tools/mods.py`. If you have Nexus Premium, setting `NEXUS_API_KEY` makes the downloads automatic. You can also register a handler for Nexus's "Mod Manager Download" buttons: `python3 tools/nexus.py install-handler`.
+
+### SKSE plugins
+
+HIGGS, PLANCK, VRIK and SkyUI VR are SKSE plugins, and the headset can't patch code while it runs, so they need one extra step on your Mac. After `mods-fetch` and `mods` (which also picks up the SKSE VR download from your Downloads folder: it isn't on Nexus, and needs no account), run:
+
+```sh
+python3 tools/vxrt_build.py skse-capture
+```
+
+This runs Skyrim on your Mac for a few minutes (it waits if another Skyrim session is running) and records what the plugins change in the game's code. It then recompiles the game with those changes included and checks that the game still runs. The next `app --install` and `mods --deploy` use the result. Run it again whenever you add, remove or update an SKSE plugin; if nothing changed, it skips itself.
 
 ## What's in this repository
 

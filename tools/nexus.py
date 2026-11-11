@@ -500,6 +500,46 @@ def manual_fetch(game, mod_id, file_id, name=None, md5=None, wait=0, progress=No
     raise Skipped('no matching archive appeared in %s for %s within %d s' % (folder, label, wait))
 
 
+def external_fetch(name, url, file_name, md5, wait=0, folders=None):
+    """An archive that is not on Nexus (SKSE VR): no key and no account. Found by its md5 (any file name, so a browser's "name (1).7z" counts)
+    in the private downloads folder or the browser's Downloads folder; if it is not there yet, say where to get it and watch the folder for up
+    to `wait` seconds (the same watcher as manual_fetch). Returns the path in place (nothing is copied)."""
+    want = md5.lower()
+    folders = [Path(f) for f in (folders or [private_root() / 'downloads', browser_downloads_dir()])]
+    sizes = {}
+    e = lambda m='': print(m, file=sys.stderr, flush=True)
+
+    def scan():
+        for f in folders:
+            direct = f / file_name
+            for p, st in ([(direct, direct.stat())] if direct.is_file() else []) + (_complete_archives(f, sizes) if f.is_dir() else []):
+                if _cached_md5(p, st) == want:
+                    return p
+        return None
+
+    r = scan()
+    if not r and sizes.get('unstable'):
+        _poll_sleep(STABLE + 0.1); r = scan()
+    if r:
+        return r
+    e('%s is not on Nexus. Download it in your browser (no account needed):' % name)
+    e('  %s' % url)
+    e('and keep the file name (%s). I check the md5 (%s) and pick it up from your Downloads folder (%s).' % (file_name, want, folders[-1]))
+    if wait:
+        e('Waiting up to %d s. Press Ctrl-C to skip.' % wait)
+    try:
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            _poll_sleep(POLL)
+            r = scan()
+            if r:
+                e('Found %s (md5 %s).' % (r, want))
+                return r
+    except KeyboardInterrupt:
+        raise Skipped('skipped %s by request' % name)
+    raise Skipped('no archive with md5 %s appeared in %s for %s' % (want, ', '.join(str(f) for f in folders), name))
+
+
 def fetch_file(game, mod_id, file_id, nxm=None, md5=None, wait=0, progress=None, name=None, manual=False, accept_name=False):
     """One entry point: the API path when a key is set (and not --manual), else the Downloads-folder path."""
     if manual or not file_id or not (os.environ.get('NEXUS_API_KEY') or '').strip():

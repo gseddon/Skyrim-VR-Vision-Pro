@@ -17,6 +17,7 @@ ORIGINAL_EXE_SHA256 = '6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b
 PREPARED_EXE_SHA256 = '8daf05196ecad57963be61614ce4a4cd5c4dc27d222db14e01c262b36b3d46d4'
 STEAMLESS_COMMIT = 'cd770bf9749d3e4f438d23ac643917ad1a804257'
 SPLITS_NAME = 'splits-1022-at-0x140000000.txt'
+SPLITS_SHA256 = '46e8ff7d13cd2968763b14acea1ebbf0a297519911063a890fad20d8838766c9'    # the profile committed in tools/profiles (the 1022-address profile of the earlier builds plus a 600 s recording); yours is pinned in <file>.sha256 by tools/skyrim_splits.py
 
 
 def private_root(env=None):
@@ -36,7 +37,10 @@ def variables(env=None):
     sk = skyrim_dir(env)
     inputs = Path(env.get('VXRT_AOT_INPUTS') or sk / 'inputs')
     redist = Path(env.get('VXRT_REDIST_DIR') or sk / 'redist')
+    splits = Path(env.get('VXRT_SPLITS_FILE') or inputs / SPLITS_NAME)
+    side = splits.with_name(splits.name + '.sha256')
     return {
+        'VXRT_SPLITS_SHA256': env.get('VXRT_SPLITS_SHA256') or (side.read_text().split()[0] if side.is_file() else SPLITS_SHA256),
         'REPO': str(REPO),
         'XRIZER_RUST_ROOT': env.get('XRIZER_RUST_ROOT') or str(REPO / 'build' / 'toolchains' / 'xrizer-rust'),
         'VXRT_PRIVATE_ROOT': str(private_root(env)),

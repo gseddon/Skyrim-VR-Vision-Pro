@@ -12,7 +12,7 @@ cfg = json.loads(DEFAULT.read_text())
 assert mods.DEFAULT_LIST == DEFAULT and DEFAULT.is_file()
 assert mods.list_problems(cfg) == [], mods.list_problems(cfg)
 ids = [m['id'] for m in sorted(cfg['mods'], key=lambda m: m['priority'])]
-assert ids == ['skyland', 'sksevr-scripts', 'skyrimvrtools', 'higgs', 'planck', 'skyui-vr', 'skyui-vr-nojit', 'vrik', 'modlist-dump'], ids
+assert ids == ['skyland', 'sksevr-scripts', 'skse-core', 'skyrimvrtools', 'higgs', 'planck', 'skyui-vr', 'skyui-vr-nojit', 'vrik', 'modlist-dump'], ids
 by = {m['id']: m for m in cfg['mods']}
 assert [p for m in sorted(cfg['mods'], key=lambda m: m['priority']) if m.get('enabled', True) for p in m.get('plugins', [])] == \
     ['Lit Road Signs.esp', 'Skyland Watercolor - Slow Green-Vanilla.esp', 'higgs_vr.esp', 'SkyUI_SE.esp', 'vrik.esp']
@@ -23,7 +23,7 @@ for m in cfg['mods']:
         assert m['nexus']['game'] and str(m['nexus']['mod_id']).isdigit() and len(m['nexus']['md5']) == 32, m['id']
         mods._nexus_spec(m)                                    # (an unrecorded file_id is allowed when the md5 is pinned)
 text = DEFAULT.read_text()
-assert '/Users/' not in text and 'op://' not in text and '.dll' not in text.lower().replace('core dll', '')
+assert '/Users/' not in text and 'op://' not in text and '.dll' not in text.lower().replace('core dll', '').replace('sksevr_1_4_15.dll', '')   # (the core DLL is named, never shipped)
 # the shape check refuses what it should
 bad = json.loads(text); bad['mods'][1]['priority'] = bad['mods'][0]['priority']; bad['mods'][2]['source'] = '/Users/x/mods'
 assert len(mods.list_problems(bad)) >= 2
@@ -48,6 +48,7 @@ with tempfile.TemporaryDirectory() as t:
             p = priv / 'mods-src' / i / 'Data' / rel; p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(data)
     tree('skyland', {'textures/a.dds': b'x', 'Lit Road Signs.esp': tes4, 'Skyland Watercolor - Slow Green-Vanilla.esp': tes4})
     tree('sksevr-scripts', {'Scripts/Actor.pex': b'x'})
+    (priv / 'mods-src' / 'skse-core').mkdir(parents=True); (priv / 'mods-src' / 'skse-core' / 'sksevr_1_4_15.dll').write_bytes(b'MZ core')
     tree('skyrimvrtools', {'SKSE/Plugins/vrtools.ini': b'x'})
     tree('higgs', {'SKSE/Plugins/higgs.ini': b'x', 'higgs_vr.esp': tes4})
     tree('planck', {'SKSE/Plugins/planck.ini': b'x'})
@@ -70,8 +71,31 @@ with tempfile.TemporaryDirectory() as t:
     got = nexus.manual_fetch('skyrimspecialedition', '43930', None, md5=hashlib.md5(b'archive').hexdigest(), folder=dl)
     assert got['md5'] == hashlib.md5(b'archive').hexdigest() and got['verified_by'] == 'pinned md5' and Path(got['path']).is_file(), got
 
+    # the SKSE core comes from the list's runtime entry; hooks and capture only when skse-capture was made for exactly this plugin set
+    assert [f['name'] for f in doc['overlay_root_files']] == ['sksevr_1_4_15.dll'] and doc['skse_plugin_set'], doc['overlay_root_files']
+    assert (t / 'pack/overlay_root/sksevr_1_4_15.dll').read_bytes() == b'MZ core' and not (t / 'pack/merged/Data/sksevr_1_4_15.dll').exists()
+    assert [m['kind'] for m in doc['mods'] if m['id'] == 'skse-core'] == ['runtime']
+    sk = priv / 'skse-capture'; sk.mkdir()
+    (sk / 'vxrt_hooks.dll').write_bytes(b'hooks'); (sk / 'skse_capture.txt').write_text('P x 0 00\n')
+    (sk / 'state.json').write_text(json.dumps({'plugin_set': 'some other set', 'complete': True}))
+    r = run('build', '--out', str(t / 'pack2')); assert r.returncode == 0, r.stderr
+    assert [f['name'] for f in json.loads((t / 'pack2/mods.json').read_text())['overlay_root_files']] == ['sksevr_1_4_15.dll']      # stale: not taken
+    (sk / 'state.json').write_text(json.dumps({'plugin_set': doc['skse_plugin_set'], 'complete': True}))
+    r = run('build', '--out', str(t / 'pack3')); assert r.returncode == 0, r.stderr
+    assert sorted(f['name'] for f in json.loads((t / 'pack3/mods.json').read_text())['overlay_root_files']) == ['skse_capture.txt', 'sksevr_1_4_15.dll', 'vxrt_hooks.dll']
+    other = json.loads((t / 'pack3/mods.json').read_text())['skse_plugins']; other[0]['sha256'] = '0' * 64
+    assert mods.skse_plugin_set(other, 'c') != mods.skse_plugin_set(json.loads((t / 'pack3/mods.json').read_text())['skse_plugins'], 'c')   # a changed plugin file is a new set
+
+    # an archive that is not on Nexus is found by its md5 under any file name, in the downloads folders
+    ext = t / 'extdl'; ext.mkdir(); (ext / 'sksevr_2_00_12 (1).7z').write_bytes(b'skse archive'); import time
+    time.sleep(2)
+    got = nexus.external_fetch('SKSE', 'https://example.invalid/x.7z', 'sksevr_2_00_12.7z', hashlib.md5(b'skse archive').hexdigest(), folders=[t / 'none', ext])
+    assert got.name == 'sksevr_2_00_12 (1).7z'
+    try: nexus.external_fetch('SKSE', 'https://example.invalid/x.7z', 'sksevr_2_00_12.7z', '0' * 32, folders=[ext]); raise SystemExit('should have been skipped')
+    except nexus.Skipped: pass
+
     d = t / 'prune/Data'; (d / 'SKSE/Plugins').mkdir(parents=True); (d / 'Source/Scripts').mkdir(parents=True)
     for rel in ('SKSE/Plugins/a.dll', 'SKSE/Plugins/a.pdb', 'Source/Scripts/a.psc', '.gitignore'): (d / rel).write_text('x')
-    mods._prune(d, cfg['mods'][3]['install']['exclude'])
+    mods._prune(d, by['higgs']['install']['exclude'])
     assert sorted(str(p.relative_to(d)) for p in d.rglob('*') if p.is_file()) == ['SKSE/Plugins/a.dll'] and not (d / 'Source').exists()
 print('mods_default_test: ok')

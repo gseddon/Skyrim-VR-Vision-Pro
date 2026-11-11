@@ -31,11 +31,11 @@
     },
     {
       "name": "aot",
-      "summary": "Compile the prepared exe and DLLs to ARM64 frameworks for the headset (tools/skyrim_aot_pipeline.py --target xros)",
+      "summary": "Compile the prepared exe and DLLs to ARM64 frameworks for the headset (tools/skyrim_aot_pipeline.py --target xros); first records the module-splits profile (tools/skyrim_splits.py: the places where the game does a memory access Apple chips cannot do in one go, learned by watching the game run on this Mac for about 10 minutes) if it is missing",
       "inputs": [{"env": "SKYRIM_ASSET_ROOT"}, {"stage": "prepare", "path": "${VXRT_PREPARED_EXE}"}],
       "outputs": ["${VXRT_PRIVATE_ROOT}/game_fw-xros"],
       "network": false,
-      "idempotent": "game_fw-xros exists (a module cache makes a --force rebuild cheap)"
+      "idempotent": "game_fw-xros exists (a module cache makes a --force rebuild cheap); the profile is recorded once and kept (${VXRT_AOT_INPUTS}/splits-1022-at-0x140000000.txt)"
     },
     {
       "name": "shaders",
@@ -64,7 +64,7 @@
     },
     {
       "name": "mods-fetch",
-      "summary": "Download the Nexus Mods files named in a mods list (tools/nexus.py via tools/mods.py fetch), pin each md5 in the list, unpack to ${VXRT_PRIVATE_ROOT}/mods-src",
+      "summary": "Download the Nexus Mods files named in a mods list (tools/nexus.py via tools/mods.py fetch), pin each md5 in the list, unpack to ${VXRT_PRIVATE_ROOT}/mods-src; the SKSE VR archive (not on Nexus, no account or key) is picked up from the Downloads folder by its md5 the same way",
       "inputs": [{"arg": "--list <mods-list.json>"}, {"env": "NEXUS_API_KEY", "optional": true, "note": "with it: API downloads (Premium) or nxm links; without it: the files are taken from the Downloads folder (VXRT_DOWNLOADS_DIR, default ~/Downloads) after you download them in the browser"}],
       "outputs": ["${VXRT_PRIVATE_ROOT}/downloads/nexus"],
       "network": true,
@@ -73,12 +73,21 @@
     },
     {
       "name": "mods",
-      "summary": "Build a data-only mod pack from a mods list (tools/mods.py build); --deploy copies it to the headset",
+      "summary": "Build a mod pack from a mods list (tools/mods.py build): the mods' data, the SKSE plugins and the SKSE VR core DLL; --deploy copies it to the headset",
       "inputs": [{"arg": "--list <mods-list.json>"}],
       "outputs": ["${VXRT_PRIVATE_ROOT}/mods-pack"],
       "network": false,
       "device": "only with --deploy",
       "idempotent": "rebuilds the pack from the list (--force to replace an existing one)"
+    },
+    {
+      "name": "skse-capture",
+      "summary": "Make the SKSE VR code-patch capture for the pack's SKSE plugins (HIGGS, PLANCK, VRIK, SkyUI ...): tools/skse_capture.py runs the game on this Mac for about five minutes (early and late capture, modules rebuilt with the patches, a strict verify run), builds the stub module and the headset modules (${VXRT_PRIVATE_ROOT}/game_fw-xros-skse) and puts vxrt_hooks.dll and skse_capture.txt into the pack. The app stage then embeds that module set",
+      "inputs": [{"stage": "mods", "path": "${VXRT_PRIVATE_ROOT}/mods-pack/mods.json"}, {"stage": "prepare", "path": "${VXRT_PREPARED_EXE}"}, {"stage": "toolchain", "path": "${XRIZER_RUST_ROOT}/cargo/bin/rustc", "note": "for the Mac dev-host runtime that tools/play_skyrim_dev.sh builds"}, {"env": "SKYRIM_ASSET_ROOT"}, {"env": "STEAMVR_WIN64_DLLS"}],
+      "outputs": ["${VXRT_PRIVATE_ROOT}/skse-capture/state.json", "${VXRT_PRIVATE_ROOT}/game_fw-xros-skse"],
+      "network": false,
+      "runs_game": "on the Mac (not the headset); waits only for a session that is not an isolated harness run (the user's own)",
+      "idempotent": "skipped while the plugin set (SKSE core DLL and every file under Data/SKSE/Plugins) is the one the capture was made for; any change redoes it; --force redoes it anyway"
     }
   ]
 }

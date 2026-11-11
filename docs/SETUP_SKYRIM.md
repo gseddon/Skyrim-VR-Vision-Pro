@@ -131,13 +131,18 @@ Not yet verified against the real service: this was tested only against a local 
 
 ## The split profile
 
-The pipeline config names an optional profile of function addresses (`splits-1022-at-0x140000000.txt`) that the author
-recorded from a Mac run. It only steers how the big exe is cut into parts for compiling. It is derived from the game, so it is
-not committed. Without it the pipeline notes the missing file and builds the exe unsplit by `part_mb` (16 MB parts) only;
-the dry run plans it, but a full build without the profile has NOT been run or compared here (build time, size and
-behaviour unknown). Record your own
-with a Mac run using `VXRT_AOT_MISSES` and put the file at `$VXRT_AOT_INPUTS/splits-...txt`; its hash is pinned in the
-config, so edit the pin when you use your own.)
+The pipeline config names a profile of instruction addresses (`splits-1022-at-0x140000000.txt`): the x86 instructions of SkyrimVR.exe whose
+ordered memory access crosses 16 bytes (in plain words: places where the game does a memory access that Apple chips cannot do in one go).
+The compiler gives those instructions plain accesses between barriers. **Every new build needs it**: a module set made without it crashed
+SkyrimVRTools in every strict run (plans/2026-11-11-skyrim-mods-combined.md).
+
+It holds only addresses of the pinned SkyrimVR.exe, so as an exception authorized on 2026-11-11 (AGENTS.md) a copy is committed:
+`tools/profiles/splits-<prepared exe sha256>.txt.gz`, with the sha256 of the unpacked text beside it. `vxrt_build.py aot` uses it first (copied
+to `$VXRT_AOT_INPUTS/splits-1022-at-0x140000000.txt` with its hash in `<file>.sha256`, which the config pins) and records one only when the exe
+does not match. `python3 tools/skyrim_splits.py record [--force] [--rounds N]` records your own, or adds to what is in place: it runs plain
+Skyrim on the Mac (no mods, no SKSE, `play_skyrim_dev.sh` with scripted pad input) and keeps every address seen. Round 1 without a profile runs an
+unsplit exe, which is slow (the main menu is reached after about 8 minutes); later rounds run modules made with the profile so far and are fast.
+The doctor fails without a profile.
 
 ## Driving the stages from another program (AVP Play)
 
