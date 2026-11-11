@@ -1,7 +1,7 @@
 # vxrt: the Windows runtime. An x86-64 macOS binary; Rosetta 2 runs it and the Windows program together.
 CC      = clang
 CFLAGS  = -arch x86_64 -O1 -g -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=14.0
-SRC     = src/loader.c src/pe.c src/dotnet_metadata.c src/dotnet_resources.c src/dotnet_baml.c src/dotnet_il.c src/dotnet_exec.c src/dotnet_runtime.c src/dotnet_host.c src/kernel32.c src/kernelx.c src/jobs.c src/ntstatus.c src/system.c src/desktop.c src/winsta.c src/scm.c src/services.c src/security.c src/client.c src/steambridge.c src/calltrace.c src/pipes.c src/ucrt.c src/sync.c src/seh.c src/profile.c src/opengl.c src/wininet.m src/winhttp.m src/winhttp_proxy.m src/iphlp.c src/winsock_nsp.c src/midi.c src/directinput.m src/msxml.c src/extras.c src/context.S src/text.c src/files.c src/registry.c \
+SRC     = src/loader.c src/codehooks.c src/pe.c src/dotnet_metadata.c src/dotnet_resources.c src/dotnet_baml.c src/dotnet_il.c src/dotnet_exec.c src/dotnet_runtime.c src/dotnet_host.c src/kernel32.c src/kernelx.c src/jobs.c src/ntstatus.c src/system.c src/desktop.c src/winsta.c src/scm.c src/services.c src/security.c src/client.c src/steambridge.c src/calltrace.c src/pipes.c src/ucrt.c src/sync.c src/seh.c src/profile.c src/opengl.c src/wininet.m src/winhttp.m src/winhttp_proxy.m src/iphlp.c src/winsock_nsp.c src/midi.c src/directinput.m src/msxml.c src/extras.c src/context.S src/text.c src/files.c src/registry.c \
           src/user32.c src/gdi.c src/control.c src/net.c src/mm.c src/vcruntime.c src/com.c src/cocoa.m src/d3d11.m src/d3d11_draw.m src/d3d11_shared.m src/d3d11_capture.m src/d3d11on12.m src/dxgi.m src/d3d9.m src/dxbc.c src/d3d_format.c src/d3d12.m src/gpu_ir.c src/gpu_ir_msl.c src/gpu_ir_metal.m src/dxil.c src/dxil_msl.c src/dxil_ir.c src/spirv.c src/spirv_ir.c src/vk_msl.c src/vk_format.m src/vk_device.m src/vk_descriptor.m src/vk_pipeline.m src/vk_command.m src/vk_internal.m src/vk_queue.m src/vk_wsi.m src/vk_dispatch.m src/directinput_buffer.c src/directinput_format.c src/input.m src/audio.m src/xaudio2.m src/sysdlls.c src/dbghelp.c src/aes_gcm.c src/dpapi.c src/crypt32.c src/dwrite.m src/osinfo.c src/pointer.c src/regnotify.c src/section.c src/shlpath.c src/wevtapi.c src/ktime.c src/power.c src/sysparams.c src/dwmapi.c src/winmisc.c src/region.c
 SRC    += src/shader_cache.m
 SRC    += src/launchargs.c
@@ -197,6 +197,61 @@ aot-uuid-sequential-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/recomp/aot_
 build/recomp/aot_loaded_imports.exe: tests/aot_loaded_imports.c
 	@mkdir -p build/recomp
 	$(MINGW) -O1 -nostdlib -e mainCRTStartup -o $@ $< -lkernel32
+
+build/skse/skse_fixture_host.exe: tests/skse/skse_fixture_host.c
+	@mkdir -p build/skse
+	$(MINGW) -O1 -nostdlib -e mainCRTStartup -Wl,--image-base=0x308000000 -o $@ $< -lkernel32
+
+build/skse/skse_fixture_ext.dll: tests/skse/skse_fixture_ext.c
+	@mkdir -p build/skse
+	$(MINGW) -O1 -shared -nostdlib -e DllMain -Wl,--image-base=0x306000000 -o $@ $< -lkernel32
+
+build/crt_text_mode.exe: tests/crt_text_mode.c
+	$(MINGW) -O1 -o $@ $<
+
+crt-text-mode-check: $(VXRT_ARM64_TARGET) build/crt_text_mode.exe
+	$(VXRT_ARM64_TARGET) build/crt_text_mode.exe | tee build/crt_text_mode.out; grep -q 'crt_text_mode: all ok' build/crt_text_mode.out
+
+.PHONY: crt-text-mode-check
+
+build/lstrcat/lstrcat_a.exe: tests/lstrcat_a.c
+	@mkdir -p build/lstrcat
+	$(MINGW) -O1 -nostdlib -e mainCRTStartup -o $@ $< -lkernel32
+
+lstrcat-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/lstrcat/lstrcat_a.exe
+	python3 tests/lstrcat_check.py
+
+.PHONY: lstrcat-check
+
+build/dynamic_code/dynamic_code_a.exe: tests/dynamic_code_a.c
+	@mkdir -p build/dynamic_code
+	$(MINGW) -O1 -nostdlib -e mainCRTStartup -o $@ $< -lkernel32
+
+dynamic-code-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/dynamic_code/dynamic_code_a.exe
+	python3 tests/dynamic_code_check.py
+
+.PHONY: dynamic-code-check
+
+# LuaJIT's code-area search (SkyUI VR) at the Mac's old module layout and at the device layout: prints how often each finds room (a probe, not a pass/fail check).
+build/dynamic_code/mcode_window_a.exe: tests/mcode_window_a.c
+	@mkdir -p build/dynamic_code
+	$(MINGW) -O1 -nostdlib -e mainCRTStartup -o $@ $< -lkernel32
+
+mcode-window-probe: $(VXRT_ARM64_TARGET) build/vxrt-aot build/dynamic_code/mcode_window_a.exe
+	@mkdir -p build/dynamic_code/mcode_aot build/dynamic_code/probe-root
+	tools/aot_build.sh build/dynamic_code/mcode_window_a.exe build/dynamic_code/mcode_aot > /dev/null
+	@for cfg in "30f024729 300000000 512" "7004294729 7000000000 1024"; do set -- $$cfg; \
+	  env -i HOME=$$HOME PATH=$$PATH VXRT_ROOT=build/dynamic_code/probe-root VXRT_NO_WINE=1 VXRT_STEAM_BRIDGE=0 VXRT_NO_ACTIVATE=1 VXRT_MUTE=1 \
+	    VXRT_AOT_DIR=build/dynamic_code/mcode_aot VXRT_AOT_ARENA=$$2 VXRT_AOT_ARENA_MB=$$3 MCODE_TARGET=$$1 \
+	    /usr/bin/arch -arm64 $(VXRT_ARM64_TARGET) build/dynamic_code/mcode_window_a.exe 2>&1 | grep 'mcode window'; done
+
+.PHONY: mcode-window-probe
+
+# The static script-extender scheme on an owned fixture (research/2026-11-11-skse-vr-on-aot.md): arena bases 0x306/307/308000000.
+skse-fixture-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/skse/skse_fixture_host.exe build/skse/skse_fixture_ext.dll
+	python3 tests/skse_fixture_check.py
+
+.PHONY: skse-fixture-check
 
 aot-loaded-imports-check: $(VXRT_ARM64_TARGET) build/vxrt-aot build/recomp/aot_loaded_imports.exe
 	tools/aot_build.sh build/recomp/aot_loaded_imports.exe build/aot-loaded-imports
@@ -406,7 +461,7 @@ XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) 'VX
 .PHONY: xros-shader-set
 xros-app: xros-require-team $(XROS_SHADER_SET_PREREQ)
 # xros-shader-set: the whole shader set for $(XROS_SDK) into $(XROS_SHADER_DIR), from XROS_SHADER_MANIFEST and the install
-# XROS_SHADER_GAME (read only). Private (derived from the game): never committed. Rebuilt when the manifest is newer.
+# XROS_SHADER_GAME (read only). Private (derived from the game): never committed. Up to date means .complete holds the manifest's SHA-256 and translator revision (not file times).
 xros-shader-set: build/vxrt-shader-manifest
 	@test -f "$(XROS_SHADER_MANIFEST)" || { printf '%s\n' \
 	  'xros-shader-set: no shader manifest at $(XROS_SHADER_MANIFEST) (set XROS_SHADER_MANIFEST=<file>).' \
@@ -414,10 +469,8 @@ xros-shader-set: build/vxrt-shader-manifest
 	  'or by replaying a capture with an empty cache:  VXRT_SHADER_CACHE=<empty dir> VXRT_SHADER_MANIFEST=$(XROS_SHADER_MANIFEST) build/vxrt-d3d11-replay <capture>   (VISIONOS_PORT.md, "Shaders from a manifest").' \
 	  'Or set XROS_SHADER_SET=<dir of .metallib files> to use a set built another way.' >&2; exit 2; }
 	@test -d "$(XROS_SHADER_GAME)/Data" || { echo 'xros-shader-set: no Skyrim VR install at $(XROS_SHADER_GAME) (set SKYRIM_ASSET_ROOT=<your SkyrimVR folder>, or XROS_SHADER_GAME)' >&2; exit 2; }
-	@if [ "$(XROS_SHADER_DIR)/.complete" -nt "$(XROS_SHADER_MANIFEST)" ]; then echo "xros-shader-set: $(XROS_SHADER_DIR) is up to date"; else \
-	  ../tools/shader_manifest_build --game "$(XROS_SHADER_GAME)" --manifest "$(XROS_SHADER_MANIFEST)" --out "$(XROS_SHADER_DIR)" --sdk $(XROS_SDK) \
-	  && touch "$(XROS_SHADER_DIR)/.complete" \
-	  || { echo 'xros-shader-set: incomplete (see $(XROS_SHADER_DIR)/report.tsv)' >&2; exit 1; }; fi
+	@../tools/shader_manifest_build --game "$(XROS_SHADER_GAME)" --manifest "$(XROS_SHADER_MANIFEST)" --out "$(XROS_SHADER_DIR)" --sdk $(XROS_SDK) --skip-if-complete \
+	  || { echo 'xros-shader-set: incomplete (see $(XROS_SHADER_DIR)/report.tsv)' >&2; exit 1; }
 xros-app: xros-lib xros-aot-tests
 ifeq ($(XROS_XRIZER_FIXTURE),1)
 	@test "$(XROS_SDK)" != xrsimulator -o "$(XROS_CODE_SIGNING)" = NO || { echo 'the simulator xrizer fixture/immersive build requires XROS_CODE_SIGNING=NO' >&2; exit 2; }
@@ -456,7 +509,7 @@ $(VXRT_ARM64_TARGET): src/native_vr.h src/native_openvr.h $(ARM64_SRC) src/npu_i
 
 tests: build/hello_k32.exe build/hello_crt.exe build/threads.exe build/cxx_exceptions.exe build/hw_exceptions.exe build/seh_try.exe build/unwind.exe build/breakpoint.exe build/child_stdout.exe \
        build/files.exe build/ini.exe build/dll_test.exe build/vxplugin.dll build/dllprobe.exe \
-       build/window.exe build/winsta.exe build/scm.exe build/net.exe build/winhttp.exe build/winhttp_proxy.exe build/iphlp.exe build/winsock_nsp.exe build/midi.exe build/directinput.exe build/msvc_eh.exe build/com.exe build/msxml.exe build/vxcom.dll build/iocp.exe build/d3d11.exe build/egl_host.exe build/gl.exe build/hlslc.exe build/dxbc2msl build/vxrt-shader-manifest build/draw.exe build/compute.exe build/d3d12.exe build/d3d12_engine.exe build/d3d12_fxc.exe build/d3d11on12.exe build/input.exe build/xinput_script.exe build/audio.exe build/xaudio2.exe build/xaudio2_27.exe build/dwrite.exe build/dxbcscan build/pipes.exe build/ipc.exe build/shared.exe build/steam.exe build/smc.exe build/order.exe build/lowmem.exe build/clip.exe build/shoplist.exe build/vulkan_win.exe build/vulkan_features.exe build/vulkan_shaders.exe build/game_imports.exe build/ucrt_extra.exe build/kernelx.exe build/jobs.exe build/security.exe \
+       build/crt_text_mode.exe build/window.exe build/winsta.exe build/scm.exe build/net.exe build/winhttp.exe build/winhttp_proxy.exe build/iphlp.exe build/winsock_nsp.exe build/midi.exe build/directinput.exe build/msvc_eh.exe build/com.exe build/msxml.exe build/vxcom.dll build/iocp.exe build/d3d11.exe build/egl_host.exe build/gl.exe build/hlslc.exe build/dxbc2msl build/vxrt-shader-manifest build/draw.exe build/compute.exe build/d3d12.exe build/d3d12_engine.exe build/d3d12_fxc.exe build/d3d11on12.exe build/input.exe build/xinput_script.exe build/audio.exe build/xaudio2.exe build/xaudio2_27.exe build/dwrite.exe build/dxbcscan build/pipes.exe build/ipc.exe build/shared.exe build/steam.exe build/smc.exe build/order.exe build/lowmem.exe build/clip.exe build/shoplist.exe build/vulkan_win.exe build/vulkan_features.exe build/vulkan_shaders.exe build/game_imports.exe build/ucrt_extra.exe build/kernelx.exe build/jobs.exe build/security.exe \
        build/sysdlls.exe build/dbghelp.exe build/crypt32.exe build/webhelper_apis.exe build/steam_client_ui.exe build/skyrim_preset.exe build/handle_xfer.exe build/open_thread.exe build/version_info.exe build/section_access.exe build/dbfiles.exe build/updater_files.exe build/shlock.exe build/net_events.exe build/regwait.exe build/tcptable.exe build/winprops.exe build/a11y.exe build/gdi_xform.exe build/view_align.exe \
        build/client_imports.exe build/hello32.exe build/clipboard.exe build/input_route.exe build/name_reuse.exe
 
@@ -1815,6 +1868,7 @@ runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d1
 	$(VXRT) build/hello_crt.exe one "two words"
 	$(VXRT) build/game_imports.exe
 	$(VXRT) build/ucrt_extra.exe
+	$(VXRT) build/crt_text_mode.exe | tee build/crt_text_mode.out; grep -q 'crt_text_mode: all ok' build/crt_text_mode.out
 	$(VXRT) build/security.exe
 	$(VXRT) build/kernelx.exe
 	$(VXRT) build/jobs.exe
@@ -1884,6 +1938,7 @@ runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d1
 	VXRT_SKYRIM_PRESET=p2 $(VXRT) build/skyrim_preset.exe p2
 	VXRT_SKYRIM_PRESET=p2 VXRT_INI_SET='Display.iShadowMapResolution=1024;Display.bUseTAA=0' $(VXRT) build/skyrim_preset.exe p2 set
 	VXRT_SKYRIM_PRESET=off $(VXRT) build/skyrim_preset.exe off
+	VXRT_INI_SET='VRInput.bGamepadLookAngleSnapping=0;VRInput.bDirectMovementWithWands=1;VRInput.fGamepadLookAngleSnapAmount=45' $(VXRT) build/skyrim_preset.exe gameplay
 	$(VXRT) build/handle_xfer.exe
 	$(VXRT) build/open_thread.exe
 	$(VXRT) build/version_info.exe build/hello_crt.exe

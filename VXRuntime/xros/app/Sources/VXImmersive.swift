@@ -16,6 +16,7 @@ import UniformTypeIdentifiers
 
 final class VXImmersiveRenderer: @unchecked Sendable {
     private let layerRenderer: LayerRenderer
+    private var drawableSizeLogged = false
     private let queue: MTLCommandQueue
     // The queue handed to the xrizer provider (the game-to-swapchain copies and the eye-ring copies). It MUST NOT be the compositor's queue: those
     // command buffers wait on a shared event for the game's rendering (encodeWaitForEvent), and on one queue the compositor's own command buffers
@@ -169,6 +170,10 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         self.layerRenderer = layerRenderer
         self.queue = queue
         queue.label = "VX compositor"
+        if #available(visionOS 26.0, *), let e = ProcessInfo.processInfo.environment["VXRT_RENDER_QUALITY"], let q = Float(e), q >= 0, q <= 1 {
+            layerRenderer.renderQuality = .init(q)   // (cannot exceed the configuration's max, which VXApp set to the same value)
+            vxrt_jlog("render_quality_set", "\"requested\":\(q),\"now\":\(layerRenderer.renderQuality)")
+        }
         // the provider keeps its queue across a layer reopen (the host was created with it)
         if let p = previous?.providerQueue { providerQueue = p }
         else if ProcessInfo.processInfo.environment["VXRT_SHARED_QUEUE"] == "1" { providerQueue = queue }   // A/B lever: the old shared queue
@@ -420,6 +425,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
             if dedicated {
                 let l = d.colorTextures[0], r = d.colorTextures[1]
                 dedicated = l.width == r.width && l.height == r.height
+                if !drawableSizeLogged { drawableSizeLogged = true; vxrt_jlog("drawable_size", "\"w\":\(l.width),\"h\":\(l.height),\"pixel_format\":\(l.pixelFormat.rawValue)") }
                 if dedicated && !fixture { _ = vx_xros_native_set_render_size(UInt32(l.width), UInt32(l.height)) }
             }
             if d.views.count == 2 && dedicated {

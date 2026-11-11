@@ -7,6 +7,8 @@
     "STEAMVR_WIN64_DLLS": "SteamVR bin/vrwebhelper/win64 (read only; msvcp140.dll)",
     "XROS_TEAM_ID": "Apple Developer Team ID (paid), signed builds only",
     "XROS_BUNDLE_PREFIX": "reverse-DNS prefix; the app is <prefix>.SkyrimVR",
+    "NEXUS_API_KEY": "optional personal Nexus Mods API key (nexusmods.com > Site preferences > API Keys); only mods-fetch, never printed or committed",
+    "VXRT_DOWNLOADS_DIR": "where your browser saves downloads (default ~/Downloads); mods-fetch without a key picks Nexus archives up there",
     "VXRT_DEVICE_ID": "CoreDevice id of the Vision Pro (xcrun devicectl list devices)"
   },
   "stages": [
@@ -16,7 +18,7 @@
       "inputs": [],
       "outputs": ["${XRIZER_RUST_ROOT}/cargo/bin/rustc"],
       "network": true,
-      "network_note": "static.rust-lang.org, crates.io; with --with-steamless also github.com/atom0s/Steamless (CC BY-NC-ND 4.0) and dot.net, the .NET SDK and NuGet. Asks before downloading Steamless unless --yes",
+      "network_note": "static.rust-lang.org, crates.io; with --with-steamless also github.com/atom0s/Steamless (CC BY-NC-ND 4.0) and dot.net, the .NET SDK and NuGet. Prints what it downloads and goes ahead; --confirm asks first",
       "idempotent": "setup_rust.sh --check passes (and steamless-bin exists for --with-steamless)"
     },
     {
@@ -59,6 +61,15 @@
       "network": false,
       "device": true,
       "idempotent": "only files missing on the headset or of another size are sent; dry run unless --run"
+    },
+    {
+      "name": "mods-fetch",
+      "summary": "Download the Nexus Mods files named in a mods list (tools/nexus.py via tools/mods.py fetch), pin each md5 in the list, unpack to ${VXRT_PRIVATE_ROOT}/mods-src",
+      "inputs": [{"arg": "--list <mods-list.json>"}, {"env": "NEXUS_API_KEY", "optional": true, "note": "with it: API downloads (Premium) or nxm links; without it: the files are taken from the Downloads folder (VXRT_DOWNLOADS_DIR, default ~/Downloads) after you download them in the browser"}],
+      "outputs": ["${VXRT_PRIVATE_ROOT}/downloads/nexus"],
+      "network": true,
+      "network_note": "with a key: api.nexusmods.com and the CDN it names; without: none (your browser does the download); personal use under Nexus's terms, mods are not redistributed",
+      "idempotent": "a mod whose archive matches its pinned md5 and whose tree is unpacked is skipped without the network, the key or the Downloads folder"
     },
     {
       "name": "mods",

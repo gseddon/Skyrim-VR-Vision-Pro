@@ -115,8 +115,11 @@ def xros_settings(target, arena, arena_mb):
     base_value = base(arena)
     if type(arena_mb) is not int or not 1 <= arena_mb <= 16384:
         raise ValueError('arena-mb must be an integer from 1 to 16384')
+    prefix = os.environ.get('XROS_BUNDLE_PREFIX') or 'dev.example.vxrt'    # as tools/xros_aot.sh: ids are <prefix>.VXRuntimeHost.aot.<name>
+    if not re.fullmatch(r'[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*', prefix):
+        raise ValueError('XROS_BUNDLE_PREFIX is not a reverse-DNS prefix: %r' % prefix)
     return {'sdk': target, 'triple': XROS_TARGETS[target], 'platform': XROS_PLATFORM[target],
-            'arena': base_value, 'arena_mb': arena_mb}
+            'arena': base_value, 'arena_mb': arena_mb, 'bundle_prefix': prefix}
 
 
 def framework_name(stem, part):
@@ -343,13 +346,19 @@ def prepare(config, xros=None, strict_runtime=True):
     if ('exe' in config) == ('exe_base' in config):
         raise ValueError('give exactly one of exe_base and exe')
     block = config.get('exe') or {'base': config['exe_base']}
-    unknown = set(block) - {'base', 'part_mb', 'splits', 'roots'}
+    unknown = set(block) - {'base', 'part_mb', 'splits', 'roots', 'patches'}
     if unknown:
         raise ValueError('unknown exe keys: ' + ', '.join(sorted(unknown)))
     modules = [dict(exe, base=base(block['base']), part_mb=part_mb(block.get('part_mb')),
                     splits=optional_pin(block.get('splits')),
-                    roots=pin(block['roots'], True) if block.get('roots') else None)]
-    modules += [dict(pin(item, True), base=base(item['base']), part_mb=None, splits=None, roots=None)
+                    roots=pin(block['roots'], True) if block.get('roots') else None,
+                    patches=pin(block['patches'], True) if block.get('patches') else None)]
+    # (a DLL may name roots, and patches: the code a script extender writes into it, tools/skse_hooks_pe.py and
+    #  VXRuntime/src/codehooks.c; the synthetic hooks module is a DLL with roots)
+    modules += [dict(pin(item, True), base=base(item['base']), part_mb=None, splits=None,
+                     roots=pin(item['roots'], True) if item.get('roots') else None,
+                     patches=pin(item['patches'], True) if item.get('patches') else None,
+                     sweep=item.get('sweep'))
                 for item in config['dlls']]
     if len({Path(m['path']).name.lower() for m in modules}) != len(modules):
         raise ValueError('module basenames must be unique')
@@ -390,9 +399,14 @@ def key_for(module, ctx):
             'source': ctx['source'], 'compiler_sha256': ctx['compiler']['sha256'],
             'compiler_source_commit': ctx['compiler']['source_commit'], 'toolchain': ctx['toolchain'],
             'builder': BUILDER, 'jobs': ctx['jobs'], 'target': 'macos-arm64'}
+    if module.get('patches'):
+        data['patches'] = module['patches']['sha256']
+    if module.get('sweep'):
+        data['sweep'] = module['sweep']
     if ctx.get('xros'):    # (keys of the Mac set are unchanged: these entries exist only for the visionOS targets)
         x = ctx['xros']
-        data.update(builder=XROS_BUILDER, target=x['sdk'], triple=x['triple'], arena=x['arena'], arena_mb=x['arena_mb'])
+        data.update(builder=XROS_BUILDER, target=x['sdk'], triple=x['triple'], arena=x['arena'], arena_mb=x['arena_mb'],
+                    bundle_prefix=x['bundle_prefix'])
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest(), data
 
 
@@ -425,6 +439,10 @@ def module_env(module, work):
         if module[kind]:
             (work/(kind + '.txt')).write_text(shifted(module[kind], module)[0])
             env[var] = str(work/(kind + '.txt'))
+    if module.get('patches'):
+        env['VXRT_AOT_PATCHES'] = module['patches']['path']
+    if module.get('sweep'):      # (RVA ranges whose every decodable instruction start is a root: an interpreter loop with a run-time jump table)
+        env['VXRT_AOT_SWEEP'] = module['sweep']
     return env
 
 
@@ -484,7 +502,7 @@ def compile_module(module, compiler, jobs, work, log, xros=None):
             d = work/'fw'/(dylib + '.framework')
             d.mkdir()
             (d/'Info.plist').write_text(INFO_PLIST % {
-                'fw': dylib, 'id': 'marimokodai.VXRuntimeHost.aot.' + dylib.replace('_', '-'), 'platform': xros['platform']})
+                'fw': dylib, 'id': xros['bundle_prefix'] + '.VXRuntimeHost.aot.' + dylib.replace('_', '-'), 'platform': xros['platform']})
             steps = [cc + ['-c', '-o', str(obj), str(s)],
                      cc + ['-dynamiclib', '-install_name', '@rpath/%s.framework/%s' % (dylib, dylib),
                            '-o', str(d/dylib), str(obj)]]
@@ -547,7 +565,7 @@ def build_module(module, ctx, cache, out):
         if error or not artifacts:
             raise ValueError('module build failed or produced no dylibs (%s); see %s' % (error, log))
         pinned = [(module['path'], module['sha256']), (ctx['compiler']['path'], ctx['compiler']['sha256'])]
-        pinned += [(module[k]['path'], module[k]['sha256']) for k in ('splits', 'roots') if module[k]]
+        pinned += [(module[k]['path'], module[k]['sha256']) for k in ('splits', 'roots', 'patches') if module.get(k)]
         now = xros_toolchain(xros['sdk']) if xros else toolchain()
         if any(digest(p) != h for p, h in pinned) or now != ctx['toolchain'] or source_identity() != ctx['source']:
             raise ValueError('input or build source changed during build')

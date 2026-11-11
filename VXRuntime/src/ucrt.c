@@ -114,11 +114,11 @@ int vx_format(char *out, size_t cap, const char *fmt, const char *ap) {
 // ---- stdio ----------------------------------------------------------------------------------------------------------------
 // A FILE is this runtime's own object. The standard streams write straight to their descriptors (unbuffered, so
 // output from the program and from this runtime interleave correctly); files from fopen wrap a macOS FILE.
-// Files are always binary: no "\r\n" translation in text mode.
+// Text mode (a mode without 'b'): reads turn CR LF into LF, as the Windows C runtime does; writes are not translated.
 // base/ptr/cnt: what _get_stream_buffer_pointers hands out (the C++ library's file buffers look at them; they stay
 // empty, so it reads and writes through the functions).
-typedef struct { int fd; FILE *f; char *base, *ptr; int cnt; } vx_file;
-static vx_file g_iob[3] = { { 0, NULL, NULL, NULL, 0 }, { 1, NULL, NULL, NULL, 0 }, { 2, NULL, NULL, NULL, 0 } };
+typedef struct { int fd; FILE *f; char *base, *ptr; int cnt; int text; } vx_file;   // (text: opened without 'b': reads translate CR LF to LF, as the Windows C runtime does)
+static vx_file g_iob[3] = { { 0, NULL, NULL, NULL, 0, 0 }, { 1, NULL, NULL, NULL, 0, 0 }, { 2, NULL, NULL, NULL, 0, 0 } };
 
 static WINAPI vx_file *__acrt_iob_func(unsigned i) { return i < 3 ? &g_iob[i] : NULL; }
 
@@ -134,6 +134,12 @@ static int file_write(vx_file *f, const void *p, size_t n) {
 static FILE *read_stream(vx_file *f) {
     if (!f->f && f->fd == 0) f->f = stdin;
     return f->f;
+}
+// Text mode (Windows): a CR LF pair reads as LF. Skyrim reads its Plugins.txt with fgets in text mode and takes the CR as part of the name.
+static int text_getc(vx_file *f, FILE *s) {
+    int c = fgetc(s);
+    if (c == '\r' && f->text) { int d = fgetc(s); if (d == '\n') return '\n'; if (d != EOF) ungetc(d, s); }
+    return c;
 }
 
 static WINAPI int __stdio_common_vfprintf(uint64_t options, vx_file *f, const char *fmt, void *locale, const char *ap) {
@@ -195,6 +201,7 @@ static vx_file *open_file(const char *path, const char *mode) {
     if (!f) { set_errno(errno == ENOENT ? 2 : errno == EACCES ? 13 : errno == EEXIST ? 17 : errno == EISDIR ? 13 : 22); return NULL; }
     vx_file *v = calloc(1, sizeof *v);
     v->fd = fileno(f); v->f = f;
+    v->text = !strchr(mode, 'b') && !strstr(mode, "ccs");        // (a mode string without 'b' is text mode; ",ccs=" Unicode modes are left alone)
     if (trace) vx_log("fopen: %s is handle %p", path, (void *)v);
     return v;
 }
@@ -217,12 +224,47 @@ static WINAPI int vx_fclose(vx_file *f) {
 }
 static WINAPI size_t vx_fread(void *p, size_t sz, size_t n, vx_file *f) {
     FILE *s = read_stream(f);
-    size_t r = s ? fread(p, sz, n, s) : 0;
+    size_t r;
+    if (s && f->text && sz) {                                              // (text mode: translate while reading; a short count means EOF)
+        unsigned char *o = p; size_t want = sz * n, got = 0;
+        while (got < want) { int c = text_getc(f, s); if (c == EOF) break; o[got++] = (unsigned char)c; }
+        r = got / sz;
+    } else r = s ? fread(p, sz, n, s) : 0;
     if (crt_io_trace() && s) vx_log("fread(handle %p, %zu x %zu) = %zu at %lld%s", (void *)f, sz, n, r, (long long)ftello(s), feof(s) ? " EOF" : "");
     return r;
 }
-static WINAPI char *vx_fgets(char *buf, int n, vx_file *f) { FILE *s = read_stream(f); return s ? fgets(buf, n, s) : NULL; }
-static WINAPI int vx_fgetc(vx_file *f) { FILE *s = read_stream(f); return s ? fgetc(s) : -1; }
+// (VXRT_TRACE_FILES=3: what the C runtime's line and character reads return, escaped; the first 600 of each, for a game that reads a list file)
+static void trace_text(const char *what, vx_file *f, const char *txt, int len, int more) {
+    static int shown;
+    if (shown >= 600) return;
+    shown++;
+    char esc[160]; size_t k = 0;
+    for (int i = 0; i < len && k + 6 < sizeof esc; i++) {
+        unsigned char c = (unsigned char)txt[i];
+        if (c == '\r') k += (size_t)snprintf(esc + k, sizeof esc - k, "\\r");
+        else if (c == '\n') k += (size_t)snprintf(esc + k, sizeof esc - k, "\\n");
+        else if (c < 32 || c > 126) k += (size_t)snprintf(esc + k, sizeof esc - k, "\\x%02x", c);
+        else esc[k++] = (char)c;
+    }
+    esc[k] = 0;
+    vx_log("%s(handle %p) = \"%s\"%s%s", what, (void *)f, esc, more ? "" : " (NULL/EOF)", "");
+}
+static WINAPI char *vx_fgets(char *buf, int n, vx_file *f) {
+    FILE *s = read_stream(f); char *r;
+    if (s && f->text && n > 0) {                                          // (stdin, stdout and stderr are not text-translated here)
+        int i = 0, c = 0;
+        while (i < n - 1 && (c = text_getc(f, s)) != EOF) { buf[i++] = (char)c; if (c == '\n') break; }
+        buf[i] = 0;
+        r = (i == 0 && c == EOF) ? NULL : buf;
+    } else r = s ? fgets(buf, n, s) : NULL;
+    if (crt_io_trace()) trace_text("fgets", f, r ? buf : "", r ? (int)strlen(buf) : 0, r != NULL);
+    return r;
+}
+static WINAPI int vx_fgetc(vx_file *f) {
+    FILE *s = read_stream(f); int c = s ? (f->text ? text_getc(f, s) : fgetc(s)) : -1;
+    if (crt_io_trace()) { char ch = (char)c; trace_text("fgetc", f, &ch, c >= 0 ? 1 : 0, c >= 0); }
+    return c;
+}
 static WINAPI int vx_ungetc(int c, vx_file *f) { FILE *s = read_stream(f); return s ? ungetc(c, s) : -1; }
 static WINAPI int vx_getchar(void) { return fgetc(stdin); }
 static WINAPI int vx_feof(vx_file *f) { return f->f ? feof(f->f) : 0; }
