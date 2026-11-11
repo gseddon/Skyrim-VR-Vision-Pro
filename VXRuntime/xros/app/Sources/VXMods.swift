@@ -33,11 +33,33 @@ enum VXMods {
         return home + "/Documents/root"
     }
 
-    /// nil when there is no pack, it is unreadable, or it is not version 1.
+    /// Why a read failed, for the log (and the tests).
+    enum LoadError: Error, CustomStringConvertible {
+        case missing(String), undecodable(String, String), version(Int)
+        var description: String {
+            switch self {
+            case .missing(let p): return "no file at \(p)"
+            case .undecodable(let p, let e): return "cannot decode \(p): \(e)"
+            case .version(let v): return "mods.json version \(v), expected 1"
+            }
+        }
+    }
+
+    static func read(root: String) -> Result<VXModsFile, LoadError> {
+        let path = root + "/mods.json"
+        guard let data = FileManager.default.contents(atPath: path) else { return .failure(.missing(path)) }
+        do {
+            let f = try JSONDecoder().decode(VXModsFile.self, from: data)
+            return f.version == 1 ? .success(f) : .failure(.version(f.version))
+        } catch { return .failure(.undecodable(path, String(describing: error))) }
+    }
+
+    /// nil when there is no pack, it is unreadable, or it is not version 1. The reason is logged (NSLog) each time.
     static func load(root: String) -> VXModsFile? {
-        guard let data = FileManager.default.contents(atPath: root + "/mods.json"),
-              let f = try? JSONDecoder().decode(VXModsFile.self, from: data), f.version == 1 else { return nil }
-        return f
+        switch read(root: root) {
+        case .success(let f): NSLog("VXMods: read %d mods from %@/mods.json", f.mods.count, root); return f
+        case .failure(let e): NSLog("VXMods: %@", e.description); return nil
+        }
     }
 
     /// The launcher has no run-time toggling for any mod.

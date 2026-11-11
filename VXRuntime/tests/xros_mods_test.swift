@@ -34,6 +34,18 @@ func check(_ ok: Bool, _ what: String) { if !ok { failures += 1; print("FAIL: \(
         try! "not json".write(toFile: dir + "/mods.json", atomically: true, encoding: .utf8)
         check(VXMods.load(root: dir) == nil, "garbage is not read")
         check(VXMods.defaultRoot(environment: ["VXRT_GAME_ROOT": "/r"], home: "/h") == "/r" && VXMods.defaultRoot(environment: [:], home: "/h") == "/h/Documents/root", "default root")
+        // The real pack written by tools/mods.py (tests/fixtures/mods_pack_skyland.json, names and sizes only)
+        let fixture = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "tests/fixtures/mods_pack_skyland.json"
+        try! FileManager.default.createDirectory(atPath: dir + "/real", withIntermediateDirectories: true)
+        try! FileManager.default.copyItem(atPath: fixture, toPath: dir + "/real/mods.json")
+        switch VXMods.read(root: dir + "/real") {
+        case .failure(let e): check(false, "real pack decodes: \(e)")
+        case .success(let r):
+            check(r.mods.map { $0.id } == ["skyland", "skyui", "higgs", "planck"], "real pack ids \(r.mods.map { $0.id })")
+            check(r.mods[0].active && r.mods[0].kind == "plugin" && r.mods[0].sizeBytes == 2632276741 && r.mods[0].memoryHintMB == 250, "real pack: skyland")
+            check(r.mods[1...].allSatisfy { $0.kind == "skse" && $0.enabled && !$0.active && !VXMods.canToggle($0) && VXMods.status($0) == "SKSE: configure on the Mac" }, "real pack: SKSE entries")
+        }
+        if case .failure(let e) = VXMods.read(root: dir + "/none") { check(e.description.contains("no file at"), "missing reason") } else { check(false, "missing is a failure") }
         print(failures == 0 ? "xros mods: ok" : "xros mods: \(failures) failed")
         exit(failures == 0 ? 0 : 1)
     }

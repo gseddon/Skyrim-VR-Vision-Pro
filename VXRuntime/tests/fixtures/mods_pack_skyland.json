@@ -1,0 +1,77 @@
+{
+ "version": 1,
+ "profile": "default",
+ "merged": "merged",
+ "plugins_txt": "Plugins.txt",
+ "plugins": [
+  "Skyland Watercolor - Slow Green-Vanilla.esp",
+  "Lit Road Signs.esp"
+ ],
+ "mods": [
+  {
+   "id": "skyland",
+   "name": "Skyland AIO 1k (full)",
+   "kind": "plugin",
+   "enabled": true,
+   "priority": 10,
+   "plugins": [
+    "Skyland Watercolor - Slow Green-Vanilla.esp",
+    "Lit Road Signs.esp"
+   ],
+   "memory_hint_mb": 250,
+   "size_bytes": 2632276741,
+   "files": 2057,
+   "active": true,
+   "path": "mods/skyland",
+   "note": ""
+  },
+  {
+   "id": "skyui",
+   "name": "SkyUI",
+   "kind": "skse",
+   "enabled": true,
+   "priority": 30,
+   "plugins": [],
+   "memory_hint_mb": null,
+   "size_bytes": 2693003,
+   "files": null,
+   "active": false,
+   "path": null,
+   "note": "SKSE: configure on the Mac. Needs SKSE VR, which this runtime cannot load yet, so it is not applied."
+  },
+  {
+   "id": "higgs",
+   "name": "HIGGS 1.10.10",
+   "kind": "skse",
+   "enabled": true,
+   "priority": 40,
+   "plugins": [],
+   "memory_hint_mb": null,
+   "size_bytes": 5128085,
+   "files": null,
+   "active": false,
+   "path": null,
+   "note": "SKSE: configure on the Mac. Needs SKSE VR, which this runtime cannot load yet, so it is not applied."
+  },
+  {
+   "id": "planck",
+   "name": "PLANCK 0.8.2",
+   "kind": "skse",
+   "enabled": true,
+   "priority": 50,
+   "plugins": [],
+   "memory_hint_mb": null,
+   "size_bytes": 4870325,
+   "files": null,
+   "active": false,
+   "path": null,
+   "note": "SKSE: configure on the Mac. Needs SKSE VR, which this runtime cannot load yet, so it is not applied."
+  }
+ ],
+ "totals": {
+  "active_mods": 1,
+  "active_files": 2057,
+  "active_size_bytes": 2632276741,
+  "active_memory_hint_mb": 250
+ }
+}
