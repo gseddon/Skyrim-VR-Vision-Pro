@@ -127,16 +127,16 @@ Mods that add code (SKSE plugins) are recompiled ahead of time along with the ga
 The mod files themselves aren't included. You download them from [Nexus Mods](https://www.nexusmods.com) under its terms, for your own use. **A free Nexus account is enough: no Premium and no API key needed.**
 
 ```sh
-python3 tools/vxrt_build.py mods-fetch --list mods/default.json
+python3 tools/vxrt_build.py mods-fetch
 ```
 
 For each mod, this shows a link to its Nexus download page. Open it and click the download button in your browser as usual. The tool watches your Downloads folder, recognises each file, checks that it's exactly the expected file, and unpacks it. Then build the mod pack and send it to the headset:
 
 ```sh
-python3 tools/vxrt_build.py mods --list mods/default.json --deploy
+python3 tools/vxrt_build.py mods --deploy
 ```
 
-You can copy the default list and add or remove mods. Its format is described at the top of `tools/mods.py`. If you have Nexus Premium, setting `NEXUS_API_KEY` makes the downloads automatic. You can also register a handler for Nexus's "Mod Manager Download" buttons: `python3 tools/nexus.py install-handler`.
+Without `--list`, these use the default list in [mods/default.json](mods/default.json). To change the mods, copy it, add or remove entries, and pass your copy with `--list`. Its format is described at the top of `tools/mods.py`. If you have Nexus Premium, setting `NEXUS_API_KEY` makes the downloads automatic. You can also register a handler for Nexus's "Mod Manager Download" buttons: `python3 tools/nexus.py install-handler`.
 
 ## What's in this repository
 
