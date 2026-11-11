@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 
+CODE_HOOK_ENV = {'VXRT_PRELOAD', 'VXRT_EXEC_REGION', 'VXRT_CODE_VERIFY', 'VXRT_CODE_CAPTURE', 'VXRT_PRELOAD_EXIT', 'VXRT_CODE_CAPTURE_AT', 'VXRT_CODE_CAPTURE_EXIT', 'VXRT_CODE_WATCH', 'VXRT_AOT_STRICT', 'VXRT_AOT_MISSES', 'VXRT_PRELOAD_AT', 'VXRT_AOT_ARENA', 'VXRT_AOT_ARENA_MB', 'VXRT_DIR_ORDER'}   # (VXRuntime/src/codehooks.c: SKSE VR preload, capture and verify)
 DIAG_ENV = {'VXRT_SKYRIM_PRESET', 'VXRT_INI_SET', 'VXRT_TRACE_INI', 'VXRT_KEYBOARD', 'VXRT_KEYBOARD_TEXT', 'VXRT_TRACE_FILES', 'VXRT_TRACE_INPUT', 'VXRT_STATS', 'VXRT_TRACE_WINDOWS', 'VXRT_TRACE_PASSES', 'VXRT_PASS_DUMP', 'VXRT_TRACE_DRAWS', 'VXRT_TRACE_TEXTURES', 'VXRT_TRACE_MAPS', 'VXRT_DUMP_SHADERS', 'VXRT_DRAW_SNAPSHOT', 'VXRT_TRACE_AUDIO', 'VXRT_XRIZER_DEV_DUMP_EVERY', 'VXRT_TRACE_CLEAR_STACK', 'VXRT_DIAG_RTTI_ARRAY', 'VXRT_DIAG_RTTI_ARRAY_WORDS', 'VXRT_TRACE_DRAW_STACK', 'VXRT_TRACE_INI', 'VXRT_XR_SYNC_SUBMIT', 'VXRT_XR_SUBMIT_INFLIGHT', 'VXRT_FLUSH_DRAWS', 'VXRT_XRIZER_DEV_DUMP',
             'VXRT_AOT_FPCR_HIST', 'VXRT_AOT_FPCR_ALWAYS', 'VXRT_VISMASK', 'VXRT_VISMASK_SHAPE', 'VXRT_VISMASK_PROBE'}   # (the last two: module stubs' FPCR/FPSR counters, and the switch back to the previous stubs, RECOMP.md "FPCR") # XR_SYNC_SUBMIT=1: old blocking eye submit; XR_SUBMIT_INFLIGHT bound; FLUSH_DRAWS mid-frame commit threshold; XRIZER_DEV_DUMP=<dir> eye stats/raw frames
 import re
@@ -285,11 +286,26 @@ def capture(args):
             odata = overlay / assets.relative_to(source) / 'Data'
             odata.mkdir(parents=True, exist_ok=True)
             linked = {}
-            for ent in sorted(mdata.iterdir()):
-                if (assets / 'Data' / ent.name).exists():
-                    raise ValueError(f'--mods-dir: Data/{ent.name} already exists in the install; refusing to shadow it')
-                (odata / ent.name).symlink_to(ent, target_is_directory=ent.is_dir())
-                linked[ent.name] = sum(1 for p in ent.rglob('*') if p.is_file()) if ent.is_dir() else 1
+            # Per-file overlay: an entry the install does not have is linked whole; a directory the install has (Scripts, interface,
+            # Textures, ...) becomes a real overlay directory (the install's spelling) holding links to the mod's files, and the
+            # runtime lists overlay and install together (files.c); a FILE the install already has is still refused.
+            def link_tree(src_dir, dst_dir, inst_dir, rel, count, shadow_ok=frozenset()):
+                inst = {e.name.lower(): e for e in inst_dir.iterdir()} if inst_dir is not None and inst_dir.is_dir() else {}
+                for ent in sorted(src_dir.iterdir()):
+                    have = inst.get(ent.name.lower())
+                    if have is None:
+                        (dst_dir / ent.name).symlink_to(ent, target_is_directory=ent.is_dir())
+                        count[rel + ent.name] = sum(1 for q in ent.rglob('*') if q.is_file()) if ent.is_dir() else 1
+                    elif have.is_dir() and ent.is_dir():
+                        sub = dst_dir / have.name
+                        sub.mkdir(exist_ok=True)
+                        link_tree(ent, sub, have, rel + have.name + '/', count, shadow_ok)
+                    elif (rel + ent.name).lower() in shadow_ok and have.is_file() and ent.is_file():
+                        (dst_dir / have.name).symlink_to(ent)       # (listed by the pack as allowed to replace an install file)
+                        count[rel + ent.name + ' (replaces the install file)'] = 1
+                    else:
+                        raise ValueError(f'--mods-dir: Data/{rel}{ent.name} already exists in the install; refusing to shadow it')
+            link_tree(mdata, odata, assets / 'Data', '', linked, frozenset(x.lower() for x in (cfg.get('shadow_install') or [])) if mods_cfg else frozenset())
             # Plugins.txt: the game opens C:\users\vxrt\AppData\Local\Skyrim VR\Plugins.txt (seen in a file trace). DIR/Plugins.txt if
             # present, else one "*Name" line per .esp/.esm/.esl at the top of DIR/Data (SE-style: the star enables; the official
             # masters are implicit). Official-master-only plugins are the caller's responsibility (tools/fomod_auto.py checks).
@@ -298,7 +314,7 @@ def capture(args):
             if ptxt.is_file() or plug:
                 pdst = root / 'drive_c/users/vxrt/AppData/Local/Skyrim VR/Plugins.txt'
                 pdst.parent.mkdir(parents=True, exist_ok=True)
-                pdst.write_text(ptxt.read_text() if ptxt.is_file() else ''.join(f'*{n}\r\n' for n in plug), newline='')
+                pdst.write_bytes(ptxt.read_bytes() if ptxt.is_file() else ''.join(f'*{n}\r\n' for n in plug).encode())   # (bytes: the Windows line endings must reach the game as they are)
                 result.setdefault('diagnostic', {})['plugins_txt'] = dict(path=str(pdst), plugins=plug, from_file=ptxt.is_file())
             result.setdefault('diagnostic', {})['mods_dir'] = dict(source=str(mdata), linked_entries=linked,
                 scope='loose files linked into the run overlay; install untouched; effect on the game unverified until a file trace shows the opens')
@@ -431,6 +447,12 @@ def capture(args):
                 raise ValueError('--diag-env %s: only %s are allowed (read-only tracing of the renderer)' % (name, ', '.join(sorted(DIAG_ENV))))
             env[name] = value or '1'
             result.setdefault('diagnostic', {}).setdefault('diag_env', {})[name] = env[name]
+        for item in getattr(args, 'code_hook', None) or []:   # the static script-extender scheme (research/2026-11-11-skse-vr-on-aot.md)
+            name, _, value = item.partition('=')
+            if name not in CODE_HOOK_ENV or not value:
+                raise ValueError('--code-hook %s: NAME=VALUE with NAME one of %s' % (name, ', '.join(sorted(CODE_HOOK_ENV))))
+            env[name] = value
+            result.setdefault('diagnostic', {}).setdefault('code_hook', {})[name] = value
         if getattr(args, 'aot_splits', None):
             splits = os.path.abspath(args.aot_splits)
             env['VXRT_AOT_SPLITS'] = splits
@@ -476,7 +498,24 @@ def capture(args):
                                    read_only_inputs=input_hashes)
         if xrizer_path:
             result['artifacts']['xrizer_dylib'] = dict(path=str(xrizer_path), sha256=digest(xrizer_path))
-        cmd = ['/usr/bin/arch', '-arm64', str(runtime), str(exe)]
+        run_exe = exe
+        skse_plugins = (cfg.get('skse_plugins') if mods_cfg else None) or []
+        if skse_plugins:
+            # SKSE reads <directory of the running exe>/Data/SKSE/Plugins, not the overlay: a per-run directory holds an APFS clone
+            # of the prepared exe (same bytes, so the same AOT module) and a clone of the pack's Data/SKSE tree.
+            xdir = out / 'exe'
+            (xdir / 'Data').mkdir(parents=True)
+            subprocess.run(['cp', '-c', str(exe), str(xdir / exe.name)], check=True)
+            subprocess.run(['cp', '-cR', str(mroot / 'Data' / 'SKSE'), str(xdir / 'Data' / 'SKSE')], check=True)
+            if digest(xdir / exe.name) != digest(exe):
+                raise ValueError('per-run exe clone differs from the prepared exe')
+            run_exe = xdir / exe.name
+            result.setdefault('diagnostic', {})['skse_plugins'] = dict(dir=str(xdir / 'Data' / 'SKSE' / 'Plugins'), plugins=skse_plugins,
+                scope='per-run copy of the pack tree where SKSE reads it; hashes are those the pipeline built modules for')
+            for pl in skse_plugins:
+                if pl.get('sha256') and digest(xdir / 'Data' / pl['path']) != pl['sha256']:
+                    raise ValueError(f"skse plugin {pl['path']} differs from the pack's recorded hash")
+        cmd = ['/usr/bin/arch', '-arm64', str(runtime), str(run_exe)]
         result.update(command=cmd, cwd=str(assets), environment={k:v for k,v in env.items() if k.startswith(('VXRT_', 'VERANTYX_')) or k=='TMPDIR' or (getattr(args, 'experimental_xrizer', False) and k.startswith('XDG_'))}, timeout_seconds=args.seconds)
         log = out/'startup.log'
         timed_out = False
@@ -536,6 +575,7 @@ def main():
     ap.add_argument('--mods-dir', metavar='DIR', help='diagnostic: link each top-level entry of DIR/Data (a flattened loose-file mod tree) into the run\'s overlay Data; the install is not touched')
     ap.add_argument('--overlay-ini', action='append', metavar='FILE:SECTION:KEY=VALUE', help='diagnostic only, repeatable: set one ini key in a per-run copy of FILE (from the asset root) inside the run\'s overlay, e.g. Skyrim.ini:General:sIntroSequence= (empty value); the original is not touched')
     ap.add_argument('--dump-eyes', action='store_true', help='diagnostic only: the experimental dev host writes raw RGBA of the published eyes for frames 1, 2, 60, 300 and 600 under <out>/eyes')
+    ap.add_argument('--code-hook', action='append', metavar='NAME=VALUE', help='repeatable: %s (SKSE VR preload; research/2026-11-11-skse-vr-on-aot.md)' % ', '.join(sorted(CODE_HOOK_ENV)))
     ap.add_argument('--diag-env', action='append', metavar='NAME[=VALUE]', help='diagnostic only, repeatable: one of the renderer tracing knobs (%s)' % ', '.join(sorted(DIAG_ENV)))
     ap.add_argument('--xinput-script', default=None, metavar='SPEC', help='diagnostic only: VXRT_XINPUT_SCRIPT, a scripted virtual gamepad START_S:BUTTONS:HOLD_S[,...] (e.g. 40:A:0.3) with times from process start')
     ap.add_argument('--xinput-repeat', default=None, metavar='SPEC', help='diagnostic only: press a scripted-gamepad button repeatedly, BUTTONS@FROM_S-TO_S/EVERY_S[:HOLD_S] (e.g. A@30-120/3), merged with --xinput-script; the same virtual gamepad as --xinput-script')
