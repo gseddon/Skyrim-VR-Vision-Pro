@@ -142,6 +142,8 @@ static int capture(const char *path) {
             uint32_t a = k >= 6 ? k - 6 : 0;                           // (up to six unchanged bytes of context: the opcode of a rel32 branch or FF 15 even when low displacement bytes happen to match)
             fprintf(f, "P %s %x ", e->im->name, e->va + a);
             hex_out(f, now + a, last + 1 - a);
+            fprintf(f, " ");                                           // (and what the bytes were before: a hook written later is still the original at the preload-time check)
+            hex_out(f, e->copy + a, last + 1 - a);
             fprintf(f, "\n");
             runs++; bytes += last + 1 - a; k = last + 1;
         }
@@ -191,18 +193,20 @@ static int verify(const char *path) {
         char kind, name[128]; unsigned off; int used = 0;
         if (sscanf(line, "%c %127s %x %n", &kind, name, &off, &used) != 3 || !used) continue;
         if (kind == 'T') continue;                                      // (a pointer into the region written into data: roots for the module only)
-        size_t hn = strcspn(line + used, "\r\n") / 2;
-        uint8_t *want = malloc(hn ? hn : 1);
+        size_t hn = strcspn(line + used, " \r\n") / 2;
+        uint8_t *want = malloc(hn ? hn : 1), *was = NULL;
         if (!unhex(line + used, want, hn)) { bad++; free(want); continue; }
+        if (kind == 'P' && line[used + 2 * hn] == ' ') { was = malloc(hn ? hn : 1); if (!unhex(line + used + 2 * hn + 1, was, hn)) { free(was); was = NULL; } }
         const vx_image *im = find_image(name);
         sites++;
         if (!im || off + (uint64_t)hn > im->size) { vx_log("codehooks: verify: %s +%#x is not in a loaded image", name, off); bad++; }
-        else if (memcmp(im->base + off, want, hn)) {
+        else if (memcmp(im->base + off, want, hn) && !(was && !memcmp(im->base + off, was, hn))
+                 && !(kind == 'R' && ({ int z = 1; for (size_t q = 0; q < hn && z; q++) { uint8_t m = im->base[off + q]; if (m != want[q] && m != 0) z = 0; } z; }))) {
             size_t d = 0; while (im->base[off + d] == want[d]) d++;
             vx_log("codehooks: verify: %s +%#x differs from the capture at byte %zu (have %02x, capture %02x)", name, off, d, im->base[off + d], want[d]);
             bad++;
         }
-        free(want);
+        free(want); free(was);
     }
     fclose(f); free(line);
     vx_log("codehooks: verify %s: %zu entries, %zu differ", path, sites, bad);
@@ -232,7 +236,7 @@ static void watch_load(const char *path) {
     while (fgets(line, (int)cap, f)) {
         char kind, name[128]; unsigned off; int used = 0;
         if (sscanf(line, "%c %127s %x %n", &kind, name, &off, &used) != 3 || !used || (kind != 'P' && kind != 'R')) continue;
-        size_t hn = strcspn(line + used, "\r\n") / 2;
+        size_t hn = strcspn(line + used, " \r\n") / 2;
         uint8_t *b = malloc(hn ? hn : 1);
         if (!unhex(line + used, b, hn)) { free(b); continue; }
         if (kind == 'R') { g_rwant = b; g_rwant_len = hn; continue; }
