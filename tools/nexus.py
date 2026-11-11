@@ -57,6 +57,9 @@ _sleep = time.sleep       # tests replace this (429 waits)
 _poll_sleep = time.sleep  # tests replace this (queue polling)
 POLL = 0.5
 DEFAULT_WAIT = 600
+STABLE = 1.5              # seconds a new file's size must stay the same before it counts as complete
+ARCHIVE_EXT = ('.zip', '.7z', '.rar')
+PARTIAL_EXT = ('.crdownload', '.download', '.part', '.partial', '.opdownload', '.tmp', '.aria2')
 
 
 class NeedInput(Exception):
@@ -360,6 +363,148 @@ def download(game, mod_id, file_id, nxm=None, md5=None, wait=0, progress=None):
     return dict(path=str(dest), md5=digest, size=got, verified_by=how)
 
 
+# --- the key-free path: the browser downloads, we pick the archive up from the Downloads folder ----------------------------
+
+def browser_downloads_dir():
+    return Path(os.environ.get('VXRT_DOWNLOADS_DIR') or '~/Downloads').expanduser()
+
+
+def files_page(game, mod_id, file_id):
+    return 'https://www.nexusmods.com/%s/mods/%s?tab=files&file_id=%s' % (game, mod_id, file_id)
+
+
+_md5_cache = {}
+
+
+def _cached_md5(p, st):
+    k = (str(p), st.st_size, st.st_mtime_ns)
+    if k not in _md5_cache:
+        _md5_cache[k] = md5_file(p)
+    return _md5_cache[k]
+
+
+def _complete_archives(folder, sizes):
+    """Archives in folder that look finished: right extension, not a partial download, size unchanged for STABLE seconds.
+    sizes is the caller's {path: (size, since)} memory between polls."""
+    now = time.time(); out = []; sizes['unstable'] = 0
+    try:
+        entries = list(folder.iterdir())
+    except OSError as e:
+        raise NexusError('cannot read the downloads folder %s: %s' % (folder, e.strerror or e))
+    for p in entries:
+        n = p.name.lower()
+        if n.startswith('.') or not n.endswith(ARCHIVE_EXT) or n.endswith(PARTIAL_EXT) or not p.is_file():
+            continue
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        old = sizes.get(p) if p != 'unstable' else None
+        if old is None or old[0] != st.st_size:
+            sizes[p] = (st.st_size, now)
+        if now - sizes[p][1] >= STABLE or now - st.st_mtime >= STABLE * 4:
+            out.append((p, st))
+        else:
+            sizes['unstable'] += 1
+    return sorted(out, key=lambda t: -t[1].st_mtime)
+
+
+def manual_fetch(game, mod_id, file_id, name=None, md5=None, wait=0, progress=None, accept_name=False, folder=None):
+    """No API key: ask the user to download the file in the browser ("Manual download", then "Slow download") and take the archive from the
+    Downloads folder (new, or already there). Matched by the pinned md5, else by the mod id in the file name (Nexus names are
+    <name>-<mod_id>-<version>-<timestamp>.<ext>) after a yes from the user. The archive is copied (not moved) into the private downloads dir."""
+    game = _ident(game, 'game'); mod_id = _ident(mod_id, 'mod id', r'\d+'); file_id = _ident(file_id, 'file id', r'\d+')
+    folder = Path(folder) if folder else browser_downloads_dir()
+    want_md5 = (md5 or '').lower() or None
+    e = lambda m='': print(m, file=sys.stderr, flush=True)
+    tty = sys.stdin is not None and sys.stdin.isatty()
+    label = name or 'mod %s' % mod_id
+    pos = ('%d of %d done' % progress) if isinstance(progress, tuple) else progress
+    pat = re.compile(r'-%s-' % re.escape(mod_id))
+    sizes = {}; refused = set(); said = set(); started = False
+
+    def finish(src, st):
+        dest = downloads_dir() / ('%s-%s-%s-%s' % (game, mod_id, file_id, _safe_name(src.name)))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        part = dest.with_name(dest.name + '.part')
+        try:
+            shutil.copyfile(src, part)
+            got = md5_file(part)
+            if want_md5 and got != want_md5:
+                raise NexusError('%s does not have the pinned md5 after copying' % src.name)
+            os.replace(part, dest)
+        finally:
+            part.unlink(missing_ok=True)
+        e('Picked up %s from %s (copied, the original is untouched; md5 %s).' % (src.name, folder, got))
+        return dict(path=str(dest), md5=got, size=dest.stat().st_size, verified_by='pinned md5' if want_md5 else 'file name and your confirmation')
+
+    def scan():
+        for p, st in _complete_archives(folder, sizes):
+            if p in refused:
+                continue
+            by_name = bool(pat.search(p.name))
+            if want_md5:
+                got = _cached_md5(p, st)
+                if got == want_md5:
+                    return finish(p, st)
+                if by_name and p.name not in said:
+                    said.add(p.name); e('Ignoring %s: it looks like a file of this mod but its md5 differs from the pinned one (%s).' % (p.name, want_md5))
+                continue
+            if not by_name:
+                continue
+            if accept_name:
+                return finish(p, st)
+            if not tty:
+                if p.name not in said:
+                    said.add(p.name); e('Found %s (name matches mod %s) but cannot ask you to confirm without a terminal; re-run with --accept-name-match.' % (p.name, mod_id))
+                continue
+            try:
+                ok = input('Found %s in %s. Is this "%s" (file %s)? [y/N] ' % (p.name, folder, label, file_id)).strip().lower() in ('y', 'yes')
+            except EOFError:
+                ok = False
+            if ok:
+                return finish(p, st)
+            refused.add(p)
+        return None
+
+    r = scan()
+    if not r and sizes.get('unstable'):          # something is still being written (or was just written): give it a moment
+        _poll_sleep(STABLE + 0.1); r = scan()
+    if r:
+        return r
+    e()
+    if pos:
+        e('[%s]' % pos)
+    e('No Nexus API key is set (or --manual was given), so the download goes through your browser:')
+    e('  Mod:   %s' % label)
+    e('  1. Open this page (logged in to Nexus):  %s' % files_page(game, mod_id, file_id))
+    e('  2. Click "Manual download", then "Slow download".')
+    e("  3. I'll pick the file up from your Downloads folder (%s)." % folder)
+    e('Waiting up to %d s. Press Ctrl-C to skip this mod.' % wait)
+    try:
+        if tty and input('Open the page now with `open`? [y/N] ').strip().lower() in ('y', 'yes'):
+            subprocess.run(['open', files_page(game, mod_id, file_id)])
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            _poll_sleep(POLL)
+            r = scan()
+            if r:
+                return r
+    except (KeyboardInterrupt, EOFError):
+        e('Skipped %s.' % label)
+        raise Skipped('skipped %s by request' % label)
+    raise Skipped('no matching archive appeared in %s for %s within %d s' % (folder, label, wait))
+
+
+def fetch_file(game, mod_id, file_id, nxm=None, md5=None, wait=0, progress=None, name=None, manual=False, accept_name=False):
+    """One entry point: the API path when a key is set (and not --manual), else the Downloads-folder path."""
+    if manual or not (os.environ.get('NEXUS_API_KEY') or '').strip():
+        if nxm:
+            print('nexus: an nxm link cannot be used without an API key (the download-link call needs the key); using the Downloads folder instead.', file=sys.stderr)
+        return manual_fetch(game, mod_id, file_id, name=name, md5=md5, wait=wait, progress=progress, accept_name=accept_name)
+    return download(game, mod_id, file_id, nxm=nxm, md5=md5, wait=wait, progress=('%d of %d done' % progress) if isinstance(progress, tuple) else progress)
+
+
 # --- nxm hand-off: the queue, the handler app, the prompt ------------------------------------------------------------------
 
 def queue_dir():
@@ -644,7 +789,7 @@ def default_wait(v):
 
 
 def cmd_download(a):
-    r = download(a.game, a.mod_id, a.file_id, nxm=a.nxm, md5=a.md5, wait=default_wait(a.wait))
+    r = fetch_file(a.game, a.mod_id, a.file_id, nxm=a.nxm, md5=a.md5, wait=default_wait(a.wait), manual=a.manual, accept_name=a.accept_name_match)
     print(json.dumps(r) if a.json else '%s  md5 %s' % (r['path'], r['md5']))
 
 
@@ -662,6 +807,8 @@ def main(argv=None):
     p = sub.add_parser('download'); p.add_argument('game'); p.add_argument('mod_id'); p.add_argument('file_id')
     p.add_argument('--nxm', help='the nxm:// link from "Mod Manager Download" (needed without Premium)')
     p.add_argument('--md5', help='pinned md5 the file must have'); p.add_argument('--json', action='store_true')
+    p.add_argument('--manual', action='store_true', help='use the browser and the Downloads folder even when a key is set')
+    p.add_argument('--accept-name-match', action='store_true', help='without a terminal: accept an archive whose name carries the mod id (otherwise pin --md5)')
     p.add_argument('--wait', type=int, help='seconds to wait for the nxm link of a non-premium download (default 600 in a terminal, else 0)'); p.set_defaults(fn=cmd_download)
     p = sub.add_parser('receive'); p.add_argument('url'); p.set_defaults(fn=cmd_receive)
     for name, fn in (('install-handler', cmd_install_handler), ('uninstall-handler', cmd_uninstall_handler)):

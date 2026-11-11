@@ -52,7 +52,7 @@ redoes it) and exits 2 with a message naming the missing input. `python3 tools/v
 | `shaders` | builds the Metal shader set from the committed hash manifest and your own `Skyrim_VR - Main.bsa` (about 5 to 25 minutes depending on load: the Metal compile of about 10,800 libraries, one process per core) | no |
 | `app` | `make XROS_XRIZER_GAME=1 XROS_SDK=xros xros-app`, signed with your team; `--install` installs it on the headset, `--unsigned` skips signing | no |
 | `stage-to-device` | copies the game tree (about 14 GB) into the app's container: dry run, then `--run` | no |
-| `mods-fetch` | downloads the Nexus Mods files named in a mods list (see below), pins their md5 in the list and unpacks them under `$VXRT_PRIVATE_ROOT/mods-src`; needs `NEXUS_API_KEY` | yes (api.nexusmods.com and its CDN) |
+| `mods-fetch` | gets the Nexus Mods files named in a mods list (see below): from your Downloads folder after you download them in the browser, or through the API with an optional `NEXUS_API_KEY`; pins their md5 in the list and unpacks them under `$VXRT_PRIVATE_ROOT/mods-src` | only with a key (api.nexusmods.com and its CDN) |
 | `mods` | builds a data-only mod pack from a mods list (`tools/mods.py`); `--deploy` copies it | no |
 
 Typical first run: `toolchain --with-steamless`, `prepare`, `aot`, `shaders`, `app --install`, `stage-to-device --run`. Then wear
@@ -77,24 +77,32 @@ An entry has either `source` (a local prepared tree, as before) or `nexus`, neve
 
 Steps: `python3 tools/vxrt_build.py mods-fetch --list mods-list.json`, then `mods --list mods-list.json`. The fetch writes the md5
 of each file into the list (`nexus.md5`), so later builds are reproducible and a changed or damaged file is refused. A mod whose
-archive matches its pinned md5 and is already unpacked is skipped, without the network or the key. Archives are zip, or
+archive matches its pinned md5 and is already unpacked is skipped, without the network, the key or the Downloads folder. Archives are zip, or
 (7z, rar) via macOS `tar`. A FOMOD installer archive is not unpacked blindly: the fetch stops and tells you to run
-`tools/fomod_auto.py` on it and use the result as `source`. Downloads land in `$VXRT_PRIVATE_ROOT/downloads/nexus/`.
+`tools/fomod_auto.py` on it and use the result as `source`. Copies land in `$VXRT_PRIVATE_ROOT/downloads/nexus/`.
 
-**API key.** Nexus's API has no username/password login; use a personal API key: nexusmods.com > your avatar > Site preferences
-> API Keys > request/generate a personal key. Put it in `local/env.sh` as `NEXUS_API_KEY` (see `local.example.sh`; a password
-manager's CLI works, for example 1Password with a field labelled `apikey`). It is only sent to api.nexusmods.com, never printed or
-committed. `python3 -I tools/nexus.py validate` shows the account name and whether it is Premium. Without the key the stage exits 2.
+**Default, no API key and no Premium: your browser downloads, the tool picks the file up.** For each mod not yet fetched, in order,
+`mods-fetch` prints a numbered message ("[2 of 5 done]") with the mod's name from your list, the exact Files-tab page
+(`https://www.nexusmods.com/<game>/mods/<mod_id>?tab=files&file_id=<file_id>`; in a terminal it offers to `open` it) and the steps: on the
+file click **Manual download**, then **Slow download**. It then watches your Downloads folder (`VXRT_DOWNLOADS_DIR`, default `~/Downloads`)
+for a finished archive (`.zip`, `.7z`, `.rar`; partial downloads such as `.crdownload`, `.download`, `.part` are ignored and the size must
+stop changing). An archive that is already in the folder is taken at once, so downloads you made earlier work. Matching: by the md5 pinned in
+the list when there is one; otherwise by the mod id in the file name (Nexus names files `<Name>-<mod_id>-<version>-<timestamp>.<ext>`),
+after you confirm it in the terminal (without a terminal, pin the md5 or pass `--accept-name-match`). The archive is copied, never moved,
+the md5 is pinned in the list, and the next mod is asked for. `--wait SECONDS` sets the wait per mod (600 in a terminal, 0 otherwise, which
+means "take what is there, else exit 2 and say what is missing"); Ctrl-C skips a mod (exit 2 at the end lists the skipped ones; run it
+again, finished mods are not redone). A file whose md5 differs from the pinned one is refused even if its name matches. Nothing is sent to
+Nexus on this path; your browser does the download under your own login.
 
-**Premium or not.** With Nexus Premium the API issues each download link itself. A free account cannot: for each file, open its
-page on nexusmods.com, click "Mod Manager Download", copy the `nxm://...` link (it carries a `key` and short-lived `expires`) and pass
-it: `tools/vxrt_build.py mods-fetch --list L --nxm 'nxm://...'` (repeat for each file) or
-`tools/nexus.py download <game> <mod_id> <file_id> --nxm 'nxm://...'`. Quote it. `nexus.py nxm 'nxm://...'` takes the link alone, as
-an nxm handler would be called; registering the tool as the system nxm handler is not set up here. The key in a link is for one file and
-expires, so fetch soon after copying it. A 403 means "not Premium and no valid link", 400 an invalid link key, 410 an expired one.
-Requests over Nexus's rate limit (429) are waited out as the headers say, up to 15 minutes.
+**Optional: an API key.** A personal key is free (nexusmods.com > your avatar > Site preferences > API Keys). It is not needed. With it,
+`nexus.py validate` shows your account and Premium status, `nexus.py files <game> <mod_id>` lists a mod's files with sizes and checksums, and
+`mods-fetch` uses the API: Premium accounts then download directly with no browser step at all, and sizes/md5 are verified against Nexus's
+record. Put it in `local/env.sh` as `NEXUS_API_KEY` (see `local.example.sh`; a password manager's CLI works, for example 1Password with a field
+labelled `apikey`). Nexus has no username/password API login, so a password does not work. The key is only sent to api.nexusmods.com, never
+printed or committed. `--manual` forces the browser path even when a key is set. API downloads of non-Premium accounts need an nxm link
+(below); that path needs the key too, because the download-link call requires it even with a link.
 
-**What the fetch does without Premium.** For each file the API will not hand out, `mods-fetch` (and `nexus.py download`) prints a short
+**With a key but without Premium.** For each file the API will not hand out, `mods-fetch` (and `nexus.py download`) prints a short
 numbered message with the mod and file name, "[2 of 5 done]", the exact Files-tab page (`https://www.nexusmods.com/<game>/mods/<id>?tab=files&file_id=<id>`;
 in a terminal it offers to `open` it for you) and the instruction to click "Mod Manager Download" there. It then waits (`--wait SECONDS`,
 default 600 in a terminal; 0, meaning "exit 2 and say what is missing", when not run from a terminal) for that file's link, and Ctrl-C
@@ -103,7 +111,7 @@ for a different file is refused politely and kept in the queue for its own file;
 from the queue directory `$VXRT_PRIVATE_ROOT/downloads/nexus/queue/` (mode 0700, links 0600), or pasted in the terminal. Premium
 accounts never see any of this. Messages show ids only, never the key or the link's `key`/`expires`.
 
-**The nxm handler (optional, makes the clicks automatic).**
+**The nxm handler (optional; needs an API key).** It only helps the key-and-no-Premium path above: the link it receives is useless without the key. Without a key, use the Downloads-folder path and skip this.
 `python3 -I tools/nexus.py install-handler [--dry-run]` builds a small AppleScript app (`osacompile`) at
 `$VXRT_PRIVATE_ROOT/tools/NexusHandler.app` (git-ignored; never committed) that passes each `nxm://` link to
 `nexus.py receive`, which only saves it in the queue, and then makes it the macOS default handler for `nxm://`.
