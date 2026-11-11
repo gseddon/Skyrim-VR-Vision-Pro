@@ -9,6 +9,7 @@
     shaders           Metal shader set from the committed manifest        -> $VXRT_PRIVATE_ROOT/shadercache-xros-manifest
     app               build and sign the app  (--unsigned: no signing; --install: devicectl install, needs VXRT_DEVICE_ID)
     stage-to-device   copy the game tree to the headset (dry run unless --run)
+    mods-fetch        download the Nexus Mods files of a mods list, pin their md5, unpack  (--list L [--nxm nxm://...]; needs NEXUS_API_KEY)
     mods              build a mod pack  (--list mods-list.json [--out DIR] [--deploy])
 
 Rules every stage follows: inputs come from the environment or arguments (local/env.sh, copied from local.example.sh, is read
@@ -16,7 +17,7 @@ first; the real environment wins); outputs go under VXRT_PRIVATE_ROOT (default b
 built app; exit 0 when the stage's outputs exist and were checked, 2 when an input is missing (the message names it and the
 stage that makes it), 1 when the stage ran and failed. A finished stage is not redone (idempotent) unless --force.
 --json prints one result object (stage, status, outputs, exit code) on stdout; progress goes to stderr then.
-Nothing here downloads except `toolchain`, and nothing touches the headset except `app --install`, `stage-to-device --run`
+Nothing here downloads except `toolchain` and `mods-fetch`, and nothing touches the headset except `app --install`, `stage-to-device --run`
 and `mods --deploy`.
 """
 import argparse
@@ -171,6 +172,18 @@ def stage_stage(a):
     return run([sys.executable, REPO / 'tools' / 'skyrim_device_stage.py'] + (['--run', '--verify'] if a.run else [])), ['(headset) Documents/root/SkyrimVR']
 
 
+def stage_mods_fetch(a):
+    if not a.list:
+        raise NeedInput('--list <mods-list.json> is required (format: tools/mods.py)')
+    need_path(a.list, None, 'the mods list')
+    out = priv() / 'downloads' / 'nexus'
+    # mods.py fetch asks for the key only when a mod still has to be downloaded, so a finished list needs no key and does nothing.
+    rc = run([sys.executable, '-I', REPO / 'tools' / 'mods.py', 'fetch', '--list', a.list] + [x for u in (a.nxm or []) for x in ('--nxm', u)] + (['--force'] if a.force else []))
+    if rc == MISSING:
+        raise NeedInput('NEXUS_API_KEY (or, without Premium, an --nxm link per file) is missing; see the message above, local.example.sh and docs/SETUP_SKYRIM.md')
+    return rc, [str(out)]
+
+
 def stage_mods(a):
     if not a.list:
         raise NeedInput('--list <mods-list.json> is required (format: tools/mods.py)')
@@ -185,11 +198,13 @@ def stage_mods(a):
         need_env('VXRT_DEVICE_ID', 'XROS_BUNDLE_PREFIX')
         rc = run([sys.executable, '-I', REPO / 'tools' / 'mods.py', 'deploy', out, '--bundle', os.environ['XROS_BUNDLE_PREFIX'] + '.SkyrimVR',
                   '--device', os.environ['VXRT_DEVICE_ID'], '--yes'])
+    if rc == MISSING:
+        raise NeedInput('a Nexus mod in the list is not fetched yet (made by: tools/vxrt_build.py mods-fetch)')
     return rc, [str(out)]
 
 
 STAGES = {'toolchain': stage_toolchain, 'prepare': stage_prepare, 'aot': stage_aot, 'shaders': stage_shaders, 'app': stage_app,
-          'stage-to-device': stage_stage, 'mods': stage_mods}
+          'stage-to-device': stage_stage, 'mods-fetch': stage_mods_fetch, 'mods': stage_mods}
 
 
 def stage_state(s):
@@ -225,6 +240,7 @@ def main():
     ap.add_argument('--run', action='store_true', help='stage-to-device: really copy (default: dry run)')
     ap.add_argument('--list', help='mods: the mods list')
     ap.add_argument('--out', help='mods: the pack directory')
+    ap.add_argument('--nxm', action='append', help='mods-fetch: nxm:// link from the Nexus website for a file (without Premium); repeatable')
     ap.add_argument('--deploy', action='store_true', help='mods: copy the pack to the headset')
     a = ap.parse_args()
     try:
