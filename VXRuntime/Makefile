@@ -406,7 +406,7 @@ XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) 'VX
 .PHONY: xros-shader-set
 xros-app: xros-require-team $(XROS_SHADER_SET_PREREQ)
 # xros-shader-set: the whole shader set for $(XROS_SDK) into $(XROS_SHADER_DIR), from XROS_SHADER_MANIFEST and the install
-# XROS_SHADER_GAME (read only). Private (derived from the game): never committed. Rebuilt when the manifest is newer.
+# XROS_SHADER_GAME (read only). Private (derived from the game): never committed. Up to date means .complete holds the manifest's SHA-256 and translator revision (not file times).
 xros-shader-set: build/vxrt-shader-manifest
 	@test -f "$(XROS_SHADER_MANIFEST)" || { printf '%s\n' \
 	  'xros-shader-set: no shader manifest at $(XROS_SHADER_MANIFEST) (set XROS_SHADER_MANIFEST=<file>).' \
@@ -414,10 +414,8 @@ xros-shader-set: build/vxrt-shader-manifest
 	  'or by replaying a capture with an empty cache:  VXRT_SHADER_CACHE=<empty dir> VXRT_SHADER_MANIFEST=$(XROS_SHADER_MANIFEST) build/vxrt-d3d11-replay <capture>   (VISIONOS_PORT.md, "Shaders from a manifest").' \
 	  'Or set XROS_SHADER_SET=<dir of .metallib files> to use a set built another way.' >&2; exit 2; }
 	@test -d "$(XROS_SHADER_GAME)/Data" || { echo 'xros-shader-set: no Skyrim VR install at $(XROS_SHADER_GAME) (set SKYRIM_ASSET_ROOT=<your SkyrimVR folder>, or XROS_SHADER_GAME)' >&2; exit 2; }
-	@if [ "$(XROS_SHADER_DIR)/.complete" -nt "$(XROS_SHADER_MANIFEST)" ]; then echo "xros-shader-set: $(XROS_SHADER_DIR) is up to date"; else \
-	  ../tools/shader_manifest_build --game "$(XROS_SHADER_GAME)" --manifest "$(XROS_SHADER_MANIFEST)" --out "$(XROS_SHADER_DIR)" --sdk $(XROS_SDK) \
-	  && touch "$(XROS_SHADER_DIR)/.complete" \
-	  || { echo 'xros-shader-set: incomplete (see $(XROS_SHADER_DIR)/report.tsv)' >&2; exit 1; }; fi
+	@../tools/shader_manifest_build --game "$(XROS_SHADER_GAME)" --manifest "$(XROS_SHADER_MANIFEST)" --out "$(XROS_SHADER_DIR)" --sdk $(XROS_SDK) --skip-if-complete \
+	  || { echo 'xros-shader-set: incomplete (see $(XROS_SHADER_DIR)/report.tsv)' >&2; exit 1; }
 xros-app: xros-lib xros-aot-tests
 ifeq ($(XROS_XRIZER_FIXTURE),1)
 	@test "$(XROS_SDK)" != xrsimulator -o "$(XROS_CODE_SIGNING)" = NO || { echo 'the simulator xrizer fixture/immersive build requires XROS_CODE_SIGNING=NO' >&2; exit 2; }
