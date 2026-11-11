@@ -176,5 +176,115 @@ class ModsAndStage(Base):
         self.assertEqual(sum('/cdn/' in h[0] for h in Fake.hits), 1)
 
 
+class Handoff(Base):
+    def setUp(self):
+        super().setUp()
+        Fake.premium = False
+        for name, v in (('POLL', 0.02),):
+            m = mock.patch.object(nexus, name, v); m.start(); self.addCleanup(m.stop)
+        for name, v in (('handler_installed', lambda: False), ('_stdin_line', lambda: None)):
+            m = mock.patch.object(nexus, name, v); m.start(); self.addCleanup(m.stop)
+        self.err = io.StringIO(); m = mock.patch('sys.stderr', self.err); m.start(); self.addCleanup(m.stop)
+
+    def test_receive_queues_and_download_picks_it_up(self):
+        t = threading.Timer(0.3, lambda: nexus.receive(self.nxm())); t.start()
+        r = nexus.download('skyrimspecialedition', '7', '9', wait=10, progress='2 of 5 done')
+        self.assertTrue(Path(r['path']).is_file()); self.assertEqual(list(nexus.queue_dir().glob('*.nxm')), [])    # consumed
+        msg = self.err.getvalue()
+        self.assertIn('2 of 5 done', msg); self.assertIn('Mod Manager Download', msg); self.assertIn('?tab=files&file_id=9', msg)
+        self.assertIn('Main-7-9.zip', msg); self.assertIn('receive', msg)
+        self.assertNotIn(NXMKEY, msg); self.assertNotIn('4102444800', msg); self.assertNotIn(KEY, msg)
+
+    def test_receive_file_mode_and_rejects_junk(self):
+        p = nexus.receive(self.nxm()); self.assertEqual(p.stat().st_mode & 0o777, 0o600)
+        with self.assertRaises(nexus.NexusError): nexus.receive('https://example.com/x')
+        with self.assertRaises(nexus.NexusError): nexus.receive('nxm://skyrimspecialedition/mods/7/files/9')      # no key
+
+    def test_wrong_file_is_refused_politely_and_kept_then_right_one_taken(self):
+        wrong = 'nxm://skyrimspecialedition/mods/7/files/10?key=%s&expires=4102444800' % NXMKEY
+        nexus.receive(wrong)
+        threading.Timer(0.3, lambda: nexus.receive(self.nxm())).start()
+        r = nexus.download('skyrimspecialedition', '7', '9', wait=10)
+        self.assertTrue(Path(r['path']).is_file())
+        self.assertIn('different file', self.err.getvalue()); self.assertEqual(len(list(nexus.queue_dir().glob('*.nxm'))), 1)   # the other file's link is kept
+        self.assertNotIn(NXMKEY, self.err.getvalue())
+
+    def test_expired_link_ignored_and_timeout_skips(self):
+        nexus.receive('nxm://skyrimspecialedition/mods/7/files/9?key=%s&expires=1000' % NXMKEY)
+        with self.assertRaises(nexus.Skipped): nexus.download('skyrimspecialedition', '7', '9', wait=1)
+        self.assertIn('expired', self.err.getvalue())
+
+    def test_stdin_paste(self):
+        lines = iter([self.nxm()])
+        with mock.patch.object(nexus, '_stdin_line', lambda: next(lines, None)):
+            r = nexus.download('skyrimspecialedition', '7', '9', wait=5)
+        self.assertTrue(Path(r['path']).is_file())
+
+    def test_ctrl_c_skips(self):
+        with mock.patch.object(nexus, '_poll_sleep', side_effect=KeyboardInterrupt):
+            with self.assertRaises(nexus.Skipped): nexus.download('skyrimspecialedition', '7', '9', wait=5)
+
+    def test_premium_never_prompts(self):
+        Fake.premium = True; nexus.download('skyrimspecialedition', '7', '9', wait=5)
+        self.assertNotIn('Mod Manager', self.err.getvalue())
+
+    def test_no_wait_keeps_exit_2_instructions(self):
+        with self.assertRaises(nexus.NotPremium): nexus.download('skyrimspecialedition', '7', '9', wait=0)
+
+    def test_mods_fetch_skip_then_resume(self):
+        p = self.root / 'mods.json'
+        p.write_text(json.dumps(dict(profile='t', mods=[dict(id='texmod', kind='files', priority=1, nexus=dict(game='skyrimspecialedition', mod_id=7, file_id=9))])))
+        env = {**os.environ, **self.env}
+        r = subprocess.run([sys.executable, '-I', str(ROOT / 'tools/mods.py'), 'fetch', '--list', str(p), '--wait', '0'], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 2); self.assertNotIn(KEY, r.stdout + r.stderr)
+        nexus.receive(self.nxm())
+        r = subprocess.run([sys.executable, '-I', str(ROOT / 'tools/mods.py'), 'fetch', '--list', str(p), '--wait', '5'], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr); self.assertNotIn(NXMKEY, r.stdout + r.stderr)
+        self.assertTrue((self.root / 'priv/mods-src/texmod/Data/Textures/a.dds').is_file())
+
+
+class HandlerApp(Base):
+    def setUp(self):
+        super().setUp()
+        self.state = {'cur': 'org.example.vortex', 'sets': []}
+        for name, v in (('get_default_handler', lambda scheme='nxm': self.state['cur']),
+                        ('set_default_handler', lambda b, scheme='nxm': (self.state['sets'].append(b), self.state.update(cur=b))),
+                        ('_lsregister', lambda app: None)):
+            m = mock.patch.object(nexus, name, v); m.start(); self.addCleanup(m.stop)
+
+    def run_cmd(self, *args, answer=None, tty=True):
+        out = io.StringIO()
+        with mock.patch('sys.stdout', out), mock.patch('sys.stderr', io.StringIO()) as e, \
+             mock.patch('builtins.input', lambda prompt='': answer), mock.patch('sys.stdin') as si:
+            si.isatty.return_value = tty
+            rc = nexus.main(list(args))
+        return rc, out.getvalue() + e.getvalue()
+
+    def test_dry_run_changes_nothing(self):
+        rc, o = self.run_cmd('install-handler', '--dry-run')
+        self.assertEqual(rc, 0); self.assertIn('SYSTEM-WIDE', o); self.assertIn('org.example.vortex', o); self.assertIn('Vortex', o)
+        self.assertEqual(self.state['sets'], []); self.assertFalse(nexus.app_path().exists())
+
+    def test_no_auto_yes_and_n_answer(self):
+        rc, o = self.run_cmd('install-handler', tty=False); self.assertEqual(rc, 2)
+        rc, o = self.run_cmd('install-handler', answer='n'); self.assertEqual(rc, 0); self.assertIn('Not changed', o)
+        rc, o = self.run_cmd('install-handler', answer=''); self.assertIn('Not changed', o)
+        self.assertEqual(self.state['sets'], []); self.assertFalse(nexus.app_path().exists())
+
+    @unittest.skipUnless(sys.platform == 'darwin' and Path('/usr/bin/osacompile').exists(), 'needs macOS osacompile')
+    def test_install_builds_app_records_previous_and_uninstall_restores(self):
+        rc, o = self.run_cmd('install-handler', answer='y'); self.assertEqual(rc, 0, o)
+        self.assertEqual(self.state['sets'], [nexus.handler_bundle_id()])
+        plist = json.loads(subprocess.run(['plutil', '-convert', 'json', '-o', '-', str(nexus.app_path() / 'Contents/Info.plist')], capture_output=True, text=True).stdout)
+        self.assertEqual(plist['CFBundleURLTypes'][0]['CFBundleURLSchemes'], ['nxm']); self.assertEqual(plist['CFBundleIdentifier'], nexus.handler_bundle_id())
+        self.assertEqual(json.loads(nexus.prev_file().read_text())['previous'], 'org.example.vortex')
+        self.assertTrue(str(nexus.app_path()).startswith(str((self.root / 'priv').resolve())))
+        rc, o = self.run_cmd('uninstall-handler'); self.assertEqual(rc, 0, o)
+        self.assertEqual(self.state['cur'], 'org.example.vortex'); self.assertFalse(nexus.app_path().exists())
+
+    def test_uninstall_when_not_ours_does_nothing(self):
+        rc, o = self.run_cmd('uninstall-handler'); self.assertEqual(rc, 0); self.assertEqual(self.state['sets'], [])
+
+
 if __name__ == '__main__':
     unittest.main()

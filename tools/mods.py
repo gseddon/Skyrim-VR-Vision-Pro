@@ -149,7 +149,10 @@ def fetch(a):
         try: n = nexus.parse_nxm(u)
         except nexus.NexusError as e: sys.exit(f'--nxm: {e}')
         links[(n['game'].lower(), n['mod_id'], n['file_id'])] = n
-    changed = False; todo = 0
+    changed = False; todo = 0; skipped = []
+    pending = [m for m in cfg['mods'] if 'nexus' in m and m.get('enabled', True) and not m.get('source')
+               and not (not a.force and (nexus_tree(m['id']) / '.nexus-md5').is_file() and (m['nexus'].get('md5') or '').lower() == (nexus_tree(m['id']) / '.nexus-md5').read_text().strip().lower() and (nexus_tree(m['id']) / 'Data').is_dir())]
+    done = 0
     for m in cfg['mods']:
         if 'nexus' not in m or not m.get('enabled', True) or m.get('source'): continue
         n = _nexus_spec(m); game, mod, fid = n['game'], str(n['mod_id']), str(n['file_id'])
@@ -159,7 +162,8 @@ def fetch(a):
             print(f"{m['id']}: already fetched and unpacked (md5 {pinned})"); continue
         todo += 1
         try:
-            r = nexus.download(game, mod, fid, nxm=links.get((game.lower(), mod, fid)), md5=pinned)
+            r = nexus.download(game, mod, fid, nxm=links.get((game.lower(), mod, fid)), md5=pinned, wait=nexus.default_wait(a.wait),
+                               progress='%d of %d done' % (done, len(pending)))
             tmp = tree.with_name(tree.name + '.tmp')
             if tmp.exists(): shutil.rmtree(tmp)
             raw = tmp / 'raw'; _unpack(Path(r['path']), raw)
@@ -167,15 +171,19 @@ def fetch(a):
             (new / '.nexus-md5').write_text(r['md5'] + '\n')
             if tree.exists(): shutil.rmtree(tree)
             tree.parent.mkdir(parents=True, exist_ok=True); os.replace(new, tree); shutil.rmtree(tmp)
+        except nexus.Skipped as e:
+            print(f"{m['id']}: {e}", file=sys.stderr); skipped.append(m['id']); continue
         except nexus.NeedInput as e:
             print(f"{m['id']}: {e}", file=sys.stderr); sys.exit(2)
         except (nexus.NexusError, ValueError) as e:
             print(f"{m['id']}: {e}", file=sys.stderr); sys.exit(1)
+        done += 1
         if pinned != r['md5']:
             n['md5'] = r['md5']; changed = True
             print(f"{m['id']}: pinned md5 {r['md5']} in {lst.name}")
     if changed:
         tmp = lst.with_name(lst.name + '.tmp'); tmp.write_text(json.dumps(cfg, indent=1) + '\n'); os.replace(tmp, lst)
+    if skipped: print(f"fetch: skipped {', '.join(skipped)}; run it again when you have their nxm links", file=sys.stderr); sys.exit(2)
     print(f'fetch: {todo} mod(s) fetched, {sum(1 for m in cfg["mods"] if "nexus" in m)} nexus entr(ies) in the list')
 
 
@@ -300,7 +308,7 @@ def deploy(a):
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(); sub = ap.add_subparsers(dest='cmd', required=True)
     b = sub.add_parser('build'); b.add_argument('--plugin-base', default='0x30c000000', help='arena base of the first SKSE plugin DLL module; 16 MB apart'); b.add_argument('--list', required=True); b.add_argument('--out', required=True); b.add_argument('--force', action='store_true')
-    f = sub.add_parser('fetch'); f.add_argument('--list', required=True); f.add_argument('--nxm', action='append', help='nxm:// link from the website (non-premium); repeatable'); f.add_argument('--force', action='store_true')
+    f = sub.add_parser('fetch'); f.add_argument('--list', required=True); f.add_argument('--nxm', action='append', help='nxm:// link from the website (non-premium); repeatable'); f.add_argument('--force', action='store_true'); f.add_argument('--wait', type=int, help='seconds to wait per file for its nxm link without Premium (default 600 in a terminal, else 0)')
     s = sub.add_parser('show'); s.add_argument('pack')
     q = sub.add_parser('pipeline'); q.add_argument('pack'); q.add_argument('--config', required=True); q.add_argument('--out', required=True)
     p = sub.add_parser('deploy'); p.add_argument('pack'); p.add_argument('--bundle', required=True); p.add_argument('--device'); p.add_argument('--yes', action='store_true')

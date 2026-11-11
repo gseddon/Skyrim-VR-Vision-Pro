@@ -178,9 +178,9 @@ def stage_mods_fetch(a):
     need_path(a.list, None, 'the mods list')
     out = priv() / 'downloads' / 'nexus'
     # mods.py fetch asks for the key only when a mod still has to be downloaded, so a finished list needs no key and does nothing.
-    rc = run([sys.executable, '-I', REPO / 'tools' / 'mods.py', 'fetch', '--list', a.list] + [x for u in (a.nxm or []) for x in ('--nxm', u)] + (['--force'] if a.force else []))
+    rc = run([sys.executable, '-I', REPO / 'tools' / 'mods.py', 'fetch', '--list', a.list] + [x for u in (a.nxm or []) for x in ('--nxm', u)] + (['--force'] if a.force else []) + (['--wait', str(a.wait)] if a.wait is not None else []))
     if rc == MISSING:
-        raise NeedInput('NEXUS_API_KEY (or, without Premium, an --nxm link per file) is missing; see the message above, local.example.sh and docs/SETUP_SKYRIM.md')
+        raise NeedInput('NEXUS_API_KEY is missing, or a non-Premium file has no nxm link yet (skipped or timed out); see the message above and docs/SETUP_SKYRIM.md')
     return rc, [str(out)]
 
 
@@ -240,6 +240,7 @@ def main():
     ap.add_argument('--run', action='store_true', help='stage-to-device: really copy (default: dry run)')
     ap.add_argument('--list', help='mods: the mods list')
     ap.add_argument('--out', help='mods: the pack directory')
+    ap.add_argument('--wait', type=int, help='mods-fetch: seconds to wait per file for its nxm link (non-premium)')
     ap.add_argument('--nxm', action='append', help='mods-fetch: nxm:// link from the Nexus website for a file (without Premium); repeatable')
     ap.add_argument('--deploy', action='store_true', help='mods: copy the pack to the headset')
     a = ap.parse_args()
