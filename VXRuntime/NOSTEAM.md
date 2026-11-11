@@ -7,7 +7,7 @@ app needs (no Steam client can run there).
 
 ## The Mac test (2026-10-30, avp-preflight e6bc240 arm64 build, AOT strict, NPU race on)
 
-Root: `~/Verantyx_VR_Drive/vxrt_nosteam`, made by `tools/nosteam_root.sh <root> <game folder>` (checks: no Steam keys
+Root: `<VXRT_DRIVE>/vxrt_nosteam` (any folder you choose), made by `tools/nosteam_root.sh <root> <game folder>` (checks: no Steam keys
 in registry.txt, no steamclient*.dll in the root's system32 or the game's folders). The install is the existing one
 (`vxrt_wsteam/.../steamapps/common/Cyberpunk 2077`), read through `VXRT_OVERLAY=<install>:<root>/overlay_game`: the
 game's writes (its crash-info .txt files in bin/x64) land in the overlay; the install had no file newer than the runs.

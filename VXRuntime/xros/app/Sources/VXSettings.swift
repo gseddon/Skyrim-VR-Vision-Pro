@@ -50,6 +50,34 @@ enum VXUpscale: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+// Skyrim VR's own gameplay choices, written over its SkyrimPrefs.ini values through VXRT_INI_SET (client.c). "Game default" writes nothing, so the
+// game's own value stays: a key is only overridden when the player picked one here. Keys are strings of the game's exe, section [VRInput]
+// (research/2026-11-11-skyrim-vr-gameplay-settings.md).
+// Turning: Snap = bGamepadLookAngleSnapping 1 (smoothing 0), Smooth = bGamepadLookAngleSnapping 0.
+enum VXTurn: String, CaseIterable, Identifiable {
+    case game, snap, smooth
+    var id: String { rawValue }
+    var iniSet: [(key: String, value: String)] {
+        switch self {
+        case .game: return []
+        case .snap: return [("VRInput.bGamepadLookAngleSnapping", "1"), ("VRInput.bGamepadLookAngleSnapSmoothing", "0")]
+        case .smooth: return [("VRInput.bGamepadLookAngleSnapping", "0")]
+        }
+    }
+}
+// Movement: Teleport = bDirectMovementWithWands 0, Walk (direct, with the stick) = 1.
+enum VXMove: String, CaseIterable, Identifiable {
+    case game, teleport, walk
+    var id: String { rawValue }
+    var iniSet: [(key: String, value: String)] {
+        switch self {
+        case .game: return []
+        case .teleport: return [("VRInput.bDirectMovementWithWands", "0")]
+        case .walk: return [("VRInput.bDirectMovementWithWands", "1")]
+        }
+    }
+}
+
 final class VXSettings: ObservableObject {
     static let shared = VXSettings()
     // Called when the latency choice changes, so a running game's gate follows at once (VXApp.swift sets it in the xrizer build).
@@ -63,11 +91,19 @@ final class VXSettings: ObservableObject {
     static let autoStartKey = "vxrt.startAutomatically"
     static let predictKey = "vxrt.predictMs"
     static let eyeHeightKey = "vxrt.stageEyeHeight"
+    static let turnKey = "vxrt.turn"
+    static let snapAngleKey = "vxrt.snapAngle"
+    static let turnSpeedKey = "vxrt.turnSpeed"
+    static let moveKey = "vxrt.move"
 
     static let renderScaleRange = 0.5...1.0
     static let renderScaleBuiltIn = 0.75
     static let eyeHeightRange = 1.0...2.2
     static let eyeHeightBuiltIn = 1.6
+    static let snapAngleRange = 10.0...90.0
+    static let snapAngleBuiltIn = 30.0
+    static let turnSpeedRange = 0.1...10.0
+    static let turnSpeedBuiltIn = 1.0
     static let predictRange = 0.0...140.0
     static let autoStartDelay = 5
 
@@ -102,6 +138,23 @@ final class VXSettings: ObservableObject {
         didSet {
             guard !suppress else { return }
             if let v = stageEyeHeight { defaults.set(v, forKey: Self.eyeHeightKey) } else { defaults.removeObject(forKey: Self.eyeHeightKey) }
+        }
+    }
+    // Gameplay (Skyrim VR's own settings; .game / nil = leave the game's own value alone).
+    @Published var turn: VXTurn { didSet { if !suppress { defaults.set(turn.rawValue, forKey: Self.turnKey) } } }
+    @Published var move: VXMove { didSet { if !suppress { defaults.set(move.rawValue, forKey: Self.moveKey) } } }
+    // Snap angle in degrees (fGamepadLookAngleSnapAmount); nil = the game's.
+    @Published var snapAngle: Double? {
+        didSet {
+            guard !suppress else { return }
+            if let v = snapAngle { defaults.set(v, forKey: Self.snapAngleKey) } else { defaults.removeObject(forKey: Self.snapAngleKey) }
+        }
+    }
+    // Smooth turn speed (fGamepadLookAngleSnapSmoothingSpeed); nil = the game's.
+    @Published var turnSpeed: Double? {
+        didSet {
+            guard !suppress else { return }
+            if let v = turnSpeed { defaults.set(v, forKey: Self.turnSpeedKey) } else { defaults.removeObject(forKey: Self.turnSpeedKey) }
         }
     }
     private var suppress = true
@@ -145,7 +198,34 @@ final class VXSettings: ObservableObject {
 
         predictMs = environment["VXRT_PREDICT_MS"].flatMap(Double.init) ?? (defaults.object(forKey: Self.predictKey) as? Double)
         stageEyeHeight = environment["VXRT_STAGE_EYE_HEIGHT"].flatMap(Double.init) ?? (defaults.object(forKey: Self.eyeHeightKey) as? Double)
+        // Gameplay: env VXRT_TURN / VXRT_SNAP_ANGLE / VXRT_TURN_SPEED / VXRT_MOVE, then the saved choice, then the Info.plist default
+        // (VXTurnDefault, VXMoveDefault), then .game.
+        var t: VXTurn = (info["VXTurnDefault"] as? String).flatMap(VXTurn.init(rawValue:)) ?? .game
+        if let s = defaults.string(forKey: Self.turnKey), let v = VXTurn(rawValue: s) { t = v }
+        if let v = environment["VXRT_TURN"].flatMap(VXTurn.init(rawValue:)) { t = v }
+        turn = t
+        var m: VXMove = (info["VXMoveDefault"] as? String).flatMap(VXMove.init(rawValue:)) ?? .game
+        if let s = defaults.string(forKey: Self.moveKey), let v = VXMove(rawValue: s) { m = v }
+        if let v = environment["VXRT_MOVE"].flatMap(VXMove.init(rawValue:)) { m = v }
+        move = m
+        snapAngle = environment["VXRT_SNAP_ANGLE"].flatMap(Double.init) ?? (defaults.object(forKey: Self.snapAngleKey) as? Double)
+        turnSpeed = environment["VXRT_TURN_SPEED"].flatMap(Double.init) ?? (defaults.object(forKey: Self.turnSpeedKey) as? Double)
         suppress = false
+    }
+
+    private static func num(_ v: Double, _ r: ClosedRange<Double>) -> String {
+        let c = min(max(v, r.lowerBound), r.upperBound)
+        return c == c.rounded() ? String(Int(c)) : String(format: "%.2f", c)
+    }
+    // The Skyrim*.ini overrides these settings stand for, "Section.Key=Value": first the ones a launch already put in VXRT_INI_SET (the first
+    // match wins in client.c, so the launch's own value beats a setting).
+    func iniOverrides() -> [String] {
+        var out = environment["VXRT_INI_SET"].map { $0.split(separator: ";").map(String.init) } ?? []
+        var mine = turn.iniSet + move.iniSet
+        if let a = snapAngle { mine.append(("VRInput.fGamepadLookAngleSnapAmount", Self.num(a, Self.snapAngleRange))) }
+        if let v = turnSpeed { mine.append(("VRInput.fGamepadLookAngleSnapSmoothingSpeed", Self.num(v, Self.turnSpeedRange))) }
+        out += mine.map { "\($0.key)=\($0.value)" }
+        return out
     }
 
     // The VXRT_* variables the stored settings stand for. Set with overwrite off (VXSettings.applyEnvironment), so a variable the launch
@@ -158,6 +238,8 @@ final class VXSettings: ObservableObject {
         ]
         if let p = predictMs { out.append(("VXRT_PREDICT_MS", String(format: "%.0f", min(max(p, Self.predictRange.lowerBound), Self.predictRange.upperBound)))) }
         if let h = stageEyeHeight { out.append(("VXRT_STAGE_EYE_HEIGHT", String(format: "%.2f", min(max(h, Self.eyeHeightRange.lowerBound), Self.eyeHeightRange.upperBound)))) }
+        let ini = iniOverrides()
+        if !ini.isEmpty { out.append(("VXRT_INI_SET", ini.joined(separator: ";"))) }
         return out
     }
 
@@ -166,8 +248,9 @@ final class VXSettings: ObservableObject {
     func applyEnvironment() -> (set: [String], kept: [String]) {
         var set: [String] = [], kept: [String] = []
         for (k, v) in exports() {
-            if getenv(k) != nil { kept.append(k); continue }
-            setenv(k, v, 0); set.append("\(k)=\(v)")
+            // VXRT_INI_SET already carries the launch's own entries first (iniOverrides), so it is the one variable that is replaced.
+            if getenv(k) != nil && k != "VXRT_INI_SET" { kept.append(k); continue }
+            setenv(k, v, 1); set.append("\(k)=\(v)")
         }
         return (set, kept)
     }

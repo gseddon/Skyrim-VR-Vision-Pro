@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """vxrt steam: the Steam library VXRuntime runs SteamVR and games from, without Windows Steam or a Wine prefix:
-~/Verantyx_VR_Drive/vxrt_steam (VXRT_STEAM changes it), laid out as a Steam library is (steamapps/common/<folder>,
+$VXRT_DRIVE/vxrt_steam (VXRT_STEAM changes it), laid out as a Steam library is (steamapps/common/<folder>,
 steamapps/appmanifest_<id>.acf, config/), so SteamVR finds its folders as it would on Windows.
 
     tools/vxrt_steam.py status
@@ -17,7 +17,7 @@ import glob, json, os, re, shutil, subprocess, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import vxrt_games                                               # noqa: E402
 
-DRIVE = os.path.expanduser(os.environ.get("VERANTYX_VR_DRIVE", "~/Verantyx_VR_Drive"))
+DRIVE = os.path.expanduser(os.environ.get("VXRT_DRIVE") or os.path.join(os.environ.get("VXRT_PRIVATE_ROOT") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "private"), "drive"))
 STEAM = os.environ.get("VXRT_STEAM", os.path.join(DRIVE, "vxrt_steam"))
 STEAMVR = "250820"
 REDIST = os.environ.get("VXRT_REDIST", os.path.join(DRIVE, "vxrt_redist"))

@@ -1,37 +1,58 @@
 {
-  "_note": "SkyrimVR AOT module set for the arena at 0x300000000 (exe rebased to 0x308000000). Run: python3 tools/skyrim_aot_pipeline.py --config tools/skyrim_aot_skyrimvr.json --build --out <new dir under the private skyrimvr/<sha>/ directory> [--cache <dir>]. All inputs are private, git-ignored copies (aot-pipeline5/inputs: the four Steam DLLs and the split profile, copied unmodified); the split profile is derived from the game and is not committed, only its hash. The compiler is the main checkout's vxrt-aot that exegen.sh used, built from source_commit (its __text and __cstring equal a build of that commit). The profile's 1022 addresses include 16 of binkw64 at the old 0xf00000000 arena: the exe uses the other 1006, and no DLL is given a profile (as in aot-arena3).",
-  "original": {"path": "/Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SkyrimVR/SkyrimVR.exe",
-               "sha256": "6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971"},
-  "prepared": {"path": "/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/terra-skyrim-aot/build/private/skyrimvr/6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971/prepared/SkyrimVR.exe",
-               "sha256": "8daf05196ecad57963be61614ce4a4cd5c4dc27d222db14e01c262b36b3d46d4"},
-  "runtime": {"path": "/Users/gseddon/git/Skyrim-VR-Vision-Pro/VXRuntime/build/play-host/vxrt-arm64",
-              "sha256": "2d94c0135c0bcde822aece3ea536691d2b2b7b760b9cbc6b9a8f2ea129910fc4"},
-  "compiler": {"path": "/Users/gseddon/git/Skyrim-VR-Vision-Pro/VXRuntime/build/vxrt-aot",
-               "sha256": "68831c5f2d0f051bfcb09ab04558d0b93a2f7efb60be5c61edcb56a8215c551c",
-               "source_commit": "d5b2320897d3a6538c65710ddc918998f1668e45"},
-  "exe": {
-    "base": "0x308000000",
-    "part_mb": 16,
-    "splits": {"path": "/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/terra-skyrim-aot/build/private/skyrimvr/6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971/aot-pipeline5/inputs/splits-1022-at-0x140000000.txt",
-               "sha256": "0e8c8cca4402dc853652eab6c3a71df1d78a19740e4e8b5b6055ebc84cd757ae"},
-    "roots": null
+ "_note": "SkyrimVR AOT module set for the arena at 0x300000000 (exe rebased to 0x308000000), as a template with no machine paths: ${NAME} comes from the environment or tools/vxrt_env.py (defaults under VXRT_PRIVATE_ROOT, default build/private; docs/SETUP_SKYRIM.md). Run it with `python3 tools/vxrt_build.py aot`, or python3 tools/skyrim_aot_pipeline.py --config tools/skyrim_aot_skyrimvr.json --build --target xros --out <new dir under the private root>. SHA-256 pins are of the player's own private files (hashes only are committed). inputs/ holds the Steam DLLs binkw64, openvr_api, steam_api64 (from the game folder) and msvcp140 (from SteamVR's bin/vrwebhelper/win64), copied unmodified by `vxrt_build.py prepare`. The split profile (a speed aid recorded from a Mac run, derived from the game, never committed) is optional: without the file the exe is built unsplit by the compiler's default part size. The compiler is this checkout's VXRuntime/build/vxrt-aot (hash recorded, not pinned); no runtime block (only --probe needs one).",
+ "original": {
+  "path": "${SKYRIM_ASSET_ROOT}/SkyrimVR.exe",
+  "sha256": "6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971"
+ },
+ "prepared": {
+  "path": "${VXRT_PREPARED_EXE}",
+  "sha256": "8daf05196ecad57963be61614ce4a4cd5c4dc27d222db14e01c262b36b3d46d4"
+ },
+ "exe": {
+  "base": "0x308000000",
+  "part_mb": 16,
+  "splits": {
+   "path": "${VXRT_SPLITS_FILE}",
+   "sha256": "0e8c8cca4402dc853652eab6c3a71df1d78a19740e4e8b5b6055ebc84cd757ae"
   },
-  "dlls": [
-    {"path": "/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/terra-skyrim-aot/build/private/skyrimvr/6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971/aot-pipeline5/inputs/binkw64.dll",
-     "sha256": "152aeb57ba9a5c36cc721a61ae69878ad43c7f6c5cfb87904a1eed037496dedd", "base": "0x300000000"},
-    {"path": "/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/terra-skyrim-aot/build/private/skyrimvr/6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971/aot-pipeline5/inputs/openvr_api.dll",
-     "sha256": "d079238dae5a1cbfbcba014b644ad550a5c8c088007097a463a94b6ad6f7e184", "base": "0x301000000"},
-    {"path": "/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/terra-skyrim-aot/build/private/skyrimvr/6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971/aot-pipeline5/inputs/steam_api64.dll",
-     "sha256": "81321a5cb72ae3f81243fd0b0d8928a063ca09129ab0878573bd36a28422ec4c", "base": "0x302000000"},
-    {"path": "/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/terra-skyrim-aot/build/private/skyrimvr/6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971/aot-pipeline5/inputs/msvcp140.dll",
-     "sha256": "0252b3f087712b7fe1ddb3aeb4c391747446cd1a421ffd03ba460fe643e1c48b", "base": "0x303000000"},
-    {"path": "/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/terra-skyrim-aot/build/private/skyrimvr/6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971/redist/d3dx9_42.dll",
-     "sha256": "1d6f5aa25ac2f1e55d3fd89cd5b33edd4de3709bf0353c75ab8645cebc087fa5", "base": "0x304000000"},
-    {"path": "/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/terra-skyrim-aot/build/private/skyrimvr/6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971/redist/X3DAudio1_7.dll",
-     "sha256": "9460709339701ad471a5cabe6365355f4d586dc4fcb86507c1331839dc555446", "base": "0x305000000"}
-  ],
-  "asset_root": "/Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SkyrimVR",
-  "dll_roots": ["/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/terra-skyrim-aot/build/private/skyrimvr/6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971/redist",
-                "/Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SteamVR/bin/vrwebhelper/win64"],
-  "jobs": 10
+  "roots": null
+ },
+ "dlls": [
+  {
+   "path": "${VXRT_AOT_INPUTS}/binkw64.dll",
+   "sha256": "152aeb57ba9a5c36cc721a61ae69878ad43c7f6c5cfb87904a1eed037496dedd",
+   "base": "0x300000000"
+  },
+  {
+   "path": "${VXRT_AOT_INPUTS}/openvr_api.dll",
+   "sha256": "d079238dae5a1cbfbcba014b644ad550a5c8c088007097a463a94b6ad6f7e184",
+   "base": "0x301000000"
+  },
+  {
+   "path": "${VXRT_AOT_INPUTS}/steam_api64.dll",
+   "sha256": "81321a5cb72ae3f81243fd0b0d8928a063ca09129ab0878573bd36a28422ec4c",
+   "base": "0x302000000"
+  },
+  {
+   "path": "${VXRT_AOT_INPUTS}/msvcp140.dll",
+   "sha256": "0252b3f087712b7fe1ddb3aeb4c391747446cd1a421ffd03ba460fe643e1c48b",
+   "base": "0x303000000"
+  },
+  {
+   "path": "${VXRT_REDIST_DIR}/d3dx9_42.dll",
+   "sha256": "1d6f5aa25ac2f1e55d3fd89cd5b33edd4de3709bf0353c75ab8645cebc087fa5",
+   "base": "0x304000000"
+  },
+  {
+   "path": "${VXRT_REDIST_DIR}/X3DAudio1_7.dll",
+   "sha256": "9460709339701ad471a5cabe6365355f4d586dc4fcb86507c1331839dc555446",
+   "base": "0x305000000"
+  }
+ ],
+ "asset_root": "${SKYRIM_ASSET_ROOT}",
+ "dll_roots": [
+  "${VXRT_REDIST_DIR}",
+  "${STEAMVR_WIN64_DLLS}"
+ ],
+ "jobs": 10
 }

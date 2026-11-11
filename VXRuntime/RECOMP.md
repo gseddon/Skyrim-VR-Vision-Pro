@@ -2,7 +2,7 @@
 
 Goal: run a program's x86-64 code on the ARM64 runtime (`build/vxrt-arm64`) without Rosetta and without translating
 at run time, as visionOS will require (no JIT there). The feasibility study is in
-`~/Verantyx_VR_Drive/wt/runs/recomp/feasibility_ja.md`.
+(the author's private feasibility notes, not in the repository).
 
 ## How it works (route B)
 
