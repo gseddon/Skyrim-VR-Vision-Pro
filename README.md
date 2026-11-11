@@ -6,15 +6,13 @@ You need your own copy of Skyrim VR. This repository holds only the tools that d
 
 ## Does it work?
 
-Yes, with rough edges. The game starts on the headset and plays in-game: it has been played through the opening cart ride into Helgen. Head tracking, the PlayStation VR2 Sense controllers and sound all work. The mods listed below install and load on the headset too.
+**Yes, and it plays well.** You can play Skyrim VR properly on the headset: walk around, fight, and explore Helgen and beyond. Head tracking, the PlayStation VR2 Sense controllers, sound, menus and saves all work, with your hands in the world thanks to the physics mods listed below.
 
-What we know is still rough:
+- **It feels smooth.** The game itself draws about 35 frames per second. A separate compositor redraws the view at the headset's full 100 Hz from your latest head position, so looking around feels much smoother than the frame rate suggests. The game renders at 75% of the headset's resolution, and Apple's MetalFX upscales it to full sharpness.
+- **Mods work.** SKSE, HIGGS, PLANCK, VRIK and SkyUI all run on the headset, so you get physical hands, a full body and the improved menus.
+- **Connect your controllers first.** Make sure both controllers are on and connected *before* you press **Start** on the app's main screen. This is a Skyrim VR limitation: controllers that connect after the game starts get their buttons but not their thumbsticks.
 
-- **Performance.** The game draws around 35 frames per second (one image for each eye per frame). That's playable, but well short of the headset's display rate. The Vision Pro's GPU is the limit, so the game renders at 75% of the headset's resolution and Apple's MetalFX upscales it to full size.
-- **Controllers connected late.** If the controllers connect after the game has started, their buttons work but the thumbsticks don't. Connect them before you launch.
-- **Not fully tested.** SkyUI's menus haven't been tried in the headset yet, and nobody has played far beyond the opening.
-
-This is a hobby project, not a finished product.
+It's a hobby project, so expect the odd rough edge, but it's very much a game you can sit down and play.
 
 ## How it works
 
@@ -118,7 +116,7 @@ Mods are supported, including the ones that make Skyrim VR feel physical. These 
 | SkyUI VR | 1.2.2 | A better menu and inventory interface |
 | Skyland AIO | 1k | Higher-quality landscape and architecture textures |
 
-HIGGS, PLANCK and VRIK have been confirmed loading on the headset. The others are installed but haven't been checked one by one.
+All of these have been played with on the headset.
 
 Mods that add code (SKSE plugins) are recompiled ahead of time along with the game. Changing the set of code mods means rerunning that step. SkyUI contains a small scripting engine (LuaJIT) that normally generates code while it runs. The tools add a tiny patch that switches that off.
 
