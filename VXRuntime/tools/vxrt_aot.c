@@ -134,7 +134,7 @@ static void load(image *im, const char *path) {
             char kind, name[128]; unsigned rva; int used = 0;
             if (sscanf(line, "%c %127s %x %n", &kind, name, &rva, &used) != 3 || kind != 'P' || !used) continue;
             if (strcasecmp(name, im->name)) continue;
-            size_t n = strcspn(line + used, "\r\n") / 2;
+            size_t n = strcspn(line + used, " \r\n") / 2;
             if ((uint64_t)rva + n > im->size) die("patch at %#x+%zu is outside %s", rva, n, im->name);
             for (size_t i = 0; i < n; i++) { unsigned v; if (sscanf(line + used + 2 * i, "%2x", &v) != 1) die("bad hex in patch at %#x", rva); im->mem[rva + i] = (uint8_t)v; }
             napplied++; nbytes += (unsigned long)n;
