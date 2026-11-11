@@ -12,8 +12,8 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         // defaults: 0.7, lower latency (1 in flight), hands hidden, no automatic start, nothing else exported
         var d = fresh()
         var s = VXSettings(defaults: d, info: [:], environment: [:])
-        check(s.renderScale == 0.65 && s.latency == .smart && s.upscale == .metalfx && !s.showHands && !s.startAutomatically && s.predictMs == nil && s.stageEyeHeight == nil, "defaults")
-        check(map(s) == ["VXRT_RENDER_SCALE": "0.65", "VXRT_UPSCALE": "metalfx", "VXRT_GATE": "smart"], "default exports \(map(s))")
+        check(s.renderScale == 0.75 && s.latency == .smart && s.upscale == .metalfx && !s.showHands && !s.startAutomatically && s.predictMs == nil && s.stageEyeHeight == nil, "defaults")
+        check(map(s) == ["VXRT_RENDER_SCALE": "0.75", "VXRT_UPSCALE": "metalfx", "VXRT_GATE": "smart"], "default exports \(map(s))")
 
         // persistence under Klepton's keys, read back by a new store
         s.renderScale = 0.85; s.latency = .throughput; s.upscale = .bilinear; s.showHands = true; s.startAutomatically = true; s.predictMs = 40; s.stageEyeHeight = 1.2
@@ -58,7 +58,7 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         setenv("VXRT_GATE", "one", 1); unsetenv("VXRT_RENDER_SCALE")
         s = VXSettings(defaults: fresh(), info: [:], environment: [:])
         let r = s.applyEnvironment()
-        check(getenv("VXRT_RENDER_SCALE").map { String(cString: $0) } == "0.65" && String(cString: getenv("VXRT_GATE")) == "one", "applyEnvironment keeps launch env")
+        check(getenv("VXRT_RENDER_SCALE").map { String(cString: $0) } == "0.75" && String(cString: getenv("VXRT_GATE")) == "one", "applyEnvironment keeps launch env")
         check(r.kept == ["VXRT_GATE"], "kept list \(r.kept)")
 
         // the launch gate
