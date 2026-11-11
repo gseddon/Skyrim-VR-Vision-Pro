@@ -128,7 +128,10 @@ struct VXStartView: View {
 
 // Read-only: the mods the Mac prepared (VXMods.swift, <root>/mods.json). Every toggle is disabled; nothing changes at run time.
 struct VXModsList: View {
-    private let file = VXMods.load(root: VXMods.defaultRoot())
+    // Read when the section appears (not once at view creation): the file may be copied while the window is open, and the root
+    // folder only exists once the runtime has made it.
+    @State private var file: VXModsFile?
+    @State private var loaded = false
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let file = file, !file.mods.isEmpty {
@@ -151,9 +154,10 @@ struct VXModsList: View {
                 Text("Profile \(file.profile). Mods are chosen on the Mac (tools/mods.py) and apply when the app starts; none can be switched here.")
                     .font(.callout).foregroundStyle(.secondary)
             } else {
-                Text("No mods installed. Mods are prepared on the Mac and copied to the headset.").font(.callout).foregroundStyle(.secondary)
+                Text(loaded ? "No mods installed. Mods are prepared on the Mac and copied to the headset." : "Reading the mods list…").font(.callout).foregroundStyle(.secondary)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear { file = VXMods.load(root: VXMods.defaultRoot()); loaded = true }
     }
 }
 
