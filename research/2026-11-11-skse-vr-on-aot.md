@@ -124,6 +124,16 @@ Subject: actual game; Mac runs and read-only pulls from the device (`devicectl c
 - *New diagnostic*: `tests/skse/skse_modlist_dump.c` (owned plugin, no hooks) logs, at kMessage_DataLoaded, every plugin the data handler knows with its load index (0xFF = not active) and the loaded-mod count, to `Documents/My Games/Skyrim VR/SKSE/modlist_dump.log`. On the Mac: nine plugins, indexes 00 to 08, all active (Skyrim, Update, Dawnguard, HearthFires, Dragonborn, SkyrimVR, Lit Road Signs, Skyland Watercolor, higgs_vr). It is named `aaa_modlist_dump.dll` so that it runs before HIGGS's handler.
 - *Still open*: why the same inputs give an inactive HIGGS ESP on the device. The device DataLoaded came about 18 s after Start with a 2.7 GB footprint (Mac about 6 GB), and the traced device log has about 280 lines between the plugin scan and the HIGGS message against thousands on the Mac.
 
+## 5e. Root cause of the run6 crash: C runtime text mode (fixed, verified on the device)
+
+Subject: actual game on the headset (runs 9b and 10, autostart, headset not worn) and the Mac.
+
+Skyrim VR reads `C:\users\vxrt\AppData\Local\Skyrim VR\Plugins.txt` with `fgets` in text mode (`fopen(..., "r")`; traced with `VXRT_TRACE_FILES=3` after adding line-read tracing). On Windows text mode turns CR LF into LF, so the game sees `*higgs_vr.esp\n`. Our `fgets` passed the host's bytes through, so with the pack's Windows line endings the game saw `*higgs_vr.esp\r\n`, took the CR as part of the name and matched no file: all ESPs stayed at load index ff and HIGGS stopped the game at DataLoaded ("esp exists, but is not active"). The Mac harness had hidden it: `tools/vxrt_native_startup.py` copied Plugins.txt through Python's `read_text`, which converts CRLF to LF before the game ever saw it (fixed: bytes are copied). What had been checked and was not the cause is in 5d.
+
+Evidence: with an LF Plugins.txt on the unchanged device app, `modlist_dump.log` listed nine active plugins (loadedModCount 9, indexes 00 to 08; before: 6, the three ESPs at ff) and the game ran for 190 s with HIGGS and PLANCK hooks firing and a save loaded (run9b). With the fix (`ucrt.c`: files opened without `b` translate CR LF on `fgets`, `fgetc`, `fread`) and the original CRLF file, the rebuilt app (allmods2 `e719537`) also listed nine active plugins and ran past 400 s with 310 M AOT entries and 0 fallbacks (run10). Mac fixture: `make crt-text-mode-check` (`fgets` in "r" keeps LF only, "rb" keeps the CR, `fgetc` and `fread` translate).
+
+The pack keeps the file as Windows tools write it (CRLF); both line endings now work. `VXRT_START_AUTOMATICALLY=1` (environment only; nothing is saved to the app's defaults: checked in the device's preferences plist) starts the game without the start window for unattended runs; with the headset not worn the app kept running and loading reached DataLoaded.
+
 ## 6. Milestones
 
 | | State |
