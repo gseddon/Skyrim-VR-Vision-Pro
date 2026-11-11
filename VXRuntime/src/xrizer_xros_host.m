@@ -12,9 +12,76 @@ void vx_xros_timing_submit(uint64_t id);   /* native_vr_present.m */
 #include "apple_metal_host.h"
 #include "image_sync_host.h"
 #include "pose_math.h"
+#include "xrizer_vismask_host.h"
 #include "xrizer_eye_ring.h"
+#include <TargetConditionals.h>
+#if !TARGET_OS_SIMULATOR && __has_include(<MetalFX/MetalFX.h>)
+#import <MetalFX/MetalFX.h>
+#define VX_HAVE_MFX 1
+#endif
+void vx_log(const char *fmt, ...);
+
+/* VXRT_UPSCALE=metalfx|bilinear (default metalfx since 2026-11-10; bilinear = the presenter's sampler scales the game's eye). With metalfx every fresh eye is
+ * upscaled once per pair by MTLFXSpatialScaler into a slot texture of the drawable's per-eye size x VXRT_UPSCALE_OUT (default 1.0);
+ * the 100 Hz compositor then samples that texture. The target size is set by the fixture (drawable size incl. overscan, before
+ * VXRT_RENDER_SCALE). Colour: UNORM formats hold gamma-coded values, so MetalFX "perceptual" mode (same as the presenter's raw
+ * sample); _sRGB formats sample as linear, so "linear" mode. Output has the input's pixel format. */
+static uint32_t g_up_target_w, g_up_target_h;
+void vx_xros_host_set_upscale_target(uint32_t w, uint32_t h) { g_up_target_w=w; g_up_target_h=h; }
+static int upscale_requested(void) {
+    static int v=-1;
+    if (v<0) { const char *e=getenv("VXRT_UPSCALE"); v = (!e || !*e) ? 1 : !strcmp(e,"metalfx");   /* default metalfx (2026-11-10) */
+        if (e && *e && strcmp(e,"metalfx") && strcmp(e,"bilinear")) vx_log("upscale: VXRT_UPSCALE=%s is not a mode (metalfx|bilinear): bilinear",e); }
+    return v;
+}
+static float upscale_out_factor(void) {
+    static float f=-1;
+    if (f<0) { const char *e=getenv("VXRT_UPSCALE_OUT"); char *end=NULL; float v=e&&*e?strtof(e,&end):1.f; f=(e&&*e&&(!end||*end||v<0.5f||v>2.f))?1.f:v; }
+    return f;
+}
+static double g_up_ms_sum, g_up_ms_max; static unsigned long long g_up_n, g_up_total;
+/* the scaler's GPU ms per pair this interval (mean, max, pairs); the counters reset */
+void vx_xros_host_upscale_stats(double *mean_ms, double *max_ms, unsigned long long *n) {
+    *mean_ms = g_up_n ? g_up_ms_sum/(double)g_up_n : 0; *max_ms = g_up_ms_max; *n = g_up_n; g_up_ms_sum = g_up_ms_max = 0; g_up_n = 0;
+}
+#ifdef VX_HAVE_MFX
+static id<MTLFXSpatialScaler> g_scaler; static NSUInteger g_sc_iw,g_sc_ih,g_sc_ow,g_sc_oh; static MTLPixelFormat g_sc_fmt; static int g_sc_fails;
+/* Encodes eye src -> dst (the slot's upscale target). 0 on success. The scaler is made again when sizes/format change. */
+static int upscale_encode(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTLTexture> dst) {
+    if (g_sc_fails>3) return -1;
+    if (!g_scaler || g_sc_iw!=src.width || g_sc_ih!=src.height || g_sc_ow!=dst.width || g_sc_oh!=dst.height || g_sc_fmt!=src.pixelFormat) {
+        int srgb = src.pixelFormat==MTLPixelFormatRGBA8Unorm_sRGB || src.pixelFormat==MTLPixelFormatBGRA8Unorm_sRGB;
+        MTLFXSpatialScalerDescriptor *d=[MTLFXSpatialScalerDescriptor new];
+        d.colorTextureFormat=src.pixelFormat; d.outputTextureFormat=dst.pixelFormat;
+        d.inputWidth=src.width; d.inputHeight=src.height; d.outputWidth=dst.width; d.outputHeight=dst.height;
+        d.colorProcessingMode = srgb ? MTLFXSpatialScalerColorProcessingModeLinear : MTLFXSpatialScalerColorProcessingModePerceptual;
+        g_scaler=[d newSpatialScalerWithDevice:cb.device]; g_sc_iw=src.width; g_sc_ih=src.height; g_sc_ow=dst.width; g_sc_oh=dst.height; g_sc_fmt=src.pixelFormat;
+        vx_log("upscale: MetalFX spatial scaler %s: %lux%lu -> %lux%lu format %lu mode %s",g_scaler?"made":"FAILED",(unsigned long)src.width,(unsigned long)src.height,
+               (unsigned long)dst.width,(unsigned long)dst.height,(unsigned long)src.pixelFormat,srgb?"linear":"perceptual");
+        if (!g_scaler) { ++g_sc_fails; return -1; }
+    }
+    g_scaler.colorTexture=src; g_scaler.outputTexture=dst; g_scaler.inputContentWidth=src.width; g_scaler.inputContentHeight=src.height;
+    [g_scaler encodeToCommandBuffer:cb];
+    return 0;
+}
+#endif
 
 #define EVENT_CAPACITY 16
+/* The colour space of an eye image the game submitted. Skyrim (and every D3D11 title that submits R8G8B8A8_UNORM as OpenVR Gamma/Auto)
+ * holds gamma-encoded texels in a plain UNORM texture (third_party/xrizer/upstream/src/graphics_backends/metal.rs copies them as stored).
+ * The headset drawable is BGRA8Unorm_sRGB, which encodes whatever the presenter writes: a UNORM image labelled linear was sampled raw
+ * and encoded a second time (byte 1 shown as 13, byte 2 as 22: the dark smoke on the title screen showed 1-code steps as hard
+ * coloured bands). Label 8-bit UNORM sRGB so the presenter samples it through an sRGB view and the drawable shows the stored bytes as they
+ * are. VXRT_XROS_EYE_LINEAR=1 restores the old reading (an 8-bit image that really holds linear light). */
+static vx_native_vr_color_space eye_color_space(MTLPixelFormat f) {
+    if (f == MTLPixelFormatRGBA8Unorm_sRGB || f == MTLPixelFormatBGRA8Unorm_sRGB) return VX_NATIVE_VR_COLOR_SRGB;
+    if (f == MTLPixelFormatRGBA8Unorm || f == MTLPixelFormatBGRA8Unorm) {
+        const char *v = getenv("VXRT_XROS_EYE_LINEAR");
+        return v && *v == '1' ? VX_NATIVE_VR_COLOR_LINEAR : VX_NATIVE_VR_COLOR_SRGB;
+    }
+    return VX_NATIVE_VR_COLOR_LINEAR;
+}
+
 struct vx_xros_xrizer_host {
     pthread_mutex_t lock;
     vx_xros_xrizer_mode mode;
@@ -105,7 +172,11 @@ static XrResult haptic_stop(void *ctx, uint32_t hand) {
 /* VXRT_PAIRS_IN_FLIGHT (default 1, 0 = no gate): the game's next frame starts (its pose is taken) only once fewer than this many of its pairs
  * are still in flight. With a GPU-bound game the CPU otherwise runs a frame or two ahead, and the pose it took is that many frame times
  * old when the GPU draws it. The mailbox then hands over the NEWEST compositor sample. */
+/* The start window's latency choice changes the limit while the game runs (vx_xros_set_pairs_in_flight; -1 = the environment's value). */
+static volatile int g_pairs_override=-1;
+void vx_xros_set_pairs_in_flight(int n) { g_pairs_override = n<0 ? -1 : (n>4 ? 4 : n); }
 static unsigned pairs_in_flight_limit(void) {
+    int o=g_pairs_override; if (o>=0) return (unsigned)o;
     static int v=-1;
     if (v<0) { const char *e=getenv("VXRT_PAIRS_IN_FLIGHT"); v = e && *e ? atoi(e) : 1; if (v<0||v>4) v=1; }
     return (unsigned)v;
@@ -115,14 +186,127 @@ void vx_xros_host_gate_stats(double *mean_ms, double *max_ms, unsigned long long
     *mean_ms = g_gate_n ? g_gate_ms_sum/(double)g_gate_n : 0; *max_ms = g_gate_ms_max; *waits = g_gate_waits; *n = g_gate_n;
     g_gate_ms_sum = g_gate_ms_max = 0; g_gate_n = g_gate_waits = 0;
 }
+/* VXRT_GATE=off|one|smart (unset: from VXRT_PAIRS_IN_FLIGHT if set, else smart). Where "one" is the gate above; "smart" is a predictive release:
+ * wait_frame returns at R = (when the in-flight pair's GPU work should end) - (the game's CPU time, wait_frame to its pair) - bias, so the
+ * game's next CPU frame overlaps the GPU's work on this one and its GPU work arrives as the GPU frees up (at most one pair queued).
+ * L = GPU service time per pair, C = game CPU time (EMAs); the bias is an integral controller on the measured gap between a pair's arrival
+ * and the previous pair's completion (target VXRT_GATE_GAP_MS, default -1.5: the GPU is kept just fed). With two pairs in flight it waits
+ * for one to finish. Every wait is capped at 250 ms. The mailbox hands over the NEWEST compositor sample at release; the compositor's pose
+ * horizon follows the measured pair age by itself (VXImmersive.swift report()). Times are CLOCK_UPTIME_RAW seconds, state under the ring lock. */
+enum { GATE_OFF=0, GATE_ONE=1, GATE_SMART=2 };
+static volatile int g_gate_override=-1;   /* the start window's latency choice, live (vx_xros_set_gate_mode; -1 = the environment's value) */
+void vx_xros_set_gate_mode(int m) { g_gate_override = (m>=0 && m<=2) ? m : -1; }
+static int gate_mode(void) {
+    static int m=-1;
+    int o=g_gate_override; if (o>=0) return o;
+    if (m<0) { const char *e=getenv("VXRT_GATE");
+        if (e && !strcmp(e,"off")) m=GATE_OFF; else if (e && !strcmp(e,"one")) m=GATE_ONE; else if (e && !strcmp(e,"smart")) m=GATE_SMART;
+        else if (getenv("VXRT_PAIRS_IN_FLIGHT") && *getenv("VXRT_PAIRS_IN_FLIGHT")) m = pairs_in_flight_limit() ? GATE_ONE : GATE_OFF;
+        else m = GATE_SMART;   /* default smart (2026-11-10: cart ride 35.2 vs 29.1 pairs/s) */
+        vx_log("gate: mode %s (VXRT_GATE=%s, VXRT_PAIRS_IN_FLIGHT=%s)", m==GATE_SMART?"smart":m==GATE_ONE?"one":"off", e?e:"unset", getenv("VXRT_PAIRS_IN_FLIGHT")?:"unset"); }
+    return m;
+}
+#define SG_FIFO 16
+static struct { double ret, pub_last, done_last, L, C, B; int bound; double pubq[SG_FIFO]; unsigned qh, qn; unsigned long long npub;
+    double cpu_sum, cpu_max, gap_sum, cpu_log_sum, cpu_log_max, gap_log_sum; unsigned long long cpu_n, gap_n, log_n; } g_sg = {.L=0.025,.C=0.015};
+static double sg_now(void) { return (double)clock_gettime_nsec_np(CLOCK_UPTIME_RAW)/1e9; }
+static double sg_gap_target(void) {
+    static double t=-1e9; if (t<-1e8) { const char *e=getenv("VXRT_GATE_GAP_MS"); t = e&&*e ? atof(e)/1e3 : -0.0015; } return t;
+}
+/* The game's pair reached the provider (before its copy is committed): game CPU time = wait_frame return to here. */
+static void sg_on_publish(vx_eye_ring *r) {
+    double t=sg_now(); pthread_mutex_lock(&r->lock);
+    if (g_sg.ret>0 && t>g_sg.ret) { double c=t-g_sg.ret; g_sg.C = g_sg.C*0.9 + c*0.1;
+        g_sg.cpu_sum+=c; g_sg.cpu_log_sum+=c; if (c>g_sg.cpu_max) g_sg.cpu_max=c; if (c>g_sg.cpu_log_max) g_sg.cpu_log_max=c; ++g_sg.cpu_n; }
+    g_sg.ret=0; g_sg.pub_last=t;
+    if (g_sg.qn<SG_FIFO) g_sg.pubq[(g_sg.qh+g_sg.qn++)%SG_FIFO]=t;
+    unsigned long long n=++g_sg.npub;
+    double cpu_mean=g_sg.cpu_log_sum/300.0*1e3, cpu_max=g_sg.cpu_log_max*1e3, L=g_sg.L*1e3, C=g_sg.C*1e3, B=g_sg.B*1e3,
+           gm=g_sg.log_n? g_sg.gap_log_sum/(double)g_sg.log_n*1e3:0;
+    if (n%300==0) { g_sg.cpu_log_sum=g_sg.cpu_log_max=g_sg.gap_log_sum=0; g_sg.log_n=0; }
+    pthread_mutex_unlock(&r->lock);
+    if (n%300==0) vx_log("gate: mode %s, %llu pairs, game CPU (wait_frame to pair) mean %.1f max %.1f ms, GPU service L %.1f ms, C %.1f ms, bias %.1f ms, gap mean %.1f ms",
+        gate_mode()==GATE_SMART?"smart":gate_mode()==GATE_ONE?"one":"off",n,cpu_mean,cpu_max,L,C,B,gm);
+}
+/* A pair's copy (and upscale) command buffer finished on the GPU; completions are in order. */
+static void sg_on_complete(vx_eye_ring *r) {
+    double t=sg_now(); pthread_mutex_lock(&r->lock);
+    if (g_sg.qn) {
+        double pub=g_sg.pubq[g_sg.qh]; g_sg.qh=(g_sg.qh+1)%SG_FIFO; --g_sg.qn;
+        double start = pub>g_sg.done_last ? pub : g_sg.done_last;
+        if (t>start && t-start<0.3) g_sg.L = g_sg.L*0.9 + (t-start)*0.1;
+        if (g_sg.done_last>0) {
+            double gap=pub-g_sg.done_last; if (gap>0.05) gap=0.05; if (gap<-0.05) gap=-0.05;
+            g_sg.gap_sum+=gap; g_sg.gap_log_sum+=gap; ++g_sg.gap_n; ++g_sg.log_n;
+            double err=gap-sg_gap_target();
+            /* anti-windup: raise the bias (release earlier) only while the gate is what delays the game */
+            if (err<0 || g_sg.bound) { g_sg.B += 0.15*err; if (g_sg.B>0.06) g_sg.B=0.06; if (g_sg.B<-0.04) g_sg.B=-0.04; }
+        }
+    }
+    g_sg.done_last=t; pthread_mutex_unlock(&r->lock);
+}
+static void sg_wait(vx_eye_ring *r) {
+    double t0=sg_now(), limit=t0+0.25;
+    pthread_mutex_lock(&r->lock);
+    for (;;) {
+        double now=sg_now(); unsigned n=r->inflight;
+        if (!n || now>=limit) break;
+        double until=limit;
+        if (n==1) {
+            double start = g_sg.pub_last>g_sg.done_last ? g_sg.pub_last : g_sg.done_last;
+            double rel = start + g_sg.L - g_sg.C - g_sg.B;
+            if (rel<=now) break;
+            if (rel<until) until=rel;
+        }
+        struct timespec ts; clock_gettime(CLOCK_REALTIME,&ts); double d=until-now; ts.tv_sec+=(time_t)d; ts.tv_nsec+=(long)((d-(double)(time_t)d)*1e9);
+        if (ts.tv_nsec>=1000000000L) { ++ts.tv_sec; ts.tv_nsec-=1000000000L; }
+        pthread_cond_timedwait(&r->cv,&r->lock,&ts);
+    }
+    double ms=(sg_now()-t0)*1e3; g_sg.bound = ms>0.2;
+    pthread_mutex_unlock(&r->lock);
+    g_gate_ms_sum+=ms; if (ms>g_gate_ms_max) g_gate_ms_max=ms; ++g_gate_n; if (ms>0.5) ++g_gate_waits;
+}
+/* The interval's game CPU and smart-gate state as JSON fields (no braces), for the 1 Hz "vr" record. */
+int vx_xros_host_gate_json(char *buf, uint32_t len) {
+    pthread_mutex_t *lk=NULL; (void)lk;
+    double cm=g_sg.cpu_n? g_sg.cpu_sum/(double)g_sg.cpu_n*1e3:0, cx=g_sg.cpu_max*1e3, gm=g_sg.gap_n? g_sg.gap_sum/(double)g_sg.gap_n*1e3:0;
+    int n=snprintf(buf,len,"\"gmode\":%d,\"cpu_ms\":%.2f,\"cpu_ms_max\":%.2f,\"gap_ms\":%.2f,\"L_ms\":%.2f,\"C_ms\":%.2f,\"B_ms\":%.2f",
+        gate_mode(),cm,cx,gm,g_sg.L*1e3,g_sg.C*1e3,g_sg.B*1e3);
+    g_sg.cpu_sum=g_sg.cpu_max=g_sg.gap_sum=0; g_sg.cpu_n=g_sg.gap_n=0;   /* racy by design: diagnostics only */
+    return n;
+}
+/* While the compositor layer is paused (headset off, Crown peek, backgrounded) or gone, no sample reaches the mailbox. The wait used to time out
+ * every 2 s and WaitGetPoses returned an error, so the game kept running a frame loop at 0.5 fps with a ~6 GB footprint in the background, and the
+ * system SIGKILLed it about 15 s into a pause (device 2026-11-10 22:25:17). Now WaitFrame stays blocked on the mailbox's condition variable for
+ * the whole pause: it wakes when a sample arrives (the layer resumed), when the mailbox is stopped, or when the pause flag clears. */
+volatile int vx_pause_audio __attribute__((weak));   /* shared with audio.m and xaudio2.m (weak definitions merge): their output callbacks write silence while set */
+static volatile int g_paused;
+static volatile double g_pause_t0;
+void vx_xros_set_paused(int paused) {
+    paused = paused ? 1 : 0;
+    if (g_paused == paused) return;
+    g_paused = paused; vx_pause_audio = paused;
+    if (paused) g_pause_t0 = sg_now();
+}
 static XrResult wait_frame(void *ctx, KlNativeFrameSample *sample) {
     vx_xros_xrizer_host *h=ctx;
-    unsigned limit=pairs_in_flight_limit();
-    if (limit && h->ring) {
-        double ms=vx_eye_ring_wait_below(h->ring, limit, 250);
-        g_gate_ms_sum+=ms; if (ms>g_gate_ms_max) g_gate_ms_max=ms; ++g_gate_n; if (ms>0.5) ++g_gate_waits;
+    int mode=gate_mode();
+    if (h->ring) {
+        if (mode==GATE_SMART) sg_wait(h->ring);
+        else if (mode==GATE_ONE) {
+            double ms=vx_eye_ring_wait_below(h->ring, pairs_in_flight_limit(), 250);
+            g_gate_ms_sum+=ms; if (ms>g_gate_ms_max) g_gate_ms_max=ms; ++g_gate_n; if (ms>0.5) ++g_gate_waits;
+        }
     }
-    return vx_xros_mailbox_wait(h->mailbox, 2000, sample);
+    XrResult r=vx_xros_mailbox_wait(h->mailbox, 2000, sample);
+    if (r==XR_ERROR_RUNTIME_FAILURE && g_paused) {
+        double idle0=sg_now(); unsigned long chunks=0;
+        vx_log("pause_idle_start: WaitFrame blocks until the layer resumes (paused %.1f s ago)", idle0-g_pause_t0);
+        while (r==XR_ERROR_RUNTIME_FAILURE && g_paused) { r=vx_xros_mailbox_wait(h->mailbox, 60000, sample); ++chunks; }
+        vx_log("pause_idle_end: WaitFrame blocked %.2f s (%lu waits), result %d", sg_now()-idle0, chunks, (int)r);
+    }
+    if (h->ring && r==XR_SUCCESS) { pthread_mutex_lock(&h->ring->lock); g_sg.ret=sg_now(); pthread_mutex_unlock(&h->ring->lock); }
+    return r;
 }
 static XrResult cancel_frame(void *ctx, void *ticket) {
     return vx_xros_mailbox_finish(((vx_xros_xrizer_host *)ctx)->mailbox,ticket) ? XR_ERROR_HANDLE_INVALID : XR_SUCCESS;
@@ -179,7 +363,7 @@ static XrResult publish_pair_sync(void *ctx, const KlNativeFramePair *pair) {
             MTLPixelFormat f=copies[i].pixelFormat;
             vx_native_vr_eye eye={.resource=(__bridge void *)copies[i],.width=(uint32_t)copies[i].width,
                 .height=(uint32_t)copies[i].height,.format=(uint32_t)f,.sample_count=1,
-                .color_space=(f==MTLPixelFormatRGBA8Unorm_sRGB || f==MTLPixelFormatBGRA8Unorm_sRGB) ? VX_NATIVE_VR_COLOR_SRGB : VX_NATIVE_VR_COLOR_LINEAR,
+                .color_space=eye_color_space(f),
                 .u_max=1,.v_max=1};
             if (vx_native_vr_submit(h->frames,frame,i,pose.frame_id,pose.pose_id,&eye)) goto failed;
             submitted|=1u<<i;
@@ -220,6 +404,14 @@ static XrResult publish_pair_async(void *ctx, const KlNativeFramePair *pair) {
             w[i]=(uint32_t)e->rect.extent.width; ht[i]=(uint32_t)e->rect.extent.height; fmt[i]=(uint32_t)src.pixelFormat;
         }
         vx_eye_slot *slot=NULL;
+#ifdef VX_HAVE_MFX
+        int up = upscale_requested() && g_up_target_w && g_up_target_h && (g_up_target_w!=w[0]||g_up_target_h!=ht[0]||g_up_target_w!=w[1]||g_up_target_h!=ht[1]) &&
+             [MTLFXSpatialScalerDescriptor supportsDevice:(__bridge id<MTLDevice>)h->device];
+        if (up) { h->ring->up_w=(uint32_t)((float)g_up_target_w*upscale_out_factor()+.5f); h->ring->up_h=(uint32_t)((float)g_up_target_h*upscale_out_factor()+.5f); }
+        else h->ring->up_w=h->ring->up_h=0;
+        { static int logged; if (!logged) { logged=1; vx_log("upscale: %s (VXRT_UPSCALE=%s), game eye %ux%u format %u, target %ux%u (out factor %.2f)",up?"MetalFX spatial":"bilinear in the presenter",
+              getenv("VXRT_UPSCALE")?:"unset",w[0],ht[0],fmt[0],h->ring->up_w,h->ring->up_h,upscale_out_factor()); } }
+#endif
         if (vx_eye_ring_reserve(h->ring,w,ht,fmt,&slot)) { result=XR_ERROR_OUT_OF_MEMORY; goto done; }   /* may block at the in-flight bound */
         id<MTLCommandBuffer> cb=[(__bridge id<MTLCommandQueue>)h->queue commandBuffer];
         id<MTLBlitCommandEncoder> blit=[cb blitCommandEncoder];
@@ -245,26 +437,47 @@ static XrResult publish_pair_async(void *ctx, const KlNativeFramePair *pair) {
         /* The ticket is consumed once the copy is going to the GPU; a stale ticket leaves the copy uncommitted. */
         if (vx_xros_mailbox_finish(h->mailbox,pair->sample.ticket)) { vx_eye_ring_abort(h->ring,slot); goto done; }
         id<MTLTexture> t0=(__bridge id<MTLTexture>)slot->tex[0], t1=(__bridge id<MTLTexture>)slot->tex[1];
+        id<MTLTexture> p0=t0, p1=t1;   /* what the compositor samples: the upscaled eyes when upscaling */
+        __block int copy_ok=1;
+        id<MTLCommandBuffer> ucb=nil;
+#ifdef VX_HAVE_MFX
+        if (slot->up[0] && slot->up[1]) {
+            /* The copy buffer is committed on its own; the scaler runs in a second buffer on the same (provider) queue, so its GPU time is measured
+             * alone. The slot stays busy until that second buffer's handler ran. */
+            [cb addCompletedHandler:^(id<MTLCommandBuffer> f){ if (f.status!=MTLCommandBufferStatusCompleted || f.error) copy_ok=0; }];
+            [cb enqueue];
+            ucb=[(__bridge id<MTLCommandQueue>)h->queue commandBuffer];
+            if (!ucb) { vx_eye_ring_abort(h->ring,slot); goto done; }
+            [ucb enqueue];   /* queue order: copy buffer, then scaler buffer */
+            [cb commit];
+            p0=(__bridge id<MTLTexture>)slot->up[0]; p1=(__bridge id<MTLTexture>)slot->up[1];
+            if (upscale_encode(ucb,t0,p0) || upscale_encode(ucb,t1,p1)) copy_ok=0;
+        }
+#endif
         /* The swapchain images' own writes (the guest-to-provider copies) complete before this copy on the same queue;
          * their buffers are checked when this copy completes, because the provider no longer waited for them. */
         id<MTLCommandBuffer> w0=(__bridge id<MTLCommandBuffer>)kl_apple_metal_image_pending_writes(&h->metal,pair->eye[0].image_lease);
         id<MTLCommandBuffer> w1=(__bridge id<MTLCommandBuffer>)kl_apple_metal_image_pending_writes(&h->metal,pair->eye[1].image_lease);
-        vx_eye_ring_commit(h->ring,cb,slot,^(int ok,double gpu_s) {
-            (void)gpu_s;
+        sg_on_publish(h->ring);
+        vx_eye_ring_commit(h->ring,ucb?ucb:cb,slot,^(int ok,double gpu_s) {
+            sg_on_complete(h->ring);
+            if (ucb && ok) { if (!copy_ok) ok=0; else { double ms=gpu_s*1e3; g_up_ms_sum+=ms; if (ms>g_up_ms_max) g_up_ms_max=ms; ++g_up_n; ++g_up_total;
+                if (g_up_total==1 || g_up_total%300==0) vx_log("upscale: %llu pairs, last scaler GPU %.2f ms (both eyes)",g_up_total,ms); } }
+            else (void)gpu_s;
             if (ok && (!vx_eye_ring_writes_ok(w0) || !vx_eye_ring_writes_ok(w1))) ok=0;
             pthread_mutex_lock(&h->lock);
             if (!ok || h->retiring || h->retired || h->epoch!=epoch || pose.frame_id<=h->last_published) {
                 if (ok) ++h->discarded;
                 pthread_mutex_unlock(&h->lock); return;
             }
-            id<MTLTexture> copies[2]={t0,t1};
+            id<MTLTexture> copies[2]={p0,p1};
             vx_native_vr_handle frame=0; unsigned submitted=0, completed=0;
             if (vx_native_vr_begin(h->frames,&pose,&frame)) { pthread_mutex_unlock(&h->lock); return; }
             for (unsigned i=0;i<2;i++) {
                 MTLPixelFormat f=copies[i].pixelFormat;
                 vx_native_vr_eye eye={.resource=(__bridge void *)copies[i],.width=(uint32_t)copies[i].width,
                     .height=(uint32_t)copies[i].height,.format=(uint32_t)f,.sample_count=1,
-                    .color_space=(f==MTLPixelFormatRGBA8Unorm_sRGB || f==MTLPixelFormatBGRA8Unorm_sRGB) ? VX_NATIVE_VR_COLOR_SRGB : VX_NATIVE_VR_COLOR_LINEAR,
+                    .color_space=eye_color_space(f),
                     .u_max=1,.v_max=1};
                 if (vx_native_vr_submit(h->frames,frame,i,pose.frame_id,pose.pose_id,&eye)) goto failed;
                 submitted|=1u<<i;
@@ -342,8 +555,9 @@ int vx_xros_xrizer_register(vx_xros_xrizer_host *h, const vx_xros_xrizer_static_
     int controllers=h->platform.size>=sizeof(h->platform) && h->platform.sample_input3;
     int haptics=controllers && h->platform.haptic_apply && h->platform.haptic_stop;
     KlNativeHapticHost haptic={KL_NATIVE_HAPTIC_HOST_VERSION,sizeof(haptic),h,haptic_apply,haptic_stop};
+    KlNativeVisibilityHost visibility={KL_NATIVE_VISIBILITY_HOST_VERSION,sizeof(visibility),h,vx_vismask_get_params};
     if (kl_native_configure(&host)!=XR_SUCCESS || kl_native_configure_views(&views)!=XR_SUCCESS ||
-        kl_native_configure_view_geometry(&geometry)!=XR_SUCCESS ||
+        kl_native_configure_view_geometry(&geometry)!=XR_SUCCESS || kl_native_configure_visibility(&visibility)!=XR_SUCCESS ||
         kl_native_configure_metal(&h->metal)!=XR_SUCCESS || kl_native_configure_image_sync(&h->sync)!=XR_SUCCESS ||
         kl_native_configure_session(&session)!=XR_SUCCESS || kl_native_configure_frame(&frame)!=XR_SUCCESS ||
         (controllers ? kl_native_configure_input3(&input3) : kl_native_configure_input(&input))!=XR_SUCCESS || (haptics && kl_native_configure_haptics(&haptic)!=XR_SUCCESS) || api->configure_provider(kl_native_get_instance_proc_addr) ||

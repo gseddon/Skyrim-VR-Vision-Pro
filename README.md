@@ -39,7 +39,7 @@ python3 -m unittest discover -s tests -p 'vxrt_native_startup_test.py'
 third_party/klepton_openxr/build-test.sh
 ```
 
-The full runtime also requires the existing MinGW cross-compiler. Rust checks use the repository-local toolchain selected by `XRIZER_RUST_ROOT`; component scripts document targets/features. The experimental `owned-apple-test` route is for owned integration fixtures. Ordinary Apple initialization remains unavailable while required behaviors are incomplete.
+The full runtime also requires the existing MinGW cross-compiler. Rust checks use the repository-local toolchain in `build/toolchains/xrizer-rust` (override with `XRIZER_RUST_ROOT`); component scripts document targets/features. The experimental `owned-apple-test` route is for owned integration fixtures. Ordinary Apple initialization remains unavailable while required behaviors are incomplete.
 
 ## Private inputs and artifacts
 

@@ -20,7 +20,7 @@ SRC    += src/mfplat.c
 SRC    += src/imagehlp.c src/spellcheck.c src/ime.c src/clipboard.m
 SRC    += src/npu_interp.m src/warp_core.m
 SRC    += src/upscale_core.m
-SRC    += src/native_vr.c src/native_openvr.m src/native_vr_present.m
+SRC    += src/native_vr.c src/native_openvr.m src/native_vr_present.m src/dither_source.m
 # xWMA (WMA v2) decoding for XAudio2: derived from FFmpeg, LGPL-2.1-or-later (src/wmadec/SOURCE.md)
 SRC    += src/wmadec/wmadec.c
 WMADEC_HDR = src/wmadec/wmadec.h src/wmadec/wmadec_internal.h src/wmadec/wmadata.h src/wmadec/aac_scalefactor.h
@@ -226,16 +226,35 @@ native-vr-unit-check: build/native_vr_test build/native_fpcr_test
 	XE_AFP=0 build/native_fpcr_test
 	python3 tests/aot_compare_test.py
 	python3 tests/test_xros_device_run.py
+	python3 -I tests/test_mods_pack.py
+	python3 -I tests/xrizer_overlay_slots_check.py
 	python3 tests/native_vr_run_test.py
 
 build/native_vr_present_test: tests/native_vr_present.m src/native_vr_present.m src/native_vr.c src/native_vr.h src/native_openvr.h src/xros_vr.h
 	@mkdir -p build
 	clang -arch arm64 -O1 -Wall -Wextra -Werror -Isrc -fobjc-arc -o $@ tests/native_vr_present.m src/native_vr_present.m src/native_vr.c -framework Foundation -framework Metal -pthread
 
-native-vr-gpu-check: build/native_vr_present_test
+native-vr-gpu-check: build/native_vr_present_test build/dither_source_test
 	build/native_vr_present_test
+	VXRT_REPROJ_FILTER=bilinear build/native_vr_present_test
+	build/dither_source_test
 
-check: native-vr-unit-check
+build/dither_source_test: tests/dither_source.m src/dither_source.m
+	@mkdir -p build
+	clang -arch arm64 -O1 -Wall -Wextra -Isrc -fobjc-arc -o $@ tests/dither_source.m src/dither_source.m -framework Foundation -framework Metal
+
+# The app's settings store (xros/app/Sources/VXSettings.swift): persistence, precedence, the VXRT_* mapping, the launch gate.
+xros-settings-check: tests/xros_settings_test.swift xros/app/Sources/VXSettings.swift
+	@mkdir -p build
+	swiftc -parse-as-library -o build/xros_settings_test xros/app/Sources/VXSettings.swift tests/xros_settings_test.swift
+	build/xros_settings_test
+
+check: native-vr-unit-check xros-settings-check xros-mods-check
+xros-mods-check: tests/xros_mods_test.swift xros/app/Sources/VXMods.swift
+	@mkdir -p build
+	swiftc -parse-as-library -o build/xros_mods_test xros/app/Sources/VXMods.swift tests/xros_mods_test.swift
+	build/xros_mods_test tests/fixtures/mods_pack_skyland.json
+.PHONY: xros-settings-check xros-mods-check
 
 native-vr-check: build/vxrt build/vxrt-arm64 build/vxrt-aot build/native_vr_d3d11.exe build/native_vr_test
 	build/native_vr_test
@@ -253,7 +272,10 @@ XROS_CODE_SIGNING ?= YES
 XROS_ALLOW_PROVISIONING ?= 0
 XROS_TARGET = arm64-apple-xros26.0$(if $(filter xrsimulator,$(XROS_SDK)),-simulator)
 XROS_CC = xcrun -sdk $(XROS_SDK) clang -target $(XROS_TARGET)
-XROS_CFLAGS = $(if $(filter 1,$(XROS_XRIZER_FIXTURE)),$(VXRT_ARM64_EXTRA_CFLAGS) -I$(VXRT_ARM64_THUNKS_ROOT)) -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -include xros/vx_xros.h -Ixros/include -Isrc -Ibuild -Ithird_party/vulkan -fobjc-arc
+# Debug info of the visionOS objects: line tables only (file:line for crash symbolication, a fraction of the size of full
+# DWARF). `make XROS_DEBUG_FLAG=-g ...` restores full debug info for an lldb session.
+XROS_DEBUG_FLAG ?= -gline-tables-only
+XROS_CFLAGS = $(if $(filter 1,$(XROS_XRIZER_FIXTURE)),$(VXRT_ARM64_EXTRA_CFLAGS) -I$(VXRT_ARM64_THUNKS_ROOT)) -O1 $(XROS_DEBUG_FLAG) -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -include xros/vx_xros.h -Ixros/include -Isrc -Ibuild -Ithird_party/vulkan -fobjc-arc
 XROS_OUT = src/cocoa.m src/menus.m src/tray.m src/clipboard.m src/opengl.c translator/engine.c translator/vcpu.c
 XROS_OUT += $(if $(filter xrsimulator,$(XROS_SDK)),src/upscale_core.m)
 XROS_SRC = $(filter-out $(XROS_OUT),$(ARM64_SRC)) src/xros_ui.m src/xros_vr.m src/xros_stubs.c translator/engine_nojit.c
@@ -357,7 +379,11 @@ XROS_FIXTURE_BUNDLE_ID ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),gseddon.dev.vxrt.
 # XROS_XRIZER_GAME=1: the app starts Skyrim VR by itself (Info.plist VXDefaultLaunch; a launch argument -game/-test overrides it).
 XROS_DEFAULT_LAUNCH ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),-game skyrimvr -xrizer -immersive)
 # XROS_SHADER_SET=<dir of <key>.metallib files>: embedded as bundle/shadercache (embed_aot_frameworks.sh).
-XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) $(if $(XROS_SHADER_SET),'VXRT_SHADER_SET=$(abspath $(XROS_SHADER_SET))') 'VXRT_DEFAULT_LAUNCH=$(XROS_DEFAULT_LAUNCH)' SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
+# The Klepton-style start window (xros/app/Sources/VXStartView.swift) gates the default launch: on for the Skyrim app, XROS_START_WINDOW=1 to try it
+# with another default launch (the simulator smoke test uses the owned guest). The app's name on the Home View.
+XROS_START_WINDOW ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),1,0)
+XROS_DISPLAY_NAME ?= Skyrim VR
+XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) 'VXRT_START_WINDOW=$(XROS_START_WINDOW)' 'VXRT_DISPLAY_NAME=$(XROS_DISPLAY_NAME)' $(if $(XROS_SHADER_SET),'VXRT_SHADER_SET=$(abspath $(XROS_SHADER_SET))') 'VXRT_DEFAULT_LAUNCH=$(XROS_DEFAULT_LAUNCH)' SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
 .PHONY: xros-shader-set
 xros-app: $(XROS_SHADER_SET_PREREQ)
 # xros-shader-set: the whole shader set for $(XROS_SDK) into $(XROS_SHADER_DIR), from XROS_SHADER_MANIFEST and the install
@@ -379,6 +405,7 @@ ifeq ($(XROS_XRIZER_FIXTURE),1)
 	mkdir -p $(XROS_DIR)/project
 	ln -sfn $(abspath xros/app/Sources) $(XROS_DIR)/project/Sources
 	ln -sfn $(abspath xros/app/embed_aot_frameworks.sh) $(XROS_DIR)/project/embed_aot_frameworks.sh
+	ln -sfn $(abspath xros/app/Icon) $(XROS_DIR)/project/Icon
 	python3 -c 'from pathlib import Path; import sys; s=Path(sys.argv[1]).read_text(); old="../../build/xros/bundle"; assert s.count(old)==1; Path(sys.argv[2]).write_text(s.replace(old,sys.argv[3]))' xros/app/project.yml $(XROS_DIR)/project/project.yml $(abspath $(XROS_DIR)/bundle)
 	cd $(XROS_DIR)/project && xcodegen generate --quiet
 	xcodebuild -project $(XROS_DIR)/project/VXRuntimeHost.xcodeproj -scheme VXRuntimeHost -destination 'generic/platform=$(if $(filter xrsimulator,$(XROS_SDK)),visionOS Simulator,visionOS)' -derivedDataPath $(XROS_DIR)/derived $(if $(filter 1,$(XROS_ALLOW_PROVISIONING)),-allowProvisioningUpdates) -quiet ARCHS=arm64 CODE_SIGNING_ALLOWED=$(if $(filter xrsimulator,$(XROS_SDK)),NO,$(XROS_CODE_SIGNING)) VXRT_LIBDIR=$(CURDIR)/$(XROS_DIR) 'HEADER_SEARCH_PATHS=$(CURDIR)/src $(CURDIR)/translator' $(XROS_FIXTURE_APP_FLAGS) build
@@ -405,7 +432,7 @@ $(VXRT_ARM64_TARGET): src/native_vr.h src/native_openvr.h $(ARM64_SRC) src/npu_i
 tests: build/hello_k32.exe build/hello_crt.exe build/threads.exe build/cxx_exceptions.exe build/hw_exceptions.exe build/seh_try.exe build/unwind.exe build/breakpoint.exe build/child_stdout.exe \
        build/files.exe build/ini.exe build/dll_test.exe build/vxplugin.dll build/dllprobe.exe \
        build/window.exe build/winsta.exe build/scm.exe build/net.exe build/winhttp.exe build/winhttp_proxy.exe build/iphlp.exe build/winsock_nsp.exe build/midi.exe build/directinput.exe build/msvc_eh.exe build/com.exe build/msxml.exe build/vxcom.dll build/iocp.exe build/d3d11.exe build/egl_host.exe build/gl.exe build/hlslc.exe build/dxbc2msl build/vxrt-shader-manifest build/draw.exe build/compute.exe build/d3d12.exe build/d3d12_engine.exe build/d3d12_fxc.exe build/d3d11on12.exe build/input.exe build/xinput_script.exe build/audio.exe build/xaudio2.exe build/xaudio2_27.exe build/dwrite.exe build/dxbcscan build/pipes.exe build/ipc.exe build/shared.exe build/steam.exe build/smc.exe build/order.exe build/lowmem.exe build/clip.exe build/shoplist.exe build/vulkan_win.exe build/vulkan_features.exe build/vulkan_shaders.exe build/game_imports.exe build/ucrt_extra.exe build/kernelx.exe build/jobs.exe build/security.exe \
-       build/sysdlls.exe build/dbghelp.exe build/crypt32.exe build/webhelper_apis.exe build/steam_client_ui.exe build/handle_xfer.exe build/open_thread.exe build/version_info.exe build/section_access.exe build/dbfiles.exe build/updater_files.exe build/shlock.exe build/net_events.exe build/regwait.exe build/tcptable.exe build/winprops.exe build/a11y.exe build/gdi_xform.exe build/view_align.exe \
+       build/sysdlls.exe build/dbghelp.exe build/crypt32.exe build/webhelper_apis.exe build/steam_client_ui.exe build/skyrim_preset.exe build/handle_xfer.exe build/open_thread.exe build/version_info.exe build/section_access.exe build/dbfiles.exe build/updater_files.exe build/shlock.exe build/net_events.exe build/regwait.exe build/tcptable.exe build/winprops.exe build/a11y.exe build/gdi_xform.exe build/view_align.exe \
        build/client_imports.exe build/hello32.exe build/clipboard.exe build/input_route.exe build/name_reuse.exe
 
 build/hello_k32.exe: tests/hello_k32.c
@@ -664,6 +691,10 @@ build/steam_client_ui.exe: tests/steam_client_ui.c
 	@mkdir -p build
 	$(MINGW) -O1 -o $@ $<
 
+build/skyrim_preset.exe: tests/skyrim_preset.c
+	@mkdir -p build
+	$(MINGW) -O1 -o $@ $<
+
 # DuplicateHandle between processes both ways: pipe ends and events taken from and given to another process
 # (src/handlexfer.c): Steam's process pipes.
 build/handle_xfer.exe: tests/handle_xfer.c
@@ -828,7 +859,7 @@ build/dxbc2msl: tools/dxbc2msl.m src/dxbc.c src/dxbc.h
 
 # The Direct3D 11 replayer (tools/d3d11_replay.m): plays a VXRT_D3D11_CAPTURE stream on this checkout's Direct3D 11
 # (linked in, native ARM64, no program and no translator; the thunk includes are empty here).
-REPLAY_D3D_SRC = src/shader_cache.m src/d3d11.m src/d3d11_draw.m src/d3d11_shared.m src/d3d11_capture.m src/d3d11on12.m src/dxgi.m src/dxbc.c src/d3d_format.c src/gpu_ir.c src/gpu_ir_msl.c src/gpu_ir_metal.m
+REPLAY_D3D_SRC = src/shader_cache.m src/dither_source.m src/d3d11.m src/d3d11_draw.m src/d3d11_shared.m src/d3d11_capture.m src/d3d11on12.m src/dxgi.m src/dxbc.c src/d3d_format.c src/gpu_ir.c src/gpu_ir_msl.c src/gpu_ir_metal.m
 build/vxrt-d3d11-replay: tools/d3d11_replay.m tools/d3d11_replay_stubs.c $(REPLAY_D3D_SRC) src/d3d11_capture.h src/d3d_common.h src/d3d_tables.h src/dxbc.h src/gpu_ir.h src/gpu_ir_msl.h src/gpu_ir_metal.h src/vx.h src/ui.h
 	@mkdir -p build/d3d11-replay/thunks
 	@for f in $(notdir $(REPLAY_D3D_SRC)); do : > build/d3d11-replay/thunks/$$f.inc; done
@@ -838,11 +869,11 @@ build/vxrt-d3d11-replay: tools/d3d11_replay.m tools/d3d11_replay_stubs.c $(REPLA
 
 # The offline shader manifest tool (tools/shader_manifest.m; run by ../tools/shader_manifest_build): the translator and the
 # runtime's own shader cache writer, so the sources and keys it makes are the ones a game run makes.
-build/vxrt-shader-manifest: tools/shader_manifest.m src/shader_cache.m src/dxbc.c src/dxbc.h src/d3d_common.h src/vx.h
+build/vxrt-shader-manifest: tools/shader_manifest.m src/shader_cache.m src/dither_source.m src/dxbc.c src/dxbc.h src/d3d_common.h src/vx.h
 	@mkdir -p build/shader-manifest/thunks
 	@for f in shader_cache.m dxbc.c; do : > build/shader-manifest/thunks/$$f.inc; done
 	$(CC) -arch arm64 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -mmacosx-version-min=14.0 -Ibuild/shader-manifest -Isrc -fobjc-arc \
-	  -o $@ tools/shader_manifest.m src/shader_cache.m src/dxbc.c -framework Foundation -framework Metal
+	  -o $@ tools/shader_manifest.m src/shader_cache.m src/dither_source.m src/dxbc.c -framework Foundation -framework Metal
 
 # DXIL (Shader Model 6, Direct3D 12): src/dxil.c reads the container and its LLVM bitcode.
 build/dxildump: tools/dxildump.c src/dxil.c src/dxil.h
@@ -1774,7 +1805,7 @@ runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d1
 	$(VXRT) build/lowmem.exe
 	$(VXRT) build/files.exe
 	$(VXRT) build/ini.exe
-	rm -rf build/ovtree build/ovshadow && mkdir -p build/ovtree/save && echo old > build/ovtree/save/old.sav && echo orig > build/ovtree/save/same.hl1
+	rm -rf build/ovtree build/ovshadow && mkdir -p build/ovtree/save && echo old > build/ovtree/save/old.sav && echo orig > build/ovtree/save/same.hl1 && mkdir -p build/ovshadow/mod/Textures/Landscape && echo dds > build/ovshadow/mod/Textures/Landscape/Dirt01.dds
 	VXRT_OVERLAY=$(CURDIR)/build/ovtree:$(CURDIR)/build/ovshadow $(VXRT) build/files.exe overlay 'Z:$(subst /,\,$(CURDIR))\build\ovtree'
 	test "$$(cat build/ovtree/save/same.hl1)" = orig && test ! -e build/ovtree/save/a.hl1
 	$(VXRT) build/dbfiles.exe
@@ -1823,6 +1854,9 @@ runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d1
 	$(VXRT) build/dbghelp.exe
 	$(VXRT) build/webhelper_apis.exe
 	$(VXRT) build/steam_client_ui.exe
+	VXRT_SKYRIM_PRESET=p2 $(VXRT) build/skyrim_preset.exe p2
+	VXRT_SKYRIM_PRESET=p2 VXRT_INI_SET='Display.iShadowMapResolution=1024;Display.bUseTAA=0' $(VXRT) build/skyrim_preset.exe p2 set
+	VXRT_SKYRIM_PRESET=off $(VXRT) build/skyrim_preset.exe off
 	$(VXRT) build/handle_xfer.exe
 	$(VXRT) build/open_thread.exe
 	$(VXRT) build/version_info.exe build/hello_crt.exe

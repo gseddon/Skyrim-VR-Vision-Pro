@@ -160,6 +160,12 @@ static WINAPI int __stdio_common_vsnprintf_s(uint64_t options, char *buf, size_t
     return __stdio_common_vsprintf(options, buf, count, fmt, locale, ap);
 }
 
+// VXRT_TRACE_FILES=3: C runtime fread/fseek/fclose too
+static int crt_io_trace(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("VXRT_TRACE_FILES"); on = e && *e == '3'; }
+    return on;
+}
 static WINAPI int vx_fflush(vx_file *f) { return f && f->f ? fflush(f->f) : 0; }
 static WINAPI int vx_setvbuf(vx_file *f, char *b, int m, size_t s) { (void)f; (void)b; (void)m; (void)s; return 0; }
 static WINAPI int vx_puts(const char *s) { return write_all(1, s, strlen(s)) || write_all(1, "\n", 1) ? -1 : 0; }
@@ -204,11 +210,17 @@ static WINAPI int vx_wfopen_s(vx_file **out, const WCHAR *path, const WCHAR *mod
 static WINAPI int vx_fclose(vx_file *f) {
     if (!f) return -1;
     if (f >= g_iob && f < g_iob + 3) return 0;
+    if (crt_io_trace()) vx_log("fclose(handle %p)", (void *)f);
     int r = fclose(f->f);
     free(f);
     return r;
 }
-static WINAPI size_t vx_fread(void *p, size_t sz, size_t n, vx_file *f) { FILE *s = read_stream(f); return s ? fread(p, sz, n, s) : 0; }
+static WINAPI size_t vx_fread(void *p, size_t sz, size_t n, vx_file *f) {
+    FILE *s = read_stream(f);
+    size_t r = s ? fread(p, sz, n, s) : 0;
+    if (crt_io_trace() && s) vx_log("fread(handle %p, %zu x %zu) = %zu at %lld%s", (void *)f, sz, n, r, (long long)ftello(s), feof(s) ? " EOF" : "");
+    return r;
+}
 static WINAPI char *vx_fgets(char *buf, int n, vx_file *f) { FILE *s = read_stream(f); return s ? fgets(buf, n, s) : NULL; }
 static WINAPI int vx_fgetc(vx_file *f) { FILE *s = read_stream(f); return s ? fgetc(s) : -1; }
 static WINAPI int vx_ungetc(int c, vx_file *f) { FILE *s = read_stream(f); return s ? ungetc(c, s) : -1; }
@@ -216,8 +228,8 @@ static WINAPI int vx_getchar(void) { return fgetc(stdin); }
 static WINAPI int vx_feof(vx_file *f) { return f->f ? feof(f->f) : 0; }
 static WINAPI int vx_ferror(vx_file *f) { return f->f ? ferror(f->f) : 0; }
 static WINAPI void vx_clearerr(vx_file *f) { if (f->f) clearerr(f->f); }
-static WINAPI int vx_fseek(vx_file *f, int32_t off, int whence) { return f->f ? fseeko(f->f, off, whence) : (lseek(f->fd, off, whence) < 0 ? -1 : 0); }   // long is 32-bit
-static WINAPI int vx_fseeki64(vx_file *f, int64_t off, int whence) { return f->f ? fseeko(f->f, off, whence) : (lseek(f->fd, off, whence) < 0 ? -1 : 0); }
+static WINAPI int vx_fseek(vx_file *f, int32_t off, int whence) { if (crt_io_trace()) vx_log("fseek(handle %p, %d, %d)", (void *)f, (int)off, whence); return f->f ? fseeko(f->f, off, whence) : (lseek(f->fd, off, whence) < 0 ? -1 : 0); }   // long is 32-bit
+static WINAPI int vx_fseeki64(vx_file *f, int64_t off, int whence) { if (crt_io_trace()) vx_log("fseeki64(handle %p, %lld, %d)", (void *)f, (long long)off, whence); return f->f ? fseeko(f->f, off, whence) : (lseek(f->fd, off, whence) < 0 ? -1 : 0); }
 static WINAPI int32_t vx_ftell(vx_file *f) { return (int32_t)(f->f ? ftello(f->f) : lseek(f->fd, 0, SEEK_CUR)); }
 static WINAPI int64_t vx_ftelli64(vx_file *f) { return f->f ? ftello(f->f) : lseek(f->fd, 0, SEEK_CUR); }
 static WINAPI void vx_rewind(vx_file *f) { if (f->f) rewind(f->f); }

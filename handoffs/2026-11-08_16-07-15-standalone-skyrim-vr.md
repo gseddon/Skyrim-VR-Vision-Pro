@@ -1,5 +1,8 @@
 # Standalone Skyrim VR / Vision Pro handover
 
+> Historical (2026-11-08): the Rust toolchain path named below moved to `build/toolchains/xrizer-rust` in this repository on 2026-11-10.
+
+
 Updated 8 November 2026, Europe/London. User requested handover to another agent. All workers are at completed/idle checkpoints; no further game or simulator run is pending. Verify process state before starting anything.
 
 ## Objective and working agreement
