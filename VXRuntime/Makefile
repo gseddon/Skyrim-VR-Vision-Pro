@@ -272,7 +272,7 @@ build/native_vr_test: tests/native_vr.c src/native_vr.c src/native_vr.h
 	@mkdir -p build
 	clang -std=c11 -O2 -Wall -Wextra -Werror -Isrc -pthread -o $@ tests/native_vr.c src/native_vr.c
 
-build/native_vr_d3d11.exe: tests/native_vr_d3d11.cpp ../VRDriver/include/openvr.h
+build/native_vr_d3d11.exe: tests/native_vr_d3d11.cpp tests/openvr/openvr.h
 	@mkdir -p build
 	$(MINGWXX) -std=c++17 -O1 -static -static-libgcc -static-libstdc++ -o $@ $< -ld3d11
 
