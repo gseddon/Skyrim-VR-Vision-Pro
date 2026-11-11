@@ -14,8 +14,8 @@ Read AGENTS.md first. A tune changes settings, never the runtime's code. Every n
 first). It runs the harness up the profile's ladder (`games/611670.json` `tune.ladder`: the p2 preset, the defaults,
 bigger shadows; cheapest first), stops climbing where a candidate no longer holds 95 % of the host rate (60 fresh
 pairs/s) with healthy runs, and confirms the richest one that holds in alternating runs. A confirmed choice goes into
-the profile's `tuned` entry for this Mac with `--apply`. It stops on a refusal (the user is playing, another Skyrim run
-is active): report that and do not restart it while they play.
+the profile's `tuned` entry for this Mac with `--apply`. It stops on a refusal (the user is playing, or other Skyrim runs are active: it refuses its own measurement runs
+then, because concurrent timing is noisy): report that and do not restart it while they play.
 
 ## Measure by hand (settings outside the ladder)
 
@@ -31,7 +31,7 @@ is active): report that and do not restart it while they play.
 
 - One run per setting is not a comparison: run A B B A (or more) and compare medians (`compare_runs`).
   Differences of a few pairs/s are noise unless they repeat.
-- Check `uptime`/`top` first: other programs change GPU numbers. Never measure while compiling or while another Skyrim run is going (the harness refuses the latter).
+- Check `uptime`/`top` first: other programs change GPU numbers. Never measure while compiling or while other Skyrim runs are going (`concurrent_skyrim_runs` > 0 marks a run noisy; `compare_runs` lists such runs under `noisy_runs`).
 
 ## Report
 

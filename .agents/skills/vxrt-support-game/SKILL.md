@@ -13,7 +13,7 @@ never "playable".
 ## The loop
 
 1. **Measure first.** `tools/vxrt_run.py skyrim [boot|helgen]` (MCP: `run_game`). It refuses unfair runs with a typed
-   reason (`user_not_playing`, `no_other_skyrim_run`, `private_inputs`, `game_installed`, `settings_allowed`,
+   reason (`user_not_playing`, `no_user_play_session`, `run_paths_unshared`, `private_inputs`, `game_installed`, `settings_allowed`,
    `args_allowed`): report the reason and stop; never stop another session (wait for it). Use `--check` first.
 2. **Find the first blocker** in the result, in this order: `first_problem` (with its log line), `native_signals`,
    `unhandled_exceptions`, `unimplemented_calls`, `xrizer_panics`, `xrizer_bridge_stops`, `missing_code` and
@@ -47,6 +47,6 @@ called; implement what a run shows being called.
 
 ## Things to keep in mind
 
-- Only one Skyrim run at a time on this Mac: the user's session or another agent's run makes the harness refuse.
+- Several Skyrim runs may overlap (each has its own `runs/<id>`, root, overlay and saves); `concurrent_skyrim_runs` says how many others ran, and timing from such a run is noisy. A hand-started `play_skyrim_dev.sh` session counts as the user playing and refuses the run.
 - Fresh producer pairs/s (`pairs_per_s_median`) are not compositor repeats; the host window runs at 60 Hz.
 - Streaming, SteamVR, Alyx and the other Windows games of the old harness are gone; do not look for their launchers.

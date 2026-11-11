@@ -400,7 +400,7 @@ TEXT = {
         ],
         "stop": "## Stop and report when",
         "stop_lines": [
-            "The harness refuses a run (`user_not_playing`, `no_other_skyrim_run`, ...): report the reason and stop (or wait for the other run to end); never stop another session",
+            "The harness refuses a run (`user_not_playing`, ...): report the reason and stop (or wait for the other run to end); never stop another session",
             "The game has anti-cheat: do not work around it; stop there",
             "Three attempts without progress, or the fix needs Direct3D 12, Vulkan, tessellation or another larger project: write an issue draft with {issue}, show it to the user and stop (only the user posts it)",
         ],

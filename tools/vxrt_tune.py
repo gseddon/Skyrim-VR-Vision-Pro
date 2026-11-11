@@ -13,7 +13,7 @@ no crash signals) and the median of its runs' pairs_per_s_median is at least 95 
 climbs while candidates hold; the highest one that holds is run again, alternating with the next one up when that one
 came within 10 % (B A A B), until each has --repeats runs; a candidate that stops holding sends it one step down. It
 stops when the choice is confirmed, at --max-runs, or when the harness refuses a run (the user started playing,
-another Skyrim run is active, ...): it never works around a refusal. Everything is written to runs/<tune id>/tune.json
+other Skyrim runs are active (their timing would be noisy: it refuses its own measurement then), ...): it never works around a refusal. Everything is written to runs/<tune id>/tune.json
 (each run's id and the observation the rate comes from), sealed into runs/ledger.jsonl.
 
 The settings are Skyrim ini overrides and the dev host's submit knobs (TUNABLES in tools/vxrt_run.py). Removed with the
@@ -57,6 +57,8 @@ def run_facts(result):
     obs = {o["metric"]: o for o in result.get("observed", [])}
     fps = obs.get("pairs_per_s_median", {}).get("value")
     bad = [d["claim"] for d in result.get("derived", []) if d["claim"] != "pairs_meet_baseline" and not d["holds"]]
+    if obs.get("concurrent_skyrim_runs", {}).get("value"):
+        bad.append("noisy: other Skyrim runs were active")
     return {"run_id": result["run_id"], "status": result["status"], "fps": fps, "fps_ref": obs.get("pairs_per_s_median", {}).get("id"),
             "healthy": result["status"] != "refused" and not bad and fps is not None, "why": bad or ([] if fps is not None else ["no fps"])}
 
@@ -109,7 +111,7 @@ def machine_key(mi=None):
     return f"{mi['chip']}, {mi['gpu_cores']}-core GPU"
 
 # ---- the tune -------------------------------------------------------------------------------------------------------------------
-def tune(game, scenario=None, max_runs=8, repeats=2, seconds=None, runner=None, tune_id=None, say=print, write=True):
+def tune(game, scenario=None, max_runs=8, repeats=2, seconds=None, runner=None, tune_id=None, say=print, write=True, busy=None):
     """Runs the ladder; returns the record (also written to runs/<tune id>/tune.json after every run)."""
     import vxrt_run
     key, profile, inst = vxrt_run.resolve(game)
@@ -136,6 +138,11 @@ def tune(game, scenario=None, max_runs=8, repeats=2, seconds=None, runner=None, 
     while len(rec["runs"]) < max_runs:
         i = next_step(ladder, runs, repeats)
         if i is None:
+            break
+        others = (busy or vxrt_run.concurrent_skyrim_count)([os.path.join(REPO, "runs", tune_id + "-busycheck")])
+        if others:                                            # (its own measurement runs only: other runs are never stopped)
+            rec["status"], rec["refused"] = "refused", ["other_skyrim_runs_active"]
+            say(f"tune {tune_id}: {others} other Skyrim run(s) active: timing would be noisy, so the tuner does not measure now; stopped")
             break
         say(f"tune {tune_id}: run {len(rec['runs']) + 1}/{max_runs}: {label(ladder[i])}")
         try:
@@ -224,8 +231,8 @@ def selftest():
         real = vxrt_run.resolve
         vxrt_run.resolve = lambda g: ("t", {"appid": "1", "default_scenario": "s", "key": "t"}, None)
         try:
-            return tune("t", runner=fake(fps, **{k: v for k, v in kw.items() if k == "healthy"}), say=lambda *a: None, write=False,
-                        **{k: v for k, v in kw.items() if k != "healthy"})
+            return tune("t", runner=fake(fps, **{k: v for k, v in kw.items() if k == "healthy"}), say=lambda *a: None, write=False, busy=lambda paths: kw.get("others", 0),
+                        **{k: v for k, v in kw.items() if k not in ("healthy", "others")})
         finally:
             vxrt_run.resolve = real
     checks = []
@@ -244,6 +251,9 @@ def selftest():
     # unhealthy runs never hold
     r = go({x: 60 for x in L}, healthy=False)
     checks.append(("unhealthy", r["status"] == "none_holds"))
+    # other Skyrim runs active: the tuner refuses its own measurement
+    r = go({x: 60 for x in L}, others=1)
+    checks.append(("refuses when others run", r["status"] == "refused" and r["refused"] == ["other_skyrim_runs_active"] and not r["runs"]))
     # run budget
     r = go({x: 60 for x in L}, max_runs=3)
     checks.append(("budget", r["status"] == "unconfirmed" and len(r["runs"]) == 3))

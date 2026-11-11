@@ -34,6 +34,43 @@ checks = {c["code"]: c for c in vxrt_run.preconditions(profile, None, ["--out", 
 check(not checks["settings_allowed"]["ok"] and not checks["args_allowed"]["ok"], "untunable setting or owned argument accepted")
 check(not checks["game_installed"]["ok"], "missing game not refused")
 
+# concurrency: overlapping harness runs (separate runs/<id>) are allowed and counted; a hand-started play session is the user's; same root conflicts
+def rec(pid, run):
+    return {"pid": pid, "owner": "harness", "run": run, "root": run + "/root"}
+def session_survey(concurrent, conflicts=(), user=()):
+    return lambda own, *a, **k: {"user": list(user), "conflicts": list(conflicts), "concurrent": list(concurrent)}
+real = (vxrt_run.sessions.survey, vxrt_run.active_skyrim_runs)
+try:
+    vxrt_run.active_skyrim_runs = lambda: [(11, "x"), (12, "y")]
+    vxrt_run.sessions.survey = session_survey([rec(11, "/r/runs/A/native"), rec(12, "/r/runs/B/native"), rec(13, "/r/runs/C/native")])
+    others, play = vxrt_run.other_skyrim_sessions(["/r/runs/D"])
+    check([r["pid"] for r in others] == [11, 12] and not play, "concurrent harness runs must be allowed and counted (non-Skyrim runtimes not counted)")
+    check(vxrt_run.concurrent_skyrim_count(["/r/runs/D"]) == 2, "concurrent count")
+    vxrt_run.sessions.survey = session_survey([rec(11, "/r/build/play-101010")])
+    check([r["pid"] for r in vxrt_run.other_skyrim_sessions(["/r/runs/D"])[1]] == [11], "hand-started play_skyrim_dev session must count as the user playing")
+    c = {c["code"]: c for c in vxrt_run.preconditions(profile, {"folder": "/g", "exe": "/g/SkyrimVR.exe"}, [], {}, "/r/runs/D")}
+    check(not c["no_user_play_session"]["ok"], "play session not refused by preconditions")
+    vxrt_run.sessions.survey = session_survey([rec(11, "/r/build/worktrees/agent/build/play-101010")])
+    check(not vxrt_run.other_skyrim_sessions(["/r/runs/D"])[1], "an agent's worktree launcher run must not count as the user playing")
+    vxrt_run.sessions.survey = session_survey([rec(11, "/r/runs/A/native")])
+    c = {c["code"]: c for c in vxrt_run.preconditions(profile, {"folder": "/g", "exe": "/g/SkyrimVR.exe"}, [], {}, "/r/runs/D")}
+    check(c["no_user_play_session"]["ok"] and c["user_not_playing"]["ok"] and c["run_paths_unshared"]["ok"], "a concurrent harness run refused a run")
+finally:
+    vxrt_run.sessions.survey, vxrt_run.active_skyrim_runs = real
+# sessions module itself: the same root is a conflict, a different one is concurrent, an unmarked default-root runtime is the user's
+import vxrt_runtime_sessions as S
+def info(root, run):
+    return ("/x/vxrt-arm64", ["vxrt-arm64", "SkyrimVR.exe"], {"VXRT_ROOT": root, "VXRT_HARNESS_RUN": run})
+procs = lambda: [(21, "vxrt-arm64", "vxrt-arm64 SkyrimVR.exe"), (22, "vxrt-arm64", "vxrt-arm64 SkyrimVR.exe")]
+args = {21: info("/r/runs/A/native/root", "/r/runs/A/native"), 22: info("/r/runs/B/native/root", "/r/runs/B/native")}
+s = S.survey(["/r/runs/C"], ps=procs, args=lambda pid: args[pid], cwd_of=lambda pid: None, alive_of=lambda pid: True, user_roots=[], checkouts=["/r"])
+check(len(s["concurrent"]) == 2 and not s["conflicts"] and not s["user"], "separate run directories must be concurrent")
+s = S.survey(["/r/runs/A"], ps=procs, args=lambda pid: args[pid], cwd_of=lambda pid: None, alive_of=lambda pid: True, user_roots=[], checkouts=["/r"])
+check(len(s["conflicts"]) == 1 and len(s["concurrent"]) == 1, "the same run directory/root must conflict")
+args[21] = ("/x/vxrt-arm64", ["vxrt-arm64", "SkyrimVR.exe"], {})
+s = S.survey(["/r/runs/C"], ps=procs, args=lambda pid: args[pid], cwd_of=lambda pid: None, alive_of=lambda pid: True, user_roots=[], checkouts=["/r"])
+check(len(s["user"]) == 1, "a runtime on the default root is the user's session")
+
 with tempfile.TemporaryDirectory() as directory:
     log = os.path.join(directory, "startup.log")
     with open(log, "w", encoding="utf-8") as stream:

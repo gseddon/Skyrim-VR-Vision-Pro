@@ -149,13 +149,35 @@ def show(game):
             print(f"   - {pr['what']}" + (f" at {pr['at_s']} s" if isinstance(pr.get('at_s'), (int, float)) else "") + (f": {pr['note']}" if pr.get("note") else ""))
     if not tests: print("no playtests yet")
 
+def selftest():
+    """The recorder and the log reading against a stand-in startup log: a mark keeps the log tail, a crash and slow stretch are seen."""
+    import tempfile
+    d = tempfile.mkdtemp()
+    log = os.path.join(d, "startup.log")
+    with open(log, "w") as f:
+        f.write("[vxrt] 1 game 60 fresh pairs/s | host 60 Hz\n[vxrt] 2 game 20 fresh pairs/s | host 60 Hz\n[vxrt] 3 signal 11 at 0x10 (address 0x0)\n")
+    rec = Recorder(log)
+    rec.mark("menu is black")
+    facts = harness.game_log_facts(log)
+    pairs, _, _ = harness.log_series(log)
+    checks = [("one mark with the log tail", len(rec.marks) == 1 and rec.marks[0]["note"] == "menu is black" and len(rec.marks[0]["startup_log_tail"]) == 3),
+              ("crash seen", facts["signals"] == 1 and facts["first_problem"]["line"] == 3),
+              ("slow stretch", [i * 10 for i, f in enumerate(pairs) if f < 45] == [10]),
+              ("never playable", "playable" not in {"answered", "required_yes", "no_crash", "long_enough", "dev_host_ok"})]
+    bad = [n for n, ok in checks if not ok]
+    print(f"vxrt playtest self-test: {len(checks) - len(bad)}/{len(checks)} -> {'ok' if not bad else 'FAILED: ' + ', '.join(bad)}")
+    return not bad
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("game", nargs="?")
     ap.add_argument("--minutes", type=float, default=10.0, help="the shortest session that can count as dev_host_ok")
     ap.add_argument("--saves-dir", help="saves directory (default: the launcher's, i.e. build/private/saves/611670: the player's own)")
     ap.add_argument("--show", action="store_true"); ap.add_argument("--apply", metavar="RUN_DIR")
+    ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
+    if a.selftest:
+        sys.exit(0 if selftest() else 1)
     if a.apply:
         print(f"written: {os.path.relpath(apply(a.apply), REPO)}"); return
     if not a.game:

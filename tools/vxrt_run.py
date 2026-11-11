@@ -15,8 +15,9 @@ controllers, no audio (muted), and never "playable": only a person in a headset 
 The result keeps apart what was observed (each value with the file it comes from and that file's SHA-256), what is
 derived from observations (only by rule, against the game profile games/<app id>.json), what is inferred (marked as
 a suspicion, with the observations it rests on) and what is not known. A run that cannot be a fair measurement is
-refused before it starts, with a typed reason (the user is playing, another Skyrim run is active, a private input is
-missing, ...). The harness only ever stops the processes it started itself.
+refused before it starts, with a typed reason (the user is playing, this run's own directories are in use, a private input
+is missing, ...). Several runs may overlap, each in its own runs/<id>; how many others were active is recorded
+(concurrent_skyrim_runs) because timing then is noisy. The harness only ever stops the processes it started itself.
 
 Exit status: 0 pass, 1 fail, 2 no baseline to compare with, 3 refused, 4 error.
 """
@@ -71,9 +72,29 @@ def private_inputs(env):
 
 # ---- preconditions ----------------------------------------------------------------------------------------------------
 def active_skyrim_runs():
-    """Runtime processes running SkyrimVR.exe (anyone's: the user's session, another agent's run): [(pid, command)]."""
+    """Runtime processes running SkyrimVR.exe (anyone's): [(pid, command)]."""
     return [(pid, cmd[:200]) for pid, comm, cmd in sessions.list_processes()
             if sessions.VXRT_COMM.fullmatch(os.path.basename(comm.strip("()"))) and "SkyrimVR" in cmd and pid != os.getpid()]
+
+def is_user_session(rec):
+    """A session the user started by hand: its evidence is neither in a runs/<id> directory (the harness) nor in a git
+    worktree's build/ (agents' own launcher runs, build/worktrees/<name>/build/play-*); it is in the main checkout."""
+    parts = os.path.normpath(rec.get("run", "")).split(os.sep)
+    return "runs" not in parts and "worktrees" not in parts
+
+def other_skyrim_sessions(own_paths):
+    """([concurrent Skyrim runs that write elsewhere], [live sessions that are not harness runs]) as session records.
+    Several runs may overlap (each has its own runs/<id> directory, root, overlay and saves); a session started with
+    tools/play_skyrim_dev.sh by hand in the main checkout (evidence outside any runs/ directory and any worktree)
+    counts as the user playing."""
+    survey = sessions.survey(own_paths)
+    skyrim = {pid for pid, _ in active_skyrim_runs()}
+    others = [r for r in survey["concurrent"] if r["pid"] in skyrim]
+    return others, [r for r in others if is_user_session(r)]
+
+def concurrent_skyrim_count(own_paths):
+    """How many other Skyrim runs are active besides one writing into own_paths."""
+    return len(other_skyrim_sessions(own_paths)[0])
 
 def preconditions(spec, game, args, settings, run_dir=None, concurrent=None):
     """Checks that make a run a fair measurement; each failed one is a typed refusal."""
@@ -87,13 +108,14 @@ def preconditions(spec, game, args, settings, run_dir=None, concurrent=None):
     check("private_inputs", not missing, "all present" if not missing else "missing: " + "; ".join(f"{n} ({p or 'not set'})" for n, p in missing.items()))
     # SteamVR, a Wine game, or any runtime not provably harness/fixture-owned is the user's: it refuses the run, as does
     # a runtime writing where this run will (tools/vxrt_runtime_sessions.py).
-    session_checks, owned = sessions.preconditions([run_dir] if run_dir else [REPO])
-    checks.extend(session_checks)
+    own = run_dir or os.path.join(REPO, "runs", "_check")
+    session_checks, owned = sessions.preconditions([own])
+    checks.extend(session_checks)                  # user_not_playing, run_paths_unshared (this run's directory, root, overlay, TMPDIR)
+    others, play = other_skyrim_sessions([own])
+    check("no_user_play_session", not play, "no hand-started tools/play_skyrim_dev.sh session" if not play else
+          "playing: " + "; ".join(f"pid {r['pid']} {r.get('run', '')}" for r in play) + " (never stopped by the harness)")
     if concurrent is not None:
         concurrent.extend(owned)
-    others = active_skyrim_runs()
-    check("no_other_skyrim_run", not others, "no other SkyrimVR.exe runtime is running" if not others else
-          "running: " + "; ".join(f"pid {pid}" for pid, _ in others) + " (wait for it to end; never stopped by the harness)")
     bad = sorted(set(settings) - TUNABLES)
     check("settings_allowed", not bad, "only " + ", ".join(sorted(TUNABLES)) if not bad else "not tunable: " + ", ".join(bad))
     owned_args = sorted({a.split("=")[0] for a in args} & OWNED_ARGS)
@@ -107,6 +129,13 @@ EYE = re.compile(r"dump frame \d+ eye \d \d+x\d+ mean rgb [\d. ]+, [\d.]+% pixel
 
 def median(xs):
     return round(statistics.median(xs), 1) if xs else None
+
+def sample_concurrency(stop, counts, own_paths):
+    """How many other Skyrim runs are active, every 10 s (timing under concurrency is noisy: recorded, not refused)."""
+    while not stop.is_set():
+        try: counts.append(concurrent_skyrim_count(own_paths))
+        except Exception: pass
+        stop.wait(10)
 
 def sample_gpu(stop, samples, log):
     """GPU utilisation every 2 s while the startup log is growing (the game is running)."""
@@ -229,6 +258,9 @@ def infer(ev):
         elif gpu < 60:
             add("limited by the CPU, synchronisation or pacing rather than the GPU", f"{pairs} pairs/s below baseline with the GPU only {gpu}% busy",
                 [ev.ref("pairs_per_s_median"), ev.ref("gpu_utilization_median")])
+    if ev.value("concurrent_skyrim_runs"):
+        add("pairs/s and GPU numbers are affected by other Skyrim runs on this Mac", f"{ev.value('concurrent_skyrim_runs')} other Skyrim runtime(s) active during the run",
+            [ev.ref("concurrent_skyrim_runs"), ev.ref("pairs_per_s_median")], "medium")
     if ev.value("exited_early"):
         add("the game stopped before the end of the scenario", "the process exited by itself; see first_problem and native_signals",
             [ev.ref("exited_early"), ev.ref("first_problem"), ev.ref("native_signals")], "medium")
@@ -322,7 +354,10 @@ def run(game, scenario=None, seconds=None, extra_args=(), trace_calls=0, build=T
     run_dir = os.path.join(REPO, "runs", run_id)
     logs = os.path.join(run_dir, "logs")
     native_dir = os.path.join(run_dir, "native")               # (created by the native startup, which refuses an existing one)
-    os.makedirs(logs, exist_ok=True)
+    if os.path.exists(run_dir):                                # (same run id: never write into another run's directory)
+        return {"run_id": run_id, "game": key, "status": "refused", "refused": ["run_id_unique"],
+                "preconditions": [{"code": "run_id_unique", "ok": False, "detail": "runs/%s already exists; start again in a second" % run_id}]}
+    os.makedirs(logs)
     head, dirty = git_state()
     settings = dict((spec or {}).get("settings", {}), **(settings or {}))
     result = {"run_id": run_id, "game": key, "appid": (spec or {}).get("appid"), "scenario": scenario, "exe": "SkyrimVR.exe", "arguments": args, "seconds": seconds,
@@ -335,6 +370,7 @@ def run(game, scenario=None, seconds=None, extra_args=(), trace_calls=0, build=T
     say = (lambda *a: None) if quiet else (lambda *a: print(*a, file=sys.stderr))
     concurrent = []
     checks = preconditions(spec, inst, args, settings, run_dir, concurrent)
+    concurrent_peers = other_skyrim_sessions([run_dir])[0]
     if concurrent:
         result.setdefault("diagnostic", {})["concurrent_runtime"] = {"processes": concurrent,
             "scope": "owned runtime processes running when this run started; timing and fps may be affected"}
@@ -359,12 +395,13 @@ def run(game, scenario=None, seconds=None, extra_args=(), trace_calls=0, build=T
     cmd = launch_command(sc, seconds, native_dir, args, settings, trace_calls)
     result["command"] = " ".join(os.path.relpath(c, REPO) if c == PLAY else c for c in cmd)
     startup_log = os.path.join(native_dir, "startup.log")
-    stop, gpu = threading.Event(), []
+    stop, gpu, others_seen = threading.Event(), [], [len(concurrent_peers)]
     sampler = threading.Thread(target=sample_gpu, args=(stop, gpu, startup_log), daemon=True)
+    watcher = threading.Thread(target=sample_concurrency, args=(stop, others_seen, [run_dir]), daemon=True)
     say(f"vxrt run {run_id}: {result['command']}")
     with open(os.path.join(logs, "launcher.log"), "w") as out:
         p = subprocess.Popen(cmd, env=env, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
-    sampler.start()
+    sampler.start(); watcher.start()
     try:
         p.wait(timeout=seconds + GRACE_S)
     except subprocess.TimeoutExpired:
@@ -413,6 +450,8 @@ def run(game, scenario=None, seconds=None, extra_args=(), trace_calls=0, build=T
                source="the dev host's 'game N fresh pairs/s' (producer pairs, not compositor repeats), 10 s averages")
     ev.observe("xr_submit_ring", dict(zip(("submitted", "completed", "failed"), ring)) if ring else None, startup_log, note="last 'xr submit ring' line")
     ev.observe("eye_non_black_percent_median", median(eye[-120:]), startup_log, note="share of non-black pixels of the published eye images, last 120 statistics lines (both eyes)")
+    ev.observe("concurrent_skyrim_runs", max(others_seen), None, at_start=others_seen[0], samples_taken=len(others_seen),
+               note="most other Skyrim runtimes seen running (10 s samples) while this run ran; >0 makes pairs/s and GPU numbers noisy")
     ev.observe("gpu_utilization_median", median([v for t, v in gpu if t >= ended - window - 5]), None, window_s=window)
     for metric in ("native_signals", "xrizer_panics", "xrizer_bridge_stops", "xrizer_unsupported_interfaces"):
         ev.observe(metric, nat_obs.get(metric), startup_log)
@@ -434,7 +473,7 @@ def run(game, scenario=None, seconds=None, extra_args=(), trace_calls=0, build=T
         {"item": "whether the game can be played", "reason": "a person decides 'playable' in a physical headset session; this harness never does"},
         {"item": "run-to-run variation", "reason": "one run; compare settings in alternating runs (A B B A)"},
     ]
-    ev.limits += ["Mac dev host: not the standalone Vision Pro runtime and not SteamVR", "other programs on the Mac change GPU numbers (check uptime/top)"]
+    ev.limits += ["Mac dev host: not the standalone Vision Pro runtime and not SteamVR", "other programs on the Mac, and other Skyrim runs (concurrent_skyrim_runs), change timing and GPU numbers"]
     result.update({"observed": ev.observed, "derived": ev.derived, "inferred": ev.inferred, "unknown": ev.unknown,
                    "limits": ev.limits, "duration_s": round(ended - started, 1)})
     result["status"] = "fail" if not all(d["holds"] for d in ev.derived) else "pass" if base else "no_baseline"

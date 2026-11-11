@@ -2,7 +2,7 @@
 # play_skyrim_dev.sh: boot Skyrim VR on this Mac with the keyboard dev controllers, one command.
 #
 # Builds (incrementally; nothing to do when up to date) from THIS checkout the dev-host runtime and the xrizer dylib
-# with the dev features, refuses when another Skyrim/vxrt session is running, prints the key map, then starts the
+# with the dev features, refuses when the user or a conflicting session is running, prints the key map, then starts the
 # harness (strict AOT, xrizer + Klepton dev host, seeded right-handed prefs, safe-math shaders, sound on).
 #
 #   tools/play_skyrim_dev.sh                 play (up to 3600 s)
