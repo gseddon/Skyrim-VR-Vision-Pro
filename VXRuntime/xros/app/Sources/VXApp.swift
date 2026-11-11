@@ -143,14 +143,12 @@ enum VXLifecycle {
         // The Crown ends the app (the wearer's wish, 2026-11-10): the layer is invalidated AND the app leaves (resigns active) within a short
         // window of it, in either order. A headset off only pauses the layer (device L2-L4: resign_active, background, vr_pause, no invalidation)
         // and keeps the pause/resume behaviour. The Resume panel is no longer shown here: only a failed open while active shows it.
-        if crownQuitEnabled {
-            if !appIsActive() { crownQuit("invalidated_while_inactive") }
-            else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + crownWindow) {
-                    if !appIsActive() { crownQuit("invalidated_then_left") }
-                }
-            }
-        }
+        // Device run4 (2026-11-11 00:49): the FIRST Crown press invalidates the layer while the app is still ACTIVE (layer_gone active:true,
+        // 144.48 s); the app does not resign until 2.3 s later, so the old "invalidated, then left within 1.5 s" rule saw nothing and the 0.7 s
+        // reopen put the game back (the "paused, Resume?" the wearer saw). The system, not us, invalidating the layer is the Crown; a headset
+        // off only pauses it (.paused, never .invalidated). So an invalidation quits at once, whether or not the app has left yet.
+        // crownQuit is a no-op while the keyboard window is open (logged), and then the reopen below carries on as before.
+        if crownQuitEnabled { crownQuit(appIsActive() ? "invalidated_while_active" : "invalidated_while_inactive") }
         let delay = min(0.7 * Double(reopens), 5)
         // The layer is gone: if the app is already leaving (Crown, doff), that is the signature of a Crown press; do not fight it.
         let activeNow = appIsActive()
@@ -185,6 +183,7 @@ enum VXLifecycle {
     nonisolated(unsafe) static var invalidatedAt: CFTimeInterval = 0
     nonisolated(unsafe) static var resignedAt: CFTimeInterval = 0
     nonisolated(unsafe) static var quitting = false
+    nonisolated(unsafe) static var pausedAt: CFTimeInterval = 0   // last time the layer went .paused (the loop sets it): a doff pauses first, a Crown press does not
     // A keyboard window (VXKeyboard.swift) is open for the game's text request. The system keyboard and a second window may take focus from
     // the display window; that is not a Crown press, so no crown_quit while it is open (the signals are still logged).
     nonisolated(unsafe) static var keyboardOpen = false
@@ -197,7 +196,7 @@ enum VXLifecycle {
         if keyboardOpen { vxrt_jlog("crown_quit_suppressed", "\"signal\":\"\(signal)\",\"why\":\"keyboard_open\""); return }
         quitting = true
         let now = CACurrentMediaTime()
-        vxrt_jlog("crown_quit", "\"signal\":\"\(signal)\",\"since_invalidated_s\":\(invalidatedAt > 0 ? String(format: "%.3f", now - invalidatedAt) : "null"),\"since_resign_s\":\(resignedAt > 0 ? String(format: "%.3f", now - resignedAt) : "null"),\"phase\":\"\(scenePhaseNow)\",\"app_active\":\(appActive),\"frames\":\(VXImmersiveRenderer.frameCount)")
+        vxrt_jlog("crown_quit", "\"signal\":\"\(signal)\",\"since_invalidated_s\":\(invalidatedAt > 0 ? String(format: "%.3f", now - invalidatedAt) : "null"),\"since_pause_s\":\(pausedAt > 0 ? String(format: "%.3f", now - pausedAt) : "null"),\"since_resign_s\":\(resignedAt > 0 ? String(format: "%.3f", now - resignedAt) : "null"),\"phase\":\"\(scenePhaseNow)\",\"app_active\":\(appActive),\"frames\":\(VXImmersiveRenderer.frameCount)")
         exitNow("crown_quit")
     }
     nonisolated(unsafe) static var scenePhaseNow: ScenePhase = .active
