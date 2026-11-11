@@ -14,6 +14,8 @@ This is a development checkpoint, not a working game release.
 
 The plans are the source of truth: [main plan](plans/2026-11-08-skyrim-vr-native-darwin-aot.md), [AOT feasibility](plans/2026-11-08-skyrim-vr-prepared-input-aot-feasibility.md), [xrizer/Klepton](plans/2026-11-08-xrizer-klepton-native-openxr.md).
 
+From a fresh clone to a build on your own headset: [docs/SETUP_SKYRIM.md](docs/SETUP_SKYRIM.md) (stages, settings, doctor).
+
 ## Source layout
 
 | Directory | Purpose |

@@ -56,7 +56,6 @@ XROS_SDK ?= xros
 # xros/app/Sources/main.m) is the guest, its modules the frameworks of $(XROS_DIR)/game_fw. Default 0: nothing changes.
 # Everything derived from the player's game lives under one private root (docs/SETUP_SKYRIM.md): git-ignored, never committed.
 VXRT_PRIVATE_ROOT ?= $(abspath ../build/private)
-export VXRT_PRIVATE_ROOT
 # XROS_GAME_FW: the pipeline's game_fw (tools/vxrt_build.py aot); embedded by the Skyrim app. Default: the aot stage's output.
 XROS_GAME_FW ?= $(wildcard $(VXRT_PRIVATE_ROOT)/game_fw-xros)
 XROS_XRIZER_GAME ?= 0
@@ -435,6 +434,12 @@ else
 endif
 	@ls -d $(XROS_DIR)/derived/Build/Products/Debug-$(XROS_SDK)/VXRuntimeHost.app
 .PHONY: xros-lib xros-aot-tests xros-app
+# Regression guards for the portable setup (docs/SETUP_SKYRIM.md): no personal identity in committed files; the default app links.
+portability-check:
+	../tests/portability_check.sh
+xros-default-app-check:
+	$(MAKE) xros-app XROS_CODE_SIGNING=NO XROS_XRIZER_GAME=0 XROS_XRIZER_FIXTURE=0 XROS_SDK=xros
+.PHONY: portability-check xros-default-app-check
 # Code that runs inside the vCPU guest (translator/guest.c): no calls, no globals, no stack protector.
 GUEST_CFLAGS = -arch arm64 -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-stack-check -mmacosx-version-min=14.0 -Itranslator
 build/guest.o: translator/guest.c translator/vcpu.h translator/xlat.h translator/xvheap.h

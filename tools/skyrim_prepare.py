@@ -96,7 +96,8 @@ def csproj(name, refs=(), extra=''):
     return ('<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n'
             '    <AssemblyName>%s</AssemblyName>\n    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>\n'
             '    <Nullable>disable</Nullable>\n    <ImplicitUsings>disable</ImplicitUsings>\n    <LangVersion>latest</LangVersion>\n'
-            '    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>\n    <NoWarn>SYSLIB0021;SYSLIB0022;CS8981</NoWarn>\n%s'
+            '    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>\n    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>\n'
+            '    <NoWarn>SYSLIB0021;SYSLIB0022;CS8981</NoWarn>\n%s'
             '  </PropertyGroup>\n  <ItemGroup>\n    <Compile Include="**/*.cs" Exclude="obj/**;bin/**;%s" />\n%s'
             '  </ItemGroup>\n</Project>\n') % (name, extra, ';'.join('**/' + n for n in sorted(UI_ONLY)), items)
 

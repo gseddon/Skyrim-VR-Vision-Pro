@@ -14,7 +14,7 @@ The answer, with evidence, and a plan for each wall.
   simulator). 120 of the ARM64 build's 128 sources compile for the device unchanged or with a guarded line or two;
   8 are left out and 3 added (below). Every source is compiled with `xros/vx_xros.h` included first and `xros/include` ahead of
   the SDK, so most macOS-only calls are answered there instead of in the sources.
-- **The app "VX Runtime"** (`xros/app`, bundle id `exampleprefix.VXRuntimeHost`, team EXAMPLETEAM, xcodegen;
+- **The app "VX Runtime"** (`xros/app`, bundle id `<XROS_BUNDLE_PREFIX>.VXRuntimeHost`, your own team in `XROS_TEAM_ID`, xcodegen;
   `make xros-app`). Separate from VX Proto and the streaming client
   (`exampleprefix.VisionSpatialTools`). One flat UIKit window; the Windows program named by `-test <name>` runs in it.
   Entitlements: `increased-memory-limit`, `extended-virtual-addressing` (both granted by the team's automatic
