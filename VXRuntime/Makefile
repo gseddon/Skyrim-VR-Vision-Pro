@@ -240,6 +240,7 @@ native-vr-unit-check: build/native_vr_test build/native_fpcr_test
 	XE_AFP=0 build/native_fpcr_test
 	python3 tests/aot_compare_test.py
 	python3 tests/test_xros_device_run.py
+	python3 -I tests/test_mods_pack.py
 	python3 -I tests/xrizer_overlay_slots_check.py
 	python3 tests/native_vr_run_test.py
 
@@ -249,6 +250,7 @@ build/native_vr_present_test: tests/native_vr_present.m src/native_vr_present.m 
 
 native-vr-gpu-check: build/native_vr_present_test build/dither_source_test
 	build/native_vr_present_test
+	VXRT_REPROJ_FILTER=bicubic build/native_vr_present_test
 	build/dither_source_test
 
 build/dither_source_test: tests/dither_source.m src/dither_source.m
@@ -261,8 +263,12 @@ xros-settings-check: tests/xros_settings_test.swift xros/app/Sources/VXSettings.
 	swiftc -parse-as-library -o build/xros_settings_test xros/app/Sources/VXSettings.swift tests/xros_settings_test.swift
 	build/xros_settings_test
 
-check: native-vr-unit-check xros-settings-check
-.PHONY: xros-settings-check
+check: native-vr-unit-check xros-settings-check xros-mods-check
+xros-mods-check: tests/xros_mods_test.swift xros/app/Sources/VXMods.swift
+	@mkdir -p build
+	swiftc -parse-as-library -o build/xros_mods_test xros/app/Sources/VXMods.swift tests/xros_mods_test.swift
+	build/xros_mods_test tests/fixtures/mods_pack_skyland.json
+.PHONY: xros-settings-check xros-mods-check
 
 native-vr-check: build/vxrt build/vxrt-arm64 build/vxrt-aot build/native_vr_d3d11.exe build/native_vr_test
 	build/native_vr_test
@@ -1809,7 +1815,7 @@ runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d1
 	$(VXRT) build/lowmem.exe
 	$(VXRT) build/files.exe
 	$(VXRT) build/ini.exe
-	rm -rf build/ovtree build/ovshadow && mkdir -p build/ovtree/save && echo old > build/ovtree/save/old.sav && echo orig > build/ovtree/save/same.hl1
+	rm -rf build/ovtree build/ovshadow && mkdir -p build/ovtree/save && echo old > build/ovtree/save/old.sav && echo orig > build/ovtree/save/same.hl1 && mkdir -p build/ovshadow/mod/Textures/Landscape && echo dds > build/ovshadow/mod/Textures/Landscape/Dirt01.dds
 	VXRT_OVERLAY=$(CURDIR)/build/ovtree:$(CURDIR)/build/ovshadow $(VXRT) build/files.exe overlay 'Z:$(subst /,\,$(CURDIR))\build\ovtree'
 	test "$$(cat build/ovtree/save/same.hl1)" = orig && test ! -e build/ovtree/save/a.hl1
 	$(VXRT) build/dbfiles.exe

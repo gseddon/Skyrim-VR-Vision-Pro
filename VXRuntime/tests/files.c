@@ -43,6 +43,16 @@ static int overlay_test(const char *tree) {
     CHECK(DeleteFileA(path));
     snprintf(pat, sizeof pat, "%s\\save\\*.hl?", tree);
     CHECK(names(pat, list, sizeof list) == 1 && strstr(list, "same.hl1"));
+    // A mod-like tree that exists only in the overlay (a loose mod copied in): found with other letter case than its names, as the
+    // game asks for "data\\TEXTURES\\landscape\\..." (on visionOS' case-sensitive file system this is the vx_ci_path-on-the-overlay
+    // path; on a Mac it holds anyway). The Makefile creates mod\Textures\Landscape\Dirt01.dds in the overlay only.
+    snprintf(path, sizeof path, "%s\\mod\\TEXTURES\\landscape\\DIRT01.DDS", tree);
+    f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    CHECK(f != INVALID_HANDLE_VALUE); if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
+    snprintf(pat, sizeof pat, "%s\\mod\\textures\\*", tree);
+    CHECK(names(pat, list, sizeof list) == 1 && strstr(list, "Landscape"));
+    snprintf(pat, sizeof pat, "%s\\MOD\\Textures\\LANDSCAPE\\*.dds", tree);
+    CHECK(names(pat, list, sizeof list) == 1 && strstr(list, "Dirt01.dds"));
     printf("files through an overlay: %d failed checks -> %s\n", failures, failures ? "FAILED" : "ok");
     return failures;
 }

@@ -126,6 +126,41 @@ struct VXStartView: View {
     }
 }
 
+// Read-only: the mods the Mac prepared (VXMods.swift, <root>/mods.json). Every toggle is disabled; nothing changes at run time.
+struct VXModsList: View {
+    // Read when the section appears (not once at view creation): the file may be copied while the window is open, and the root
+    // folder only exists once the runtime has made it.
+    @State private var file: VXModsFile?
+    @State private var loaded = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let file = file, !file.mods.isEmpty {
+                ForEach(file.mods) { m in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Toggle(isOn: .constant(m.enabled)) {
+                            HStack {
+                                Text(m.name)
+                                Spacer()
+                                Text(VXMods.sizeText(m.sizeBytes)).foregroundStyle(.secondary)
+                                Text(VXMods.status(m)).font(.callout).foregroundStyle(.secondary)
+                            }
+                        }
+                        .disabled(!VXMods.canToggle(m))
+                        if m.kind == "skse" {
+                            Text("SKSE: configure on the Mac").font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                Text("Profile \(file.profile). Mods are chosen on the Mac (tools/mods.py) and apply when the app starts; none can be switched here.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else {
+                Text(loaded ? "No mods installed. Mods are prepared on the Mac and copied to the headset." : "Reading the mods list…").font(.callout).foregroundStyle(.secondary)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear { file = VXMods.load(root: VXMods.defaultRoot()); loaded = true }
+    }
+}
+
 struct VXSettingsPage: View {
     let done: () -> Void
     @ObservedObject private var settings = VXSettings.shared
@@ -176,6 +211,9 @@ struct VXSettingsPage: View {
                             Toggle("Show my real hands over the game", isOn: $settings.showHands)
                             note("Off by default: the game draws its own controllers, and your real hands would be a second pair in the same place. Takes effect at once.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    GroupBox("Mods") {
+                        VXModsList()
                     }
                     GroupBox("Start") {
                         VStack(alignment: .leading, spacing: 10) {
