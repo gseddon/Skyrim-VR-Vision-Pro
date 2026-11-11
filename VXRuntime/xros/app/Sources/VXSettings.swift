@@ -140,6 +140,8 @@ final class VXSettings: ObservableObject {
     static let snapAngleKey = "vxrt.snapAngle"
     static let turnSpeedKey = "vxrt.turnSpeed"
     static let moveKey = "vxrt.move"
+    static let sharpenKey = "vxrt.sharpen"
+    static let renderQualityKey = "vxrt.renderQuality"
 
     static let renderScaleRange = 0.5...1.0
     static let renderScaleBuiltIn = 0.75
@@ -149,6 +151,7 @@ final class VXSettings: ObservableObject {
     static let snapAngleBuiltIn = 30.0
     static let turnSpeedRange = 0.1...10.0
     static let turnSpeedBuiltIn = 1.0
+    static let unitRange = 0.0...1.0   // sharpening strength, render quality
     static let predictRange = 0.0...140.0
     static let autoStartDelay = 5
 
@@ -160,6 +163,20 @@ final class VXSettings: ObservableObject {
     @Published var renderScale: Double { didSet { if !suppress { defaults.set(renderScale, forKey: Self.renderScaleKey) } } }
     // Upscaling of the game's eye to the display (next launch).
     @Published var upscale: VXUpscale { didSet { if !suppress { defaults.set(upscale.rawValue, forKey: Self.upscaleKey) } } }
+    // Sharpening of the final picture (VXRT_SHARPEN, 0...1); nil = off (next launch).
+    @Published var sharpen: Double? {
+        didSet {
+            guard !suppress else { return }
+            if let v = sharpen { defaults.set(v, forKey: Self.sharpenKey) } else { defaults.removeObject(forKey: Self.sharpenKey) }
+        }
+    }
+    // The compositor's render quality (VXRT_RENDER_QUALITY, 0...1: the size of the drawable); nil = the system's default (next launch).
+    @Published var renderQuality: Double? {
+        didSet {
+            guard !suppress else { return }
+            if let v = renderQuality { defaults.set(v, forKey: Self.renderQualityKey) } else { defaults.removeObject(forKey: Self.renderQualityKey) }
+        }
+    }
     // Latency: the pair gate, read per frame, so it applies at once.
     @Published var latency: VXLatency { didSet { if !suppress { defaults.set(latency.rawValue, forKey: Self.latencyKey); Self.latencyHook?(latency) } } }
     // Whether the wearer's real hands and arms show over the game. Live: the immersive scene observes it (VXApp.swift).
@@ -256,6 +273,8 @@ final class VXSettings: ObservableObject {
         startAutomatically = auto
 
         predictMs = environment["VXRT_PREDICT_MS"].flatMap(Double.init) ?? (defaults.object(forKey: Self.predictKey) as? Double)
+        sharpen = (environment["VXRT_SHARPEN"].flatMap(Double.init) ?? (defaults.object(forKey: Self.sharpenKey) as? Double)).map { min(max($0, 0), 1) }
+        renderQuality = (environment["VXRT_RENDER_QUALITY"].flatMap(Double.init) ?? (defaults.object(forKey: Self.renderQualityKey) as? Double)).map { min(max($0, 0), 1) }
         stageEyeHeight = environment["VXRT_STAGE_EYE_HEIGHT"].flatMap(Double.init) ?? (defaults.object(forKey: Self.eyeHeightKey) as? Double)
         // Gameplay: env VXRT_TURN / VXRT_SNAP_ANGLE / VXRT_TURN_SPEED / VXRT_MOVE, then the saved choice, then the Info.plist default
         // (VXTurnDefault, VXMoveDefault), then .game.
@@ -306,6 +325,8 @@ final class VXSettings: ObservableObject {
             ("VXRT_GATE", latency.gate),
         ]
         if let p = predictMs { out.append(("VXRT_PREDICT_MS", String(format: "%.0f", min(max(p, Self.predictRange.lowerBound), Self.predictRange.upperBound)))) }
+        if let v = sharpen, v > 0 { out.append(("VXRT_SHARPEN", String(format: "%.2f", min(max(v, 0), 1)))) }
+        if let v = renderQuality { out.append(("VXRT_RENDER_QUALITY", String(format: "%.2f", min(max(v, 0), 1)))) }
         if let h = stageEyeHeight { out.append(("VXRT_STAGE_EYE_HEIGHT", String(format: "%.2f", min(max(h, Self.eyeHeightRange.lowerBound), Self.eyeHeightRange.upperBound)))) }
         let ini = iniOverrides()
         if !ini.isEmpty { out.append(("VXRT_INI_SET", ini.joined(separator: ";"))) }
