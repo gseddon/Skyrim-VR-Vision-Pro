@@ -256,6 +256,16 @@ struct VXSettingsPage: View {
                             note("Applies the next time you start.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    ForEach(VXIniSetting.Group.allCases, id: \.self) { g in
+                        GroupBox(g.rawValue) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(VXIniSetting.all.filter { $0.group == g }) { item in iniRow(item) }
+                                note(g == .body || g == .teleport
+                                     ? "Game default writes nothing: the game keeps its own value. Number ranges are cautious bounds, not the game's. Applies the next time you start."
+                                     : "Game default writes nothing: the game keeps its own value. Applies the next time you start.")
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
                     GroupBox("Mods") {
                         VXModsList()
                     }
@@ -332,6 +342,32 @@ struct VXSettingsPage: View {
                     }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder private func iniRow(_ item: VXIniSetting) -> some View {
+        switch item.kind {
+        case .flag:
+            HStack {
+                Text(item.title)
+                Spacer()
+                Picker(item.title, selection: Binding(get: { settings.flag(item.id) }, set: { settings.setFlag(item.id, $0) })) {
+                    Text("Game default").tag(Bool?.none)
+                    Text("On").tag(Bool?.some(true))
+                    Text("Off").tag(Bool?.some(false))
+                }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 360)
+            }
+        case .number(let range, let step, let unit):
+            VStack(alignment: .leading) {
+                Toggle("\(item.title): game default", isOn: Binding(get: { settings.number(item.id) == nil },
+                                                                   set: { settings.setNumber(item.id, $0 ? nil : (range.lowerBound + range.upperBound) / 2) }))
+                if let v = settings.number(item.id) {
+                    HStack {
+                        Slider(value: Binding(get: { v }, set: { settings.setNumber(item.id, $0) }), in: range, step: step)
+                        Text(String(format: "%g%@", v, unit)).font(.system(.body, design: .monospaced)).frame(width: 70)
+                    }
+                }
+            }
         }
     }
 
