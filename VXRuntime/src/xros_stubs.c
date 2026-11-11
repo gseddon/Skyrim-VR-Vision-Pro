@@ -59,3 +59,14 @@ int vxu_encode(void *command_buffer, int mode, const vxu_frame *f, char *why, si
     return 0;
 }
 #endif
+
+// The app's Swift (VXKeyboard.swift, VXApp.swift, VXImmersive.swift) calls these in every build, but their real
+// definitions (xrizer_guest_bridge.c, xrizer_xros_fixture.m, native_vr_present.m) are linked only with
+// XROS_XRIZER_FIXTURE=1 (XROS_XRIZER_GAME=1 implies it). Weak, so the plain app links (immersive off, no keyboard
+// hook) and the fixture/game build's strong definitions replace them unchanged.
+#define VX_WEAK __attribute__((weak))
+VX_WEAK int vx_xros_immersive_enabled(void) { return 0; }
+VX_WEAK double vx_xros_immersive_age_ema(void) { return 0; }
+VX_WEAK void vx_xrizer_guest_set_keyboard_hook(void (*show)(const char *, const char *, unsigned, int, void *),
+                                               void (*hide)(void *), void *context) { (void)show; (void)hide; (void)context; }
+VX_WEAK void vx_xrizer_guest_keyboard_complete(const char *text, int accepted) { (void)text; (void)accepted; }
