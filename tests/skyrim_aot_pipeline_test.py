@@ -312,5 +312,18 @@ class RuntimePin(unittest.TestCase):
             self.assertTrue(p.pin_runtime(item, strict=False)['pin_matches'])
             self.assertEqual(p.pin_runtime(item, strict=True)['sha256'], item['sha256'])
 
+    def test_framework_ids_follow_the_bundle_prefix_and_the_cache_key(self):
+        with patch.dict(p.os.environ, {'XROS_BUNDLE_PREFIX': 'org.example.one'}):
+            a = p.xros_settings('xros', '0x7000000000', 1024)
+        with patch.dict(p.os.environ, {'XROS_BUNDLE_PREFIX': ''}):
+            b = p.xros_settings('xros', '0x7000000000', 1024)
+        self.assertEqual((a['bundle_prefix'], b['bundle_prefix']), ('org.example.one', 'dev.example.vxrt'))
+        module = {'sha256': '0' * 64, 'path': 'x/S.exe', 'base': 1, 'splits': None, 'roots': None}
+        ctx = {'source': 's', 'compiler': {'sha256': 'c', 'source_commit': 'c'}, 'toolchain': 't', 'jobs': 1}
+        self.assertNotEqual(p.key_for(module, dict(ctx, xros=a))[0], p.key_for(module, dict(ctx, xros=b))[0])
+        with patch.dict(p.os.environ, {'XROS_BUNDLE_PREFIX': 'bad prefix'}):
+            with self.assertRaises(ValueError):
+                p.xros_settings('xros', '0x7000000000', 1024)
+
 
 if __name__ == '__main__': unittest.main()
