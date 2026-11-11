@@ -3,7 +3,7 @@
 
     list [--json]     the stages with their inputs, outputs and current state (tools/vxrt_stages.json is the contract)
     doctor            check the prerequisites (tools/vxrt_doctor_skyrim.py)
-    toolchain         Rust + Apple targets + locked crates (--with-steamless: also Steamless and a private .NET 8 SDK; --yes)
+    toolchain         Rust + Apple targets + locked crates (--with-steamless: also Steamless and a private .NET 8 SDK, without asking; --confirm asks)
     prepare           unpack the player's SkyrimVR.exe with Steamless, collect the pipeline's input DLLs
     aot               compile the prepared exe and DLLs for the headset  -> $VXRT_PRIVATE_ROOT/game_fw-xros
     shaders           Metal shader set from the committed manifest        -> $VXRT_PRIVATE_ROOT/shadercache-xros-manifest
@@ -88,7 +88,7 @@ def stage_toolchain(a):
     else:
         say('toolchain: Rust already installed (setup_rust.sh --check)')
     if rc == OK and a.with_steamless and (a.force or not steam.is_file()):
-        rc = run([sys.executable, REPO / 'tools' / 'skyrim_prepare.py', 'fetch-tools'] + (['--yes'] if a.yes else []),
+        rc = run([sys.executable, REPO / 'tools' / 'skyrim_prepare.py', 'fetch-tools'] + (['--confirm'] if a.confirm and not a.yes else []),
                  stdin=None)
     return rc, [str(REPO / 'build/toolchains/xrizer-rust'), str(steam)]
 
@@ -218,7 +218,8 @@ def main():
     ap.add_argument('--force', action='store_true', help='redo the stage even if its outputs exist')
     ap.add_argument('--json', action='store_true', help='print one result object on stdout')
     ap.add_argument('--with-steamless', action='store_true', help='toolchain: also fetch and build Steamless and a .NET 8 SDK')
-    ap.add_argument('--yes', action='store_true', help='toolchain: do not ask before downloading Steamless')
+    ap.add_argument('--confirm', action='store_true', help='toolchain: ask before downloading Steamless (default: list it and go ahead)')
+    ap.add_argument('--yes', action='store_true', help=argparse.SUPPRESS)    # accepted for old callers; now the default
     ap.add_argument('--unsigned', action='store_true', help='app: XROS_CODE_SIGNING=NO')
     ap.add_argument('--install', action='store_true', help='app: install on the headset after the build')
     ap.add_argument('--run', action='store_true', help='stage-to-device: really copy (default: dry run)')
