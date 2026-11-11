@@ -689,6 +689,18 @@ static void roots(const char *addresses) {
         if (f) fclose(f);
         fprintf(stderr, "vxrt-aot: %llu roots from %s\n", (unsigned long long)n, getenv("VXRT_AOT_ROOTS"));
     }
+    if (getenv("VXRT_AOT_SWEEP")) {                                         // VXRT_AOT_SWEEP=<lo>-<hi> (hex RVAs, may repeat with ';'): every instruction start found
+        char spec[256]; snprintf(spec, sizeof spec, "%s", getenv("VXRT_AOT_SWEEP"));   // by a linear decode of that range is a root. For an interpreter loop whose
+        uint64_t n = 0;                                                     // jump table is filled at run time (SkyUI-VR's Lua: labels in the middle of handlers).
+        for (char *rng = strtok(spec, ";"); rng; rng = strtok(NULL, ";")) {
+            uint64_t lo = strtoull(rng, NULL, 16), hi = strchr(rng, '-') ? strtoull(strchr(rng, '-') + 1, NULL, 16) : lo;
+            for (uint64_t r = lo; r < hi && r < G->size;) {
+                x86_insn d; uint64_t va = G->base + r;
+                if (exec_va(G, va) && decode_at(va, &d) && d.len > 0) { push(va, R_LIST); n++; r += d.len; } else r++;
+            }
+        }
+        fprintf(stderr, "vxrt-aot: %llu roots from the sweep %s\n", (unsigned long long)n, getenv("VXRT_AOT_SWEEP"));
+    }
     if (addresses) {                                                        // a list of addresses: "0001:<offset>" or hex RVAs
         FILE *f = fopen(addresses, "r");
         if (!f) die("cannot open %s", addresses);

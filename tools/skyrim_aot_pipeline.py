@@ -297,7 +297,8 @@ def prepare(config, xros=None, strict_runtime=True):
     #  VXRuntime/src/codehooks.c; the synthetic hooks module is a DLL with roots)
     modules += [dict(pin(item, True), base=base(item['base']), part_mb=None, splits=None,
                      roots=pin(item['roots'], True) if item.get('roots') else None,
-                     patches=pin(item['patches'], True) if item.get('patches') else None)
+                     patches=pin(item['patches'], True) if item.get('patches') else None,
+                     sweep=item.get('sweep'))
                 for item in config['dlls']]
     if len({Path(m['path']).name.lower() for m in modules}) != len(modules):
         raise ValueError('module basenames must be unique')
@@ -340,6 +341,8 @@ def key_for(module, ctx):
             'builder': BUILDER, 'jobs': ctx['jobs'], 'target': 'macos-arm64'}
     if module.get('patches'):
         data['patches'] = module['patches']['sha256']
+    if module.get('sweep'):
+        data['sweep'] = module['sweep']
     if ctx.get('xros'):    # (keys of the Mac set are unchanged: these entries exist only for the visionOS targets)
         x = ctx['xros']
         data.update(builder=XROS_BUILDER, target=x['sdk'], triple=x['triple'], arena=x['arena'], arena_mb=x['arena_mb'])
@@ -377,6 +380,8 @@ def module_env(module, work):
             env[var] = str(work/(kind + '.txt'))
     if module.get('patches'):
         env['VXRT_AOT_PATCHES'] = module['patches']['path']
+    if module.get('sweep'):      # (RVA ranges whose every decodable instruction start is a root: an interpreter loop with a run-time jump table)
+        env['VXRT_AOT_SWEEP'] = module['sweep']
     return env
 
 
