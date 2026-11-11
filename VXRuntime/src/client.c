@@ -193,6 +193,11 @@ static const ini_set preset_p2[] = {
 // Reported once per launch (always, not only with VXRT_TRACE_INI): the effective value and where it came from, for the preset's keys and these.
 static const ini_set ini_watch[] = {
     { "Display", "iShadowMapResolution", "" }, { "Display", "fShadowDistance", "" }, { "Display", "bUseTAA", "" }, { "VRPerformance", "iQualityPreset", "" },
+    // the gameplay settings the launcher can set (VXSettings.swift): turning and movement
+    { "VRInput", "bGamepadLookAngleSnapping", "" }, { "VRInput", "bGamepadLookAngleSnapSmoothing", "" }, { "VRInput", "fGamepadLookAngleSnapAmount", "" },
+    { "VRInput", "fGamepadLookAngleSnapSmoothingSpeed", "" }, { "VRInput", "bDirectMovementWithWands", "" }, { "VRInput", "bUseWandDirectionalMovement", "" },
+    { "VR", "fGamepadLookAngleSnapAmountMin", "" }, { "VR", "fGamepadLookAngleSnapAmountMax", "" },
+    { "VR", "fGamepadLookAngleSnapSmoothingSpeedMin", "" }, { "VR", "fGamepadLookAngleSnapSmoothingSpeedMax", "" },
 };
 static const char *ini_preset_name(void) {
     static const char *name = (const char *)-1;

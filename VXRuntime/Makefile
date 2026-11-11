@@ -1884,6 +1884,7 @@ runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d1
 	VXRT_SKYRIM_PRESET=p2 $(VXRT) build/skyrim_preset.exe p2
 	VXRT_SKYRIM_PRESET=p2 VXRT_INI_SET='Display.iShadowMapResolution=1024;Display.bUseTAA=0' $(VXRT) build/skyrim_preset.exe p2 set
 	VXRT_SKYRIM_PRESET=off $(VXRT) build/skyrim_preset.exe off
+	VXRT_INI_SET='VRInput.bGamepadLookAngleSnapping=0;VRInput.bDirectMovementWithWands=1;VRInput.fGamepadLookAngleSnapAmount=45' $(VXRT) build/skyrim_preset.exe gameplay
 	$(VXRT) build/handle_xfer.exe
 	$(VXRT) build/open_thread.exe
 	$(VXRT) build/version_info.exe build/hello_crt.exe
