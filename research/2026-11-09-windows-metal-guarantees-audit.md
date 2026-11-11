@@ -69,6 +69,7 @@ Coordinator data point: a flat grey patch over the cart in eye 0 is already pres
 - **Reproducer** (`tests/draw.c`): a PS returning `cb2[0] + cb2[300]` with cb2 unbound, then bound with 16 bytes. Expect 0 for the unbound reads.
 
 ### 6. Constant depth bias divided by 2^24
+- **Status (2026-11-11): WON'T FIX** (GPU +2.0% in replay, inside about 4% noise, so not shown negligible; p1300 eyes byte-identical). The discarded fix (was `33aa27e`, ledger row 6) used `(float)DepthBias`, times 256 for D16; no scale for D24 because D32F's step is 2^-24 for z in [0.5, 1). Replay of `p1300.cap`: no pixel changed.
 - **Where:** `d3d11_draw.m:2010`: `setDepthBias:(int32_t)DepthBias / 16777216.0f`. The other paths pass the integer straight through: `d3d12.m:6577` (`p->bias = (float)desc->raster.depth_bias`) and `vk_command.m:1071`.
 - **Windows:** for UNORM24 depth, bias = `DepthBias * 2^-24`. For float depth, `DepthBias * 2^(e-23)`.
 - **Metal:** like Vulkan (MoltenVK passes `depthBiasConstantFactor` straight through), Metal applies the constant in units of the format's minimum resolvable difference. The division leaves an effective bias of about `DepthBias * 2^-47`, which is zero.
@@ -126,6 +127,7 @@ Coordinator data point: a flat grey patch over the cart in eye 0 is already pres
 - **Windows:** for UNORM depth formats the reference is clamped to [0,1] before comparing.
 - **Failure:** a reference of 1.0001 against a cleared 1.0 with `LESS_EQUAL` comes out shadowed. Dark rims or bands appear at cascade or far edges.
 - **Fix:** emit `saturate(ref)` when the bound SRV's D3D format is UNORM depth: a bound-format flag per slot.
+- **Status (2026-11-11): WON'T FIX** (GPU +2.0% in replay, inside about 4% noise, so not shown negligible; p1300 eyes byte-identical). The discarded fix (was `33aa27e`, ledger row 13) used `saturate` for every compare, not by bound format (the translator has no per-slot format input). Replay of `p1300.cap`: no pixel changed.
 - **Reproducer:** shadow-compare fixture with ref = 1.01, stored 1.0, `LESS_EQUAL`. Expect 1 (lit).
 
 ### 14. Partial `UpdateSubresource` on a buffer with pending GPU writes copies stale CPU contents
