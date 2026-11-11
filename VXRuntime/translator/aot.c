@@ -485,6 +485,13 @@ int xa_run(xe *e, x86_ctx *c, uint64_t stop, void (*(*native)(uint64_t))(x86_ctx
         note_fallback(rip);
         if (g_strict) {
             vx_log("aot: VXRT_AOT_STRICT: %#llx has no recompiled code; stopping", (unsigned long long)rip);
+            {   // (the guest's stack words that point into an image: who was running; a jump through a bad pointer shows its caller)
+                const uint64_t *sp = (const uint64_t *)(uintptr_t)c->gpr[4]; int shown = 0;
+                for (int i = 0; i < 48 && shown < 8; i++) {
+                    const char *im = vx_image_name_at(sp[i]);
+                    if (im) { vx_log("aot:   stack[%d] = %#llx (%s)", i, (unsigned long long)sp[i], im); shown++; }
+                }
+            }
             xa_report();
             _exit(3);
         }

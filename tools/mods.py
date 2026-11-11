@@ -22,7 +22,7 @@ PACK/ gets
                     The runtime keeps its one overlay layer (files.c); priority is resolved here, on the Mac, by this flatten.
 No toggling at run time: to change the set, edit the list and build again. Sources are only read; nothing from a download is executed.
 """
-import argparse, json, os, re, shlex, struct, subprocess, sys
+import argparse, hashlib, json, os, re, shlex, struct, subprocess, sys
 from pathlib import Path
 
 OFFICIAL = {'skyrim.esm', 'update.esm', 'dawnguard.esm', 'hearthfires.esm', 'dragonborn.esm', 'skyrimvr.esm'}
@@ -42,15 +42,39 @@ def masters(path):
     return out
 
 
-def tree_stats(root):
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for b in iter(lambda: f.read(1 << 20), b''): h.update(b)
+    return h.hexdigest()
+
+
+def tree_stats(root, skse=False):
+    """(files, bytes). kind skse may carry .dll files, only under SKSE/Plugins/ of Data (the user's own plugin downloads, kept private;
+    they are never run by this tool); every other refused type, and any .dll elsewhere, is still an error."""
     n = size = 0
     for dp, dn, fn in os.walk(root):
         for x in dn + fn:
             if (Path(dp) / x).is_symlink(): raise ValueError(f'symlink in a mod source: {Path(dp) / x}')
+        rel = Path(dp).relative_to(root).parts
+        in_plugins = skse and len(rel) >= 2 and rel[0].lower() == 'skse' and rel[1].lower() == 'plugins'
         for f in fn:
-            if f.lower().endswith(REFUSE): raise ValueError(f'refused file type in a mod source: {Path(dp) / f}')
+            if f.lower().endswith(REFUSE) and not (in_plugins and f.lower().endswith('.dll')):
+                raise ValueError(f'refused file type in a mod source: {Path(dp) / f}')
             n += 1; size += (Path(dp) / f).stat().st_size
     return n, size
+
+
+def skse_plugin_files(data):
+    """Every file under Data/SKSE/Plugins: path relative to Data, sha256, size, and for a DLL its place in the pipeline."""
+    out = []
+    for dp, dn, fn in os.walk(data):
+        rel = Path(dp).relative_to(data).parts
+        if len(rel) >= 2 and rel[0].lower() == 'skse' and rel[1].lower() == 'plugins':
+            for f in sorted(fn):
+                p = Path(dp) / f
+                out.append(dict(path='/'.join((*rel, f)), sha256=sha256(p), size=p.stat().st_size, dll=f.lower().endswith('.dll')))
+    return sorted(out, key=lambda e: e['path'].lower())
 
 
 def clone(src, dst):
@@ -72,21 +96,30 @@ def build(a):
         if m.get('kind') not in KINDS: sys.exit(f"{m['id']}: kind must be one of {KINDS}")
         if not isinstance(m.get('priority'), int): sys.exit(f"{m['id']}: priority must be an integer")
     (out / 'merged' / 'Data').mkdir(parents=True)
-    res = []; plugins = []
+    res = []; plugins = []; skse_plugins = []; shadow = []
     for m in sorted(mods, key=lambda m: (m['priority'], m['id'])):
         r = dict(id=m['id'], name=m.get('name', m['id']), kind=m['kind'], enabled=bool(m.get('enabled', True)), priority=m['priority'],
                  plugins=list(m.get('plugins', [])), memory_hint_mb=m.get('memory_hint_mb'), size_bytes=m.get('size_bytes'), files=None,
                  active=False, path=None, note=m.get('note', ''))
-        if m['kind'] == 'skse':
-            r['note'] = r['note'] or SKSE_NOTE
+        if m['kind'] == 'skse' and not m.get('source'):
+            r['note'] = r['note'] or SKSE_NOTE          # (listed only: no prepared source tree)
         elif r['enabled']:
             if not m.get('source'): sys.exit(f"{m['id']}: kind {m['kind']} needs a source")
             src = (lst.parent / m['source']).resolve(strict=True)
             if not (src / 'Data').is_dir(): sys.exit(f"{m['id']}: {src} has no Data/")
-            n, size = tree_stats(src / 'Data')
+            n, size = tree_stats(src / 'Data', skse=m['kind'] == 'skse')
             clone(src / 'Data', out / 'mods' / m['id'] / 'Data')
             clone(src / 'Data', out / 'merged' / 'Data')          # in priority order, so a higher priority overwrites
             r.update(active=True, path=f"mods/{m['id']}", files=n, size_bytes=size)
+            if m.get('shadow_install'):                      # (this mod's files may replace loose files of the install: SKSE's own .pex scripts)
+                r['shadow_install'] = True
+                shadow.extend(str(q.relative_to(src / 'Data')).replace(os.sep, '/') for q in sorted((src / 'Data').rglob('*')) if q.is_file())
+            if m['kind'] == 'skse':
+                for e in skse_plugin_files(src / 'Data'):
+                    e['mod'] = m['id']
+                    if e['dll']:
+                        e['module_base'] = '0x%x' % (int(a.plugin_base, 16) + 0x1000000 * sum(1 for x in skse_plugins if x['dll']))
+                    skse_plugins.append(e)
             for p in r['plugins']:
                 f = out / 'merged' / 'Data' / p
                 if not f.is_file(): sys.exit(f"{m['id']}: plugin {p} is not at the top of its Data/")
@@ -100,6 +133,7 @@ def build(a):
     (out / 'Plugins.txt').write_text(ptxt, newline=''); (out / 'merged' / 'Plugins.txt').write_text(ptxt, newline='')
     act = [r for r in res if r['active']]
     doc = dict(version=1, profile=cfg.get('profile', 'default'), merged='merged', plugins_txt='Plugins.txt', plugins=plugins, mods=res,
+               skse_plugins=skse_plugins, shadow_install=shadow,
                totals=dict(active_mods=len(act), active_files=sum(r['files'] for r in act), active_size_bytes=sum(r['size_bytes'] for r in act),
                            active_memory_hint_mb=sum(r['memory_hint_mb'] or 0 for r in act)))
     (out / 'mods.json').write_text(json.dumps(doc, indent=1))
@@ -112,7 +146,24 @@ def show(pack):
     for m in d['mods']:
         sz = f"{m['size_bytes'] / 1e6:.0f} MB" if m['size_bytes'] else '-'
         print(f"  {m['priority']:>4}  {m['id']:<14} {m['kind']:<7} enabled={str(m['enabled']):<5} active={str(m['active']):<5} {sz:>8}  {m['name']}" + (f"  [{m['note']}]" if m['note'] else ''))
+    for e in d.get('skse_plugins', []):
+        print(f"  skse  {e['path']:<48} {e['sha256'][:12]}  {e['size']:>9}" + (f"  module {e['module_base']}" if e.get('module_base') else ''))
     print('  plugins:', ', '.join(d['plugins']) or '(none)'); print('  totals:', d['totals'])
+
+
+def pipeline(a):
+    """Append the pack's SKSE plugin DLLs to a tools/skyrim_aot_pipeline.py config (dlls: path, sha256, base), so one pack feeds the
+    overlay (mods.json, merged/Data) and the AOT module set. Idempotent: earlier entries from this pack are replaced."""
+    pack = Path(a.pack).resolve(strict=True); d = json.loads((pack / 'mods.json').read_text())
+    cfg = json.loads(Path(a.config).read_text())
+    mine = {str((pack / 'merged' / 'Data' / e['path'])) for e in d.get('skse_plugins', []) if e['dll']}
+    cfg['dlls'] = [x for x in cfg['dlls'] if x['path'] not in mine]
+    for e in d.get('skse_plugins', []):
+        if e['dll']:
+            p = pack / 'merged' / 'Data' / e['path']
+            if sha256(p) != e['sha256']: sys.exit(f'{p} changed since the pack was built')
+            cfg['dlls'].append(dict(path=str(p), sha256=e['sha256'], base=e['module_base']))
+    Path(a.out).write_text(json.dumps(cfg, indent=1)); print(f"{a.out}: {sum(1 for e in d.get('skse_plugins', []) if e['dll'])} plugin DLLs added")
 
 
 def deploy(a):
@@ -134,8 +185,9 @@ def deploy(a):
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(); sub = ap.add_subparsers(dest='cmd', required=True)
-    b = sub.add_parser('build'); b.add_argument('--list', required=True); b.add_argument('--out', required=True); b.add_argument('--force', action='store_true')
+    b = sub.add_parser('build'); b.add_argument('--plugin-base', default='0x30c000000', help='arena base of the first SKSE plugin DLL module; 16 MB apart'); b.add_argument('--list', required=True); b.add_argument('--out', required=True); b.add_argument('--force', action='store_true')
     s = sub.add_parser('show'); s.add_argument('pack')
+    q = sub.add_parser('pipeline'); q.add_argument('pack'); q.add_argument('--config', required=True); q.add_argument('--out', required=True)
     p = sub.add_parser('deploy'); p.add_argument('pack'); p.add_argument('--bundle', required=True); p.add_argument('--device'); p.add_argument('--yes', action='store_true')
     a = ap.parse_args()
-    {'build': build, 'show': lambda a: show(a.pack), 'deploy': deploy}[a.cmd](a)
+    {'build': build, 'show': lambda a: show(a.pack), 'pipeline': pipeline, 'deploy': deploy}[a.cmd](a)
