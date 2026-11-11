@@ -4,6 +4,8 @@
   NEXUS_API_KEY=... python3 -I tools/nexus.py validate
   python3 -I tools/nexus.py files    <game> <mod_id>
   python3 -I tools/nexus.py download <game> <mod_id> <file_id> [--nxm nxm://...] [--md5 HEX]
+  python3 -I tools/nexus.py receive  nxm://...      (what the nxm handler app calls: queues the link; no key needed)
+  python3 -I tools/nexus.py install-handler [--dry-run] | uninstall-handler | handler-status
   python3 -I tools/nexus.py nxm      nxm://<game>/mods/<mod_id>/files/<file_id>?key=..&expires=..      (the same, as an nxm handler would call it)
 
 Which API: the v1 REST API (https://api.nexusmods.com/v1, `apikey` header).  The newer v3 API (documented in
@@ -21,12 +23,19 @@ Downloads go to <VXRT_PRIVATE_ROOT>/downloads/nexus/ (default build/private/down
 size (and md5 when the API gives one) of the file's record, and against --md5 when you pin one.  A file that is already there and
 checks out is not fetched again.  Your use of the downloads is under Nexus's terms: personal use, do not redistribute mods.
 
+Without Premium a download waits (--wait SECONDS, default 600 when run in a terminal, else 0) for the file's nxm link: from the
+queue directory <downloads>/nexus/queue/ (filled by the nxm handler app, see install-handler) or pasted on stdin; Ctrl-C skips the file.
+
 Exit status: 0 done, 1 failed, 2 a missing input (the key, or an nxm link for a non-premium account) with the message saying how to get it.
 Tests point NEXUS_API_BASE at a local fake server; real use never sets it.
 """
 import argparse
 import datetime
 import hashlib
+import select
+import shlex
+import shutil
+import subprocess
 import json
 import os
 import re
@@ -44,11 +53,22 @@ MAX_RETRIES = 3
 MAX_WAIT = 900            # seconds a 429 may make us wait before we give up and say when to retry
 REPO = Path(__file__).resolve().parent.parent
 
-_sleep = time.sleep       # tests replace this
+_sleep = time.sleep       # tests replace this (429 waits)
+_poll_sleep = time.sleep  # tests replace this (queue polling)
+POLL = 0.5
+DEFAULT_WAIT = 600
 
 
 class NeedInput(Exception):
     """A missing input (exit 2)."""
+
+
+class NotPremium(NeedInput):
+    """403 on the download link: this account needs an nxm link for the file."""
+
+
+class Skipped(NeedInput):
+    """The user skipped the file (Ctrl-C) or the wait ran out."""
 
 
 class NexusError(Exception):
@@ -236,7 +256,7 @@ def download_links(game, mod_id, file_id, key, nxm=None):
             links = json.loads(r.read().decode('utf-8'))
     except HttpFail as e:
         if e.code == 403:
-            raise NeedInput('Nexus refuses a direct download link (403): this account is not Premium and no valid nxm link was given.\n' + NXM_HELP)
+            raise NotPremium('Nexus refuses a direct download link (403): this account is not Premium and no valid nxm link was given.\n' + NXM_HELP)
         if e.code == 400:
             raise NeedInput('Nexus says the nxm key is invalid (400); get a fresh link.\n' + NXM_HELP)
         if e.code == 410:
@@ -280,7 +300,7 @@ def check_file(path, size=None, md5=None):
     return None
 
 
-def download(game, mod_id, file_id, nxm=None, md5=None):
+def download(game, mod_id, file_id, nxm=None, md5=None, wait=0, progress=None):
     """Fetch one file; returns dict(path, md5, size, verified_by). Skips the transfer when the file is already there and verifies."""
     key = api_key()
     if nxm:
@@ -302,7 +322,14 @@ def download(game, mod_id, file_id, nxm=None, md5=None):
             print('nexus: %s is already here (checked: %s)' % (dest.name, how), file=sys.stderr)
             return dict(path=str(dest), md5=md5_file(dest), size=dest.stat().st_size, verified_by=how)
         print('nexus: %s is there but %s; fetching again' % (dest.name, why), file=sys.stderr)
-    link = download_links(game, mod_id, file_id, key, nxm)[0]['URI']
+    try:
+        links = download_links(game, mod_id, file_id, key, nxm)
+    except NotPremium:
+        if not wait or nxm:
+            raise
+        nxm = await_nxm(game, mod_id, file_id, info, key, wait, progress)
+        links = download_links(game, mod_id, file_id, key, nxm)
+    link = links[0]['URI']
     sp = urllib.parse.urlsplit(link)
     if sp.scheme != 'https' and not (os.environ.get('NEXUS_API_BASE') and sp.scheme == 'http'):
         raise NexusError('Nexus gave a download link that is not https; refusing it')
@@ -333,6 +360,267 @@ def download(game, mod_id, file_id, nxm=None, md5=None):
     return dict(path=str(dest), md5=digest, size=got, verified_by=how)
 
 
+# --- nxm hand-off: the queue, the handler app, the prompt ------------------------------------------------------------------
+
+def queue_dir():
+    return downloads_dir() / 'queue'
+
+
+def receive(url):
+    """Queue an nxm link (called by the handler app). Validates its form; prints no part of the link."""
+    n = parse_nxm(url)
+    if not (n['key'] and n['expires']):
+        raise NexusError('that nxm link has no key and expires')
+    q = queue_dir(); q.mkdir(parents=True, exist_ok=True)
+    os.chmod(q, 0o700)
+    name = '%d-%s-%s-%s.nxm' % (time.time() * 1000, n['game'], n['mod_id'], n['file_id'])
+    tmp = q / (name + '.tmp')
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w') as f:
+        f.write(url.strip() + '\n')
+    os.replace(tmp, q / name)
+    return q / name
+
+
+def _queued():
+    q = queue_dir()
+    return sorted(q.glob('*.nxm')) if q.is_dir() else []
+
+
+def _stdin_line():
+    """A line the user pasted, or None when none is waiting (only when stdin is a terminal)."""
+    if sys.stdin is None or not sys.stdin.isatty():
+        return None
+    if select.select([sys.stdin], [], [], 0)[0]:
+        return sys.stdin.readline().strip()
+    return None
+
+
+def _mod_name(game, mod_id, key):
+    try:
+        return get_json('games/%s/mods/%s.json' % (_ident(game, 'game'), _ident(mod_id, 'mod id', r'\d+')), key).get('name') or None
+    except (NexusError, NeedInput):
+        return None
+
+
+def handler_bundle_id():
+    return 'local.vxrt.NexusHandler'
+
+
+def handler_installed():
+    try:
+        return get_default_handler() == handler_bundle_id()
+    except Exception:
+        return False
+
+
+def _link_matches(n, game, mod_id, file_id):
+    return (n['game'].lower(), n['mod_id'], n['file_id']) == (str(game).lower(), str(mod_id), str(file_id))
+
+
+def await_nxm(game, mod_id, file_id, info, key, wait, progress=None):
+    """Tell the user how to get this file's nxm link, then wait for it in the queue or on stdin. Returns the parsed link.
+    Raises Skipped on Ctrl-C or timeout. Wrong-file links are refused politely and the wait goes on."""
+    modname = _mod_name(game, mod_id, key) or 'mod %s' % mod_id
+    fname = info.get('name') or info.get('file_name') or 'file %s' % file_id
+    url = 'https://www.nexusmods.com/%s/mods/%s?tab=files&file_id=%s' % (game, mod_id, file_id)
+    auto = handler_installed()
+    tty = sys.stdin is not None and sys.stdin.isatty()
+    e = lambda m='': print(m, file=sys.stderr, flush=True)
+    e()
+    if progress:
+        e('[%s]' % progress)
+    e('This account is not Premium, so Nexus needs you to start the download in your browser:')
+    e('  Mod:   %s' % modname)
+    e('  File:  %s' % fname)
+    e('  1. Open this page (logged in to Nexus):  %s' % url)
+    e('  2. Click "Mod Manager Download" on the file "%s".' % fname)
+    if auto:
+        e("  3. That's all: the nxm handler is installed, so I'll pick the link up automatically.")
+    else:
+        e('  3. The nxm handler is not installed, so copy the nxm:// link' + (' and paste it here, then press Return.' if tty else ' and run: python3 -I tools/nexus.py receive \'nxm://...\''))
+        e('     (python3 -I tools/nexus.py install-handler sets up the handler once.)')
+    e('Waiting up to %d s. Press Ctrl-C to skip this file.' % wait)
+    if tty:
+        try:
+            if input('Open the page now with `open`? [y/N] ').strip().lower() in ('y', 'yes'):
+                subprocess.run(['open', url])
+        except EOFError:
+            pass
+        except KeyboardInterrupt:
+            raise Skipped('skipped %s by request' % fname)
+    seen = set(); deadline = time.time() + wait
+    try:
+        while True:
+            cands = [(p, None) for p in _queued()]
+            line = _stdin_line()
+            if line:
+                cands.append((None, line))
+            for p, text in cands:
+                try:
+                    text = text or p.read_text().strip()
+                    n = parse_nxm(text)
+                except (NexusError, OSError):
+                    if text is not None and p is None:
+                        e('That is not an nxm:// link; copy the whole link from "Mod Manager Download".')
+                    continue
+                if not _link_matches(n, game, mod_id, file_id):
+                    tag = p.name if p else 'stdin'
+                    if tag not in seen:
+                        seen.add(tag)
+                        e('That link is for a different file (%s mod %s file %s), not %s. Keeping waiting; click "Mod Manager Download" on the right file.'
+                          % (n['game'], n['mod_id'], n['file_id'], file_id))
+                    continue
+                if not (n['key'] and n['expires']) or int(n['expires'] or 0) < time.time():
+                    if (p.name if p else 'stdin') not in seen:
+                        seen.add(p.name if p else 'stdin'); e('That link has expired or is incomplete; click "Mod Manager Download" again.')
+                    continue
+                if p:
+                    p.unlink(missing_ok=True)
+                e('Got the link for %s.' % fname)
+                return n
+            if time.time() >= deadline:
+                raise Skipped('timed out after %d s waiting for the nxm link of %s' % (wait, fname))
+            _poll_sleep(POLL)
+    except KeyboardInterrupt:
+        e('Skipped %s.' % fname)
+        raise Skipped('skipped %s by request' % fname)
+
+
+# --- the handler app -------------------------------------------------------------------------------------------------------
+
+def tools_dir():
+    return private_root() / 'tools'
+
+
+def app_path():
+    return tools_dir() / 'NexusHandler.app'
+
+
+def _applescript_str(s):
+    if any(c in s for c in '"\\\n'):
+        raise NexusError('a path contains a quote, backslash or newline; cannot build the handler: %s' % s)
+    return '"%s"' % s
+
+
+def build_app():
+    """Compile the AppleScript applet (osacompile) with the nxm URL scheme, into <private>/tools/NexusHandler.app. Not committed."""
+    app = app_path(); app.parent.mkdir(parents=True, exist_ok=True)
+    script = ('on open location theURL\n'
+              '  do shell script "VXRT_PRIVATE_ROOT=" & quoted form of %s & " " & quoted form of %s & " -I " & quoted form of %s & " receive " & quoted form of theURL\n'
+              'end open location\n') % (_applescript_str(str(private_root())), _applescript_str(sys.executable), _applescript_str(str(Path(__file__).resolve())))
+    src = app.parent / 'NexusHandler.applescript'
+    src.write_text(script)
+    if app.exists():
+        shutil.rmtree(app)
+    r = subprocess.run(['osacompile', '-o', str(app), str(src)], capture_output=True, text=True)
+    if r.returncode:
+        raise NexusError('osacompile failed: %s' % r.stderr.strip()[:200])
+    plist = str(app / 'Contents' / 'Info.plist')
+    for args in (['-replace', 'CFBundleIdentifier', '-string', handler_bundle_id()],
+                 ['-replace', 'LSUIElement', '-bool', 'true'],
+                 ['-replace', 'CFBundleURLTypes', '-json', json.dumps([{'CFBundleURLName': 'Nexus Mods link', 'CFBundleURLSchemes': ['nxm']}])]):
+        r = subprocess.run(['plutil'] + args + [plist], capture_output=True, text=True)
+        if r.returncode:
+            raise NexusError('plutil failed: %s' % r.stderr.strip()[:200])
+    subprocess.run(['codesign', '--force', '--sign', '-', str(app)], capture_output=True)
+    return app
+
+
+_JXA_GET = 'function run(a){ObjC.import("CoreServices");var r=$.LSCopyDefaultHandlerForURLScheme($(a[0]));try{return ObjC.unwrap(ObjC.castRefToObject(r))||""}catch(e){return ""}}'
+_JXA_SET = 'function run(a){ObjC.import("CoreServices");return String($.LSSetDefaultHandlerForURLScheme($(a[0]),$(a[1])))}'
+
+
+def get_default_handler(scheme='nxm'):
+    r = subprocess.run(['osascript', '-l', 'JavaScript', '-e', _JXA_GET, scheme], capture_output=True, text=True, timeout=30)
+    if r.returncode:
+        raise NexusError('cannot read the default handler: %s' % r.stderr.strip()[:200])
+    return r.stdout.strip()
+
+
+def set_default_handler(bundle_id, scheme='nxm'):
+    r = subprocess.run(['osascript', '-l', 'JavaScript', '-e', _JXA_SET, scheme, bundle_id], capture_output=True, text=True, timeout=30)
+    if r.returncode or r.stdout.strip() != '0':
+        raise NexusError('LSSetDefaultHandlerForURLScheme failed (%s %s)' % (r.stdout.strip(), r.stderr.strip()[:200]))
+
+
+def _lsregister(app):
+    ls = '/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister'
+    subprocess.run([ls, '-f', str(app)], capture_output=True)
+
+
+def prev_file():
+    return tools_dir() / 'nxm-handler-previous.json'
+
+
+def _handler_note(h):
+    low = h.lower()
+    if any(x in low for x in ('vortex', 'modorganizer', 'mo2', 'nexus')):
+        return ' (this looks like a Nexus mod manager such as Vortex or Mod Organizer; its nxm links will come to this tool instead until you run uninstall-handler)'
+    return ''
+
+
+def cmd_install_handler(a):
+    prev = get_default_handler()
+    me = handler_bundle_id()
+    print('install-handler: this changes a SYSTEM-WIDE setting outside this repository.')
+    print('  It builds a small AppleScript app at %s (git-ignored, never committed),' % app_path())
+    print('  then makes it the default macOS handler for nxm:// links ("Mod Manager Download" on nexusmods.com).')
+    print('  Every nxm:// link then goes to: python3 -I %s receive <link>, which only saves it in %s.' % (Path(__file__).resolve(), queue_dir()))
+    print('  Current default handler for nxm://: %s%s' % (prev or '(none)', _handler_note(prev) if prev else ''))
+    print('  It is recorded in %s so `uninstall-handler` can restore it.' % prev_file())
+    if prev == me:
+        print('Already installed.'); return
+    if a.dry_run:
+        print('(dry run: nothing built, nothing changed)'); return
+    if not (sys.stdin and sys.stdin.isatty()):
+        raise NeedInput('install-handler asks for confirmation and needs a terminal; there is no --yes')
+    try:
+        if input('Make this tool the default nxm:// handler? [y/N] ').strip().lower() not in ('y', 'yes'):
+            print('Not changed.'); return
+    except (EOFError, KeyboardInterrupt):
+        print('\nNot changed.'); return
+    app = build_app()
+    prev_file().write_text(json.dumps({'previous': prev, 'installed': me}) + '\n')
+    _lsregister(app)
+    set_default_handler(me)
+    now = get_default_handler()
+    print('Installed. Default nxm:// handler is now: %s' % now if now == me else 'Warning: the default handler reads %r after setting; check System Settings / Finder.' % now)
+
+
+def cmd_uninstall_handler(a):
+    me = handler_bundle_id(); cur = get_default_handler()
+    prev = None
+    if prev_file().is_file():
+        prev = json.loads(prev_file().read_text()).get('previous') or None
+    print('uninstall-handler: current nxm:// handler: %s; recorded previous: %s' % (cur or '(none)', prev or '(none)'))
+    if cur != me:
+        print('This tool is not the default nxm:// handler; nothing to restore.')
+    elif prev and prev != me:
+        if a.dry_run:
+            print('(dry run) would restore %s' % prev)
+        else:
+            set_default_handler(prev); print('Restored %s as the nxm:// handler.' % prev)
+    else:
+        print('There was no previous handler to restore. macOS cannot clear a default; choose one in the app that should handle nxm:// links, or leave it.')
+    if not a.dry_run and app_path().exists():
+        shutil.rmtree(app_path()); print('Removed %s' % app_path())
+        prev_file().unlink(missing_ok=True)
+
+
+def cmd_handler_status(a):
+    cur = get_default_handler()
+    print('nxm:// handler: %s' % (cur or '(none)'))
+    print('this tool is the handler: %s' % ('yes' if cur == handler_bundle_id() else 'no'))
+    print('app built: %s' % ('yes (%s)' % app_path() if app_path().exists() else 'no'))
+    print('queued links: %d' % len(_queued()))
+
+
+def cmd_receive(a):
+    receive(a.url)
+    print('queued')
+
+
 # --- CLI ----------------------------------------------------------------------------------------------------------------
 
 def cmd_validate(a):
@@ -351,8 +639,12 @@ def cmd_files(a):
               size / 1e6, f.get('name'), f.get('file_name'), '  md5 ' + f['md5'] if f.get('md5') else ''))
 
 
+def default_wait(v):
+    return DEFAULT_WAIT if v is None and sys.stdin is not None and sys.stdin.isatty() else (v or 0)
+
+
 def cmd_download(a):
-    r = download(a.game, a.mod_id, a.file_id, nxm=a.nxm, md5=a.md5)
+    r = download(a.game, a.mod_id, a.file_id, nxm=a.nxm, md5=a.md5, wait=default_wait(a.wait))
     print(json.dumps(r) if a.json else '%s  md5 %s' % (r['path'], r['md5']))
 
 
@@ -369,7 +661,12 @@ def main(argv=None):
     p = sub.add_parser('files'); p.add_argument('game'); p.add_argument('mod_id'); p.set_defaults(fn=cmd_files)
     p = sub.add_parser('download'); p.add_argument('game'); p.add_argument('mod_id'); p.add_argument('file_id')
     p.add_argument('--nxm', help='the nxm:// link from "Mod Manager Download" (needed without Premium)')
-    p.add_argument('--md5', help='pinned md5 the file must have'); p.add_argument('--json', action='store_true'); p.set_defaults(fn=cmd_download)
+    p.add_argument('--md5', help='pinned md5 the file must have'); p.add_argument('--json', action='store_true')
+    p.add_argument('--wait', type=int, help='seconds to wait for the nxm link of a non-premium download (default 600 in a terminal, else 0)'); p.set_defaults(fn=cmd_download)
+    p = sub.add_parser('receive'); p.add_argument('url'); p.set_defaults(fn=cmd_receive)
+    for name, fn in (('install-handler', cmd_install_handler), ('uninstall-handler', cmd_uninstall_handler)):
+        p = sub.add_parser(name); p.add_argument('--dry-run', action='store_true', help='show what would change; change nothing'); p.set_defaults(fn=fn)
+    sub.add_parser('handler-status').set_defaults(fn=cmd_handler_status)
     p = sub.add_parser('nxm'); p.add_argument('url'); p.add_argument('--md5'); p.add_argument('--json', action='store_true'); p.set_defaults(fn=cmd_nxm)
     a = ap.parse_args(argv)
     try:

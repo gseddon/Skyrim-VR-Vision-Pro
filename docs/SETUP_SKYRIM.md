@@ -94,11 +94,32 @@ an nxm handler would be called; registering the tool as the system nxm handler i
 expires, so fetch soon after copying it. A 403 means "not Premium and no valid link", 400 an invalid link key, 410 an expired one.
 Requests over Nexus's rate limit (429) are waited out as the headers say, up to 15 minutes.
 
+**What the fetch does without Premium.** For each file the API will not hand out, `mods-fetch` (and `nexus.py download`) prints a short
+numbered message with the mod and file name, "[2 of 5 done]", the exact Files-tab page (`https://www.nexusmods.com/<game>/mods/<id>?tab=files&file_id=<id>`;
+in a terminal it offers to `open` it for you) and the instruction to click "Mod Manager Download" there. It then waits (`--wait SECONDS`,
+default 600 in a terminal; 0, meaning "exit 2 and say what is missing", when not run from a terminal) for that file's link, and Ctrl-C
+skips the file (the run ends with exit 2 listing what was skipped; run it again later, finished files are not redone). A link
+for a different file is refused politely and kept in the queue for its own file; expired links are ignored. Links are accepted
+from the queue directory `$VXRT_PRIVATE_ROOT/downloads/nexus/queue/` (mode 0700, links 0600), or pasted in the terminal. Premium
+accounts never see any of this. Messages show ids only, never the key or the link's `key`/`expires`.
+
+**The nxm handler (optional, makes the clicks automatic).**
+`python3 -I tools/nexus.py install-handler [--dry-run]` builds a small AppleScript app (`osacompile`) at
+`$VXRT_PRIVATE_ROOT/tools/NexusHandler.app` (git-ignored; never committed) that passes each `nxm://` link to
+`nexus.py receive`, which only saves it in the queue, and then makes it the macOS default handler for `nxm://`.
+That is a system-wide setting outside this repository, so the command explains itself, shows the current handler (and warns if it looks like
+Vortex or Mod Organizer, whose links would then come here), records it in `.../tools/nxm-handler-previous.json`, and asks `[y/N]` on a terminal;
+there is no `--yes`. `--dry-run` changes nothing. `uninstall-handler` restores the recorded handler and removes the app (macOS cannot clear a
+default: with no previous handler it says so). `handler-status` shows the current state. The registration uses
+LaunchServices (`LSSetDefaultHandlerForURLScheme` via `osascript`); `duti` is not needed. The app, the real registration and a real browser
+click were not run here: the build and the registration logic are tested (the registration call itself replaced by a stand-in); the first
+real use is yours. If the browser asks which app should open `nxm://` links, choose NexusHandler. Without the handler, paste the link.
+
 **Terms.** Nexus Mods' terms apply: the files are for your personal use through your own account; do not redistribute mods, and
 respect each mod's own permissions (this repository never commits downloads; they stay in the private root). The tool identifies itself
 with `Application-Name`/`Application-Version` headers. It uses the v1 API (stable, has the account check and file sizes/md5);
 the newer v3 download-link endpoint is marked experimental by Nexus.
-Not yet verified against the real service: this was tested only against a local fake server.
+Not yet verified against the real service: this was tested only against a local fake server (the handler app was built, not registered or clicked).
 
 ## The split profile
 
