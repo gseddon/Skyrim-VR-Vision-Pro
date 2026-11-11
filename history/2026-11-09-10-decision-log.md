@@ -182,3 +182,44 @@ All measurements in this section are from the physical headset unless they say M
 - **Settings research:** INI keys verified against the exe, with a device A/B plan.
 - **Smoke "rectangles" on the main menu:** traced to the native present treating Skyrim's gamma-coded 8-bit eye textures as linear, so they are sRGB-encoded twice and the darkest 8-bit steps get about ten times brighter. He asked to also check the earlier audit items.
 - **Three disk cleanups,** each deleting project leftovers (worktrees, old dumps).
+
+---
+
+## Session 3 (10–11 Nov): settings, portability and mods
+
+The subject is the physical headset unless a line says Mac.
+
+### Rendering
+- **0.75 render scale, no foveation:** "it's looking much nicer at 0.75". **It became the default.**
+- **System foveation:** this is visionOS's own rasterization-rate map, not gaze. He had the probe researched in full instead of building it. The verdict was not to build it yet ([research](../research/2026-11-11-system-foveation-scene-passes.md)).
+- **GAP 6 and GAP 13 of the audit:** these were to be merged only if they cost little or nothing. They were measured, then: **"ditch these, mark as won't fix."** The code was deleted.
+- **MetalFX sharpness:** VXRT_SHARPEN and VXRT_RENDER_QUALITY were added. He liked the default MetalFX, so the other probes were cancelled and the defaults stay. visionOS 26.1 has only the spatial scaler. Render quality needs foveation turned on, otherwise visionOS rejects the layer. That fix is on its own branch and not yet tested on the device.
+- **ReShade:** researched and found incompatible with the Glamur preset. **"Ditch the ReShade reporter."**
+
+### Controls and the frontend
+- **The Crown button now quits the game.** It had once seemed to quit, but that was Siri ("Siri, exit").
+- **Controllers that connect after launch:** the buttons work but the analog sticks don't. Keyboard binds were ruled out. He rejected added logging as bloat ("take it out"). **Still open.**
+- **Launcher settings:** snap or smooth turning, teleport or walk, and 19 more INI settings. Each defaults to "Game default".
+
+### Portability
+- **Make the repo portable:** his team and device IDs were un-hardcoded. They now live in an uncommitted `local/env.sh` wrapper. The VeRantyx paths were removed, and scripts were added for Steamless, Rust, staging and a doctor. The setup scripts were test-run and ship auto-yes.
+- **Removed all the marimokodai stuff.**
+- **Full AOT build from cold:** 448 s.
+- **"Why does the shader set take 25 minutes?"** A false rebuild trigger. Fixed: a full shader rebuild takes about 5 minutes, all of it Metal compilation.
+- **A free Apple account isn't enough today.** The increased-memory-limit and extended-virtual-addressing entitlements need a paid team.
+- **Memory:** the app's limit is about 8.2 GB with increased-memory-limit.
+
+### Mods: SKSE VR, HIGGS, PLANCK, VRIK, SkyUI VR
+- **SKSE on strict AOT:** SKSE plugins are captured statically, then patched into the AOT modules ahead of time, with a verifier and a watcher. A late capture covers VRIK's 14 late patch sites (118 code runs in all). The capture depends on directory order, so file listings are now sorted as NTFS sorts them. The plugin set needs recapturing whenever it changes.
+- **"Can't keep putting the headset on":** the start window was turned off for testing, and runs looped until the game loaded.
+- **HIGGS "esp exists but not active":** the cause was CRLF. The game reads Plugins.txt in text mode, our C runtime didn't translate line endings, and every plugin name ended in `\r`. Text-mode reads now turn CR LF into LF, as Windows does. Seven other hypotheses were ruled out along the way. "done! It seemed to work?"
+- **Why the headset's memory layout is higher:** extended virtual addressing puts our arena at 0x7000000000 on the device; on the Mac it is around 0x300000000.
+- **SkyUI VR kept failing:** it embeds LuaJIT. Only at the device layout can LuaJIT find memory near its VM, so its JIT runs and traps under strict AOT. **"JIT isn't even allowed on Vision Pro anyway"**, so the fix is a `jit.off()` prelude in SkyUI's Lua through a mod overlay. A strict guard now refuses executable memory outside loaded images.
+- **"Just merge in all the fixes into one branch together, SKSE, SkyUI, VRIK. Do a combined build and install it."** That's branch `final`, merged into `codex/standalone-import`. It holds SKSE VR, SkyrimVRTools, HIGGS, PLANCK, VRIK, SkyUI VR with LuaJIT off, and Skyland, at 0.75 with the MetalFX defaults. It was installed on 11 Nov, ready to launch from Home. SkyUI's menus have not been tried in the headset yet.
+- **Nexus downloads without Premium:** this "just works" with no API key. The browser's free download goes to ~/Downloads, which is watched and matched by mod ID, then checked by md5. The user is prompted nicely, and an nxm handler is optional. **"Why does the downloads manager keep trying to access my keys? There's no API key."** The 1Password call was removed.
+
+### Still open
+- The analog sticks on controllers connected after launch.
+- Render quality and system foveation on the device.
+- SkyUI menus in the headset, and a playtest of the full mods build.
+- `make check` on the final merge.
