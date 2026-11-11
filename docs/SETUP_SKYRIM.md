@@ -52,6 +52,7 @@ redoes it) and exits 2 with a message naming the missing input. `python3 tools/v
 | `shaders` | builds the Metal shader set from the committed hash manifest and your own `Skyrim_VR - Main.bsa` (about 5 to 25 minutes depending on load: the Metal compile of about 10,800 libraries, one process per core) | no |
 | `app` | `make XROS_XRIZER_GAME=1 XROS_SDK=xros xros-app`, signed with your team; `--install` installs it on the headset, `--unsigned` skips signing | no |
 | `stage-to-device` | copies the game tree (about 14 GB) into the app's container: dry run, then `--run` | no |
+| `mods-fetch` | downloads the Nexus Mods files named in a mods list (see below), pins their md5 in the list and unpacks them under `$VXRT_PRIVATE_ROOT/mods-src`; needs `NEXUS_API_KEY` | yes (api.nexusmods.com and its CDN) |
 | `mods` | builds a data-only mod pack from a mods list (`tools/mods.py`); `--deploy` copies it | no |
 
 Typical first run: `toolchain --with-steamless`, `prepare`, `aot`, `shaders`, `app --install`, `stage-to-device --run`. Then wear
@@ -59,6 +60,45 @@ the headset, open Skyrim VR, accept the motion-input permission on first launch,
 The first signed build with a new bundle id may need `XROS_ALLOW_PROVISIONING=1` (Xcode creates the App ID).
 If the unpacked exe hash differs from the pinned one, `prepare` keeps it under `prepared-unverified/` and stops: the AOT
 modules are keyed by that hash.
+
+## Mods from Nexus Mods
+
+Instead of downloading mods by hand, name them in the mods list and let the tool fetch them:
+
+```json
+{ "id": "higgs", "name": "HIGGS", "kind": "skse", "priority": 40,
+  "nexus": { "game": "skyrimspecialedition", "mod_id": 43930, "file_id": 123456 } }
+```
+
+`game`, `mod_id` and `file_id` are in the mod's URLs: `nexusmods.com/<game>/mods/<mod_id>?tab=files&file_id=<file_id>`.
+`python3 -I tools/nexus.py files <game> <mod_id>` lists a mod's files. Most Skyrim VR mods are under the game `skyrimspecialedition`;
+Nexus also has a `skyrimvr` game. Which one a given mod lives under is not checked by this tool; use the one in the mod's URL.
+An entry has either `source` (a local prepared tree, as before) or `nexus`, never both.
+
+Steps: `python3 tools/vxrt_build.py mods-fetch --list mods-list.json`, then `mods --list mods-list.json`. The fetch writes the md5
+of each file into the list (`nexus.md5`), so later builds are reproducible and a changed or damaged file is refused. A mod whose
+archive matches its pinned md5 and is already unpacked is skipped, without the network or the key. Archives are zip, or
+(7z, rar) via macOS `tar`. A FOMOD installer archive is not unpacked blindly: the fetch stops and tells you to run
+`tools/fomod_auto.py` on it and use the result as `source`. Downloads land in `$VXRT_PRIVATE_ROOT/downloads/nexus/`.
+
+**API key.** Nexus's API has no username/password login; use a personal API key: nexusmods.com > your avatar > Site preferences
+> API Keys > request/generate a personal key. Put it in `local/env.sh` as `NEXUS_API_KEY` (see `local.example.sh`; a password
+manager's CLI works, for example 1Password with a field labelled `apikey`). It is only sent to api.nexusmods.com, never printed or
+committed. `python3 -I tools/nexus.py validate` shows the account name and whether it is Premium. Without the key the stage exits 2.
+
+**Premium or not.** With Nexus Premium the API issues each download link itself. A free account cannot: for each file, open its
+page on nexusmods.com, click "Mod Manager Download", copy the `nxm://...` link (it carries a `key` and short-lived `expires`) and pass
+it: `tools/vxrt_build.py mods-fetch --list L --nxm 'nxm://...'` (repeat for each file) or
+`tools/nexus.py download <game> <mod_id> <file_id> --nxm 'nxm://...'`. Quote it. `nexus.py nxm 'nxm://...'` takes the link alone, as
+an nxm handler would be called; registering the tool as the system nxm handler is not set up here. The key in a link is for one file and
+expires, so fetch soon after copying it. A 403 means "not Premium and no valid link", 400 an invalid link key, 410 an expired one.
+Requests over Nexus's rate limit (429) are waited out as the headers say, up to 15 minutes.
+
+**Terms.** Nexus Mods' terms apply: the files are for your personal use through your own account; do not redistribute mods, and
+respect each mod's own permissions (this repository never commits downloads; they stay in the private root). The tool identifies itself
+with `Application-Name`/`Application-Version` headers. It uses the v1 API (stable, has the account check and file sizes/md5);
+the newer v3 download-link endpoint is marked experimental by Nexus.
+Not yet verified against the real service: this was tested only against a local fake server.
 
 ## The split profile
 

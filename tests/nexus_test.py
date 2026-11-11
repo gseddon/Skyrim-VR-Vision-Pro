@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""tools/nexus.py, tools/mods.py fetch and the mods-fetch stage against a local fake Nexus server (no network, no real key)."""
+import hashlib, http.server, io, json, os, subprocess, sys, tempfile, threading, unittest, zipfile
+from pathlib import Path
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools'))
+import nexus
+
+KEY = 'SECRET-KEY-123'
+NXMKEY = 'NXMKEYVALUE'
+
+
+def make_zip():
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, 'w') as z:
+        z.writestr('Data/Textures/a.dds', b'DDS')
+    return b.getvalue()
+
+
+ZIP = make_zip()
+
+
+class Fake(http.server.BaseHTTPRequestHandler):
+    premium = False; limit429 = 0; md5 = hashlib.md5(ZIP).hexdigest(); payload = ZIP; hits = []
+
+    def log_message(self, *a): pass
+
+    def send(self, code, body=b'', headers=()):
+        self.send_response(code)
+        for k, v in headers: self.send_header(k, v)
+        self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+
+    def j(self, code, obj, headers=()): self.send(code, json.dumps(obj).encode(), headers)
+
+    def do_GET(self):
+        S = type(self); S.hits.append((self.path, dict(self.headers)))
+        path, _, q = self.path.partition('?')
+        if path == '/cdn/f.zip':
+            return self.send(200, S.payload)
+        if self.headers.get('apikey') != KEY:
+            return self.j(401, {'message': 'Please provide a valid API Key'})
+        if S.limit429 > 0:
+            S.limit429 -= 1
+            return self.j(429, {'message': 'limit'}, [('Retry-After', '3')])
+        if path == '/v1/users/validate.json':
+            return self.j(200, {'name': 'Tester', 'is_premium': S.premium, 'is_supporter': False, 'email': 'x@example.com'})
+        if path == '/v1/games/skyrimspecialedition/mods/7/files.json':
+            return self.j(200, {'files': [{'file_id': 9, 'name': 'Main', 'file_name': 'Main-7-9.zip', 'version': '1.0', 'category_name': 'MAIN', 'size_in_bytes': len(ZIP), 'md5': S.md5}]})
+        if path == '/v1/games/skyrimspecialedition/mods/7/files/9.json':
+            return self.j(200, {'file_id': 9, 'file_name': 'Main-7-9.zip', 'size_in_bytes': len(ZIP), 'md5': S.md5})
+        if path == '/v1/games/skyrimspecialedition/mods/7/files/9/download_link.json':
+            if 'key=' in q and ('key=' + NXMKEY) not in q:
+                return self.j(400, {'message': 'bad key'})
+            if not S.premium and ('key=' + NXMKEY) not in q:
+                return self.j(403, {'message': 'not premium'})
+            return self.j(200, [{'name': 'CDN', 'short_name': 'cdn', 'URI': 'http://127.0.0.1:%d/cdn/f.zip' % self.server.server_port}])
+        self.j(404, {'message': 'no'})
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        Fake.premium = False; Fake.limit429 = 0; Fake.md5 = hashlib.md5(ZIP).hexdigest(); Fake.payload = ZIP; Fake.hits = []
+        self.srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fake)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.tmp = tempfile.TemporaryDirectory(); self.root = Path(self.tmp.name)
+        self.env = {'NEXUS_API_BASE': 'http://127.0.0.1:%d/v1' % self.srv.server_port, 'NEXUS_API_KEY': KEY, 'VXRT_PRIVATE_ROOT': str(self.root / 'priv')}
+        p = mock.patch.dict(os.environ, self.env); p.start(); self.addCleanup(p.stop)
+        self.waits = []
+        s = mock.patch.object(nexus, '_sleep', self.waits.append); s.start(); self.addCleanup(s.stop)
+    def tearDown(self):
+        self.srv.shutdown(); self.srv.server_close(); self.tmp.cleanup()
+    def nxm(self, key=NXMKEY):
+        return 'nxm://skyrimspecialedition/mods/7/files/9?key=%s&expires=4102444800&user_id=1' % key
+
+
+class Client(Base):
+    def test_validate_prints_name_and_premium_not_key(self):
+        Fake.premium = True
+        out = io.StringIO()
+        with mock.patch('sys.stdout', out): self.assertEqual(nexus.main(['validate']), 0)
+        self.assertIn('Tester', out.getvalue()); self.assertIn('premium: yes', out.getvalue())
+        self.assertNotIn(KEY, out.getvalue()); self.assertNotIn('example.com', out.getvalue())
+        self.assertEqual(Fake.hits[0][1].get('Application-Name'), nexus.APP_NAME)
+
+    def test_missing_key_exit_2_without_network(self):
+        with mock.patch.dict(os.environ, {'NEXUS_API_KEY': ''}), mock.patch('sys.stderr', io.StringIO()) as e:
+            self.assertEqual(nexus.main(['validate']), 2)
+        self.assertIn('NEXUS_API_KEY', e.getvalue()); self.assertEqual(Fake.hits, [])
+
+    def test_bad_key(self):
+        with mock.patch.dict(os.environ, {'NEXUS_API_KEY': 'WRONGKEY'}), mock.patch('sys.stderr', io.StringIO()) as e:
+            self.assertEqual(nexus.main(['validate']), 1)
+        self.assertIn('rejected the API key', e.getvalue()); self.assertNotIn('WRONGKEY', e.getvalue())
+
+    def test_files_list(self):
+        out = io.StringIO()
+        with mock.patch('sys.stdout', out): self.assertEqual(nexus.main(['files', 'skyrimspecialedition', '7']), 0)
+        self.assertIn('Main-7-9.zip', out.getvalue())
+
+    def test_premium_download_ok_and_idempotent(self):
+        Fake.premium = True
+        r = nexus.download('skyrimspecialedition', '7', '9')
+        self.assertEqual(r['md5'], Fake.md5); self.assertEqual(Path(r['path']).read_bytes(), ZIP)
+        self.assertEqual(Path(r['path']).parent, (self.root / 'priv' / 'downloads' / 'nexus').resolve())
+        nexus.download('skyrimspecialedition', '7', '9')                  # a verified file is not fetched again
+        cdn = [h for h in Fake.hits if '/cdn/' in h[0]]
+        self.assertEqual(len(cdn), 1); self.assertNotIn('apikey', cdn[0][1])      # the key never goes to the CDN
+
+    def test_non_premium_403_then_nxm(self):
+        with self.assertRaises(nexus.NeedInput) as c: nexus.download('skyrimspecialedition', '7', '9')
+        self.assertIn('Mod Manager Download', str(c.exception)); self.assertNotIn(KEY, str(c.exception))
+        r = nexus.download('skyrimspecialedition', '7', '9', nxm=self.nxm())
+        self.assertTrue(Path(r['path']).is_file())
+        with mock.patch('sys.stderr', io.StringIO()) as e:
+            self.assertEqual(nexus.main(['download', 'skyrimspecialedition', '7', '9']), 0)      # already there
+        with self.assertRaises(nexus.NexusError): nexus.download('skyrimspecialedition', '7', '10', nxm=self.nxm())    # link for another file
+
+    def test_bad_nxm_key(self):
+        with self.assertRaises(nexus.NeedInput) as c: nexus.download('skyrimspecialedition', '7', '9', nxm=self.nxm('WRONG'))
+        self.assertIn('invalid', str(c.exception)); self.assertNotIn('WRONG', str(c.exception))
+
+    def test_rate_limit_retry(self):
+        Fake.premium = True; Fake.limit429 = 2
+        nexus.download('skyrimspecialedition', '7', '9')
+        self.assertEqual(len(self.waits), 2); self.assertTrue(all(3 <= w <= 4 for w in self.waits))
+        Fake.limit429 = 99
+        with self.assertRaises(nexus.NexusError): nexus.list_files('skyrimspecialedition', '7', KEY)
+
+    def test_md5_mismatch_discards_file(self):
+        Fake.premium = True; Fake.md5 = 'f' * 32
+        with self.assertRaises(nexus.NexusError) as c: nexus.download('skyrimspecialedition', '7', '9')
+        self.assertIn('md5', str(c.exception))
+        self.assertEqual(list((self.root / 'priv' / 'downloads' / 'nexus').iterdir()), [])
+        Fake.md5 = hashlib.md5(ZIP).hexdigest()
+        with self.assertRaises(nexus.NexusError): nexus.download('skyrimspecialedition', '7', '9', md5='0' * 32)   # a wrong pin also fails
+        Fake.payload = ZIP + b'x'                                                                                  # size differs from the record
+        with self.assertRaises(nexus.NexusError) as c: nexus.download('skyrimspecialedition', '7', '9')
+        self.assertIn('size', str(c.exception))
+
+    def test_key_never_in_error_text(self):
+        self.assertNotIn(KEY, nexus.scrub('boom ' + KEY + ' https://x/?key=abc&e=1', KEY)); self.assertNotIn('abc', nexus.scrub('https://x/?key=abc', KEY))
+
+
+class ModsAndStage(Base):
+    def lst(self, **nx):
+        p = self.root / 'mods.json'
+        p.write_text(json.dumps(dict(profile='t', mods=[dict(id='texmod', name='T', kind='files', priority=1, nexus=dict(game='skyrimspecialedition', mod_id=7, file_id=9, **nx))])))
+        return p
+    def run_py(self, *args):
+        return subprocess.run([sys.executable, '-I', *map(str, args)], capture_output=True, text=True, env={**os.environ, **self.env})
+
+    def test_fetch_pins_md5_then_builds_and_is_idempotent(self):
+        Fake.premium = True; p = self.lst()
+        r = self.run_py(ROOT / 'tools/mods.py', 'fetch', '--list', p); self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(p.read_text())['mods'][0]['nexus']['md5'], Fake.md5)
+        self.assertTrue((self.root / 'priv/mods-src/texmod/Data/Textures/a.dds').is_file())
+        n = len(Fake.hits)
+        r = self.run_py(ROOT / 'tools/mods.py', 'fetch', '--list', p); self.assertEqual(r.returncode, 0); self.assertEqual(len(Fake.hits), n)   # no network
+        r = self.run_py(ROOT / 'tools/mods.py', 'build', '--list', p, '--out', self.root / 'pack'); self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.root / 'pack/merged/Data/Textures/a.dds').read_bytes(), b'DDS')
+
+    def test_build_before_fetch_exit_2(self):
+        r = self.run_py(ROOT / 'tools/mods.py', 'build', '--list', self.lst(), '--out', self.root / 'pack'); self.assertEqual(r.returncode, 2); self.assertIn('fetch', r.stderr)
+
+    def test_stage_exit_2_without_key_then_ok(self):
+        Fake.premium = True; p = self.lst()
+        env = {**os.environ, **self.env, 'NEXUS_API_KEY': '', 'VXRT_LOCAL_ENV': str(self.root / 'none.sh')}
+        r = subprocess.run([sys.executable, str(ROOT / 'tools/vxrt_build.py'), 'mods-fetch', '--list', str(p), '--json'], capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 2, r.stderr); self.assertEqual(json.loads(r.stdout)['status'], 'missing-input'); self.assertEqual(Fake.hits, [])
+        env['NEXUS_API_KEY'] = KEY
+        for _ in range(2):                                                                  # second run: idempotent
+            r = subprocess.run([sys.executable, str(ROOT / 'tools/vxrt_build.py'), 'mods-fetch', '--list', str(p), '--json'], capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr); self.assertNotIn(KEY, r.stdout + r.stderr)
+        self.assertEqual(sum('/cdn/' in h[0] for h in Fake.hits), 1)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -2,6 +2,7 @@
 """Mac-side mod pack tool for the Skyrim VR runtime: prepared mod folders + a mods list -> one pack.
 
   python3 -I tools/mods.py build  --list mods-list.json --out PACK [--force]
+  python3 -I tools/mods.py fetch  --list mods-list.json [--nxm nxm://...] [--force]       (Nexus entries only; needs NEXUS_API_KEY)
   python3 -I tools/mods.py show   PACK
   python3 -I tools/mods.py deploy PACK --bundle BUNDLE_ID [--device ID] [--yes]     (prints the devicectl commands; runs them only with --yes)
 
@@ -11,6 +12,9 @@ mods-list.json (written by hand or by a later UI):
                 "source": "build/private/mods/skyland-aio-1k-full",        # a prepared tree with Data/ (tools/fomod_auto.py), relative to the list
                 "plugins": ["Lit Road Signs.esp"], "memory_hint_mb": 250, "note": "" },
               { "id": "higgs", "name": "HIGGS 1.10.10", "kind": "skse", "enabled": true, "priority": 40, "size_bytes": 5128085 } ] }
+A mod may instead name a Nexus Mods file: "nexus": {"game": "skyrimspecialedition", "mod_id": 43930, "file_id": 12345, "md5": "<pinned>"}
+(no "source"). `mods.py fetch --list L [--nxm nxm://...]` downloads it through tools/nexus.py (NEXUS_API_KEY; a non-premium account passes the
+website's nxm link), pins its md5 in the list, and unpacks it to <VXRT_PRIVATE_ROOT>/mods-src/<id>/ (a tree with Data/), which build then uses.
 kind: files (loose assets), plugin (assets plus ESP/ESM/ESL; listed in plugins), skse (needs SKSE VR; listed, never applied).
 
 PACK/ gets
@@ -82,6 +86,99 @@ def clone(src, dst):
     subprocess.run(['cp', '-cR', str(src) + '/.', str(dst)], check=True)
 
 
+def private_root():
+    return Path(os.environ.get('VXRT_PRIVATE_ROOT') or Path(__file__).resolve().parent.parent / 'build' / 'private').expanduser().resolve()
+
+
+def nexus_tree(mod_id):
+    return private_root() / 'mods-src' / mod_id
+
+
+def _nexus_spec(m):
+    n = m['nexus']
+    if not isinstance(n, dict) or not all(n.get(k) for k in ('game', 'mod_id', 'file_id')):
+        sys.exit(f"{m.get('id')}: nexus needs game, mod_id and file_id")
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', str(n['game'])) or not re.fullmatch(r'\d+', str(n['mod_id'])) or not re.fullmatch(r'\d+', str(n['file_id'])):
+        sys.exit(f"{m.get('id')}: bad nexus game/mod_id/file_id")
+    if n.get('md5') and not re.fullmatch(r'[0-9a-fA-F]{32}', str(n['md5'])):
+        sys.exit(f"{m.get('id')}: nexus md5 must be 32 hex digits")
+    return n
+
+
+def _unpack(archive, dst):
+    """Extract an archive (zip with the standard library, anything else with bsdtar) into the empty dir dst, refusing paths that leave it and symlinks."""
+    import zipfile
+    dst.mkdir(parents=True)
+    if zipfile.is_zipfile(archive):
+        with zipfile.ZipFile(archive) as z:
+            for i in z.infolist():
+                t = (dst / i.filename).resolve()
+                if dst.resolve() not in t.parents and t != dst.resolve(): raise ValueError(f'{archive}: path leaves the folder: {i.filename}')
+                if (i.external_attr >> 16) & 0o170000 == 0o120000: raise ValueError(f'{archive}: symlink {i.filename}')
+            z.extractall(dst)
+    else:
+        r = subprocess.run(['tar', '-xf', str(archive), '-C', str(dst)], capture_output=True, text=True)
+        if r.returncode: raise ValueError(f'cannot unpack {archive} (.7z/.rar need macOS tar or `brew install libarchive`): {r.stderr.strip()[:200]}')
+    for dp, dn, fn in os.walk(dst):
+        for x in dn + fn:
+            if (Path(dp) / x).is_symlink(): raise ValueError(f'{archive}: symlink in the archive: {Path(dp) / x}')
+
+
+def _into_tree(raw, tree):
+    """raw (an unpacked archive) -> tree/Data. An archive with Data/ at its top (or in its only folder) keeps it; a FOMOD installer needs tools/fomod_auto.py."""
+    top = [p for p in raw.iterdir()]
+    if len(top) == 1 and top[0].is_dir() and top[0].name.lower() != 'data' and not (top[0].name.lower() in ('fomod',)):
+        inner = [q.name.lower() for q in top[0].iterdir()]
+        if 'data' in inner or 'fomod' in inner: raw = top[0]; top = list(raw.iterdir())
+    names = {p.name.lower(): p for p in top}
+    if 'fomod' in names:
+        raise ValueError(f'{raw} is a FOMOD installer: run tools/fomod_auto.py --src {raw} --out {tree} and give the mod a "source" instead')
+    tree.mkdir(parents=True)
+    if 'data' in names: clone(names['data'], tree / 'Data')
+    else: clone(raw, tree / 'Data')                  # loose files at the top: they are the Data/ contents
+
+
+def fetch(a):
+    """Download the Nexus files of a list, pin md5s in it, unpack to mods-src/<id>. Idempotent: nothing is fetched for a mod whose archive and tree match."""
+    import shutil
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import nexus
+    lst = Path(a.list).resolve(strict=True); cfg = json.loads(lst.read_text())
+    links = {}
+    for u in a.nxm or []:
+        try: n = nexus.parse_nxm(u)
+        except nexus.NexusError as e: sys.exit(f'--nxm: {e}')
+        links[(n['game'].lower(), n['mod_id'], n['file_id'])] = n
+    changed = False; todo = 0
+    for m in cfg['mods']:
+        if 'nexus' not in m or not m.get('enabled', True) or m.get('source'): continue
+        n = _nexus_spec(m); game, mod, fid = n['game'], str(n['mod_id']), str(n['file_id'])
+        tree = nexus_tree(m['id']); marker = tree / '.nexus-md5'
+        pinned = (n.get('md5') or '').lower() or None
+        if not a.force and marker.is_file() and pinned and marker.read_text().strip() == pinned and (tree / 'Data').is_dir():
+            print(f"{m['id']}: already fetched and unpacked (md5 {pinned})"); continue
+        todo += 1
+        try:
+            r = nexus.download(game, mod, fid, nxm=links.get((game.lower(), mod, fid)), md5=pinned)
+            tmp = tree.with_name(tree.name + '.tmp')
+            if tmp.exists(): shutil.rmtree(tmp)
+            raw = tmp / 'raw'; _unpack(Path(r['path']), raw)
+            new = tmp / 'tree'; _into_tree(raw, new)
+            (new / '.nexus-md5').write_text(r['md5'] + '\n')
+            if tree.exists(): shutil.rmtree(tree)
+            tree.parent.mkdir(parents=True, exist_ok=True); os.replace(new, tree); shutil.rmtree(tmp)
+        except nexus.NeedInput as e:
+            print(f"{m['id']}: {e}", file=sys.stderr); sys.exit(2)
+        except (nexus.NexusError, ValueError) as e:
+            print(f"{m['id']}: {e}", file=sys.stderr); sys.exit(1)
+        if pinned != r['md5']:
+            n['md5'] = r['md5']; changed = True
+            print(f"{m['id']}: pinned md5 {r['md5']} in {lst.name}")
+    if changed:
+        tmp = lst.with_name(lst.name + '.tmp'); tmp.write_text(json.dumps(cfg, indent=1) + '\n'); os.replace(tmp, lst)
+    print(f'fetch: {todo} mod(s) fetched, {sum(1 for m in cfg["mods"] if "nexus" in m)} nexus entr(ies) in the list')
+
+
 def build(a):
     lst = Path(a.list).resolve(strict=True); out = Path(a.out).resolve()
     cfg = json.loads(lst.read_text())
@@ -95,12 +192,18 @@ def build(a):
         seen.add(m['id'])
         if m.get('kind') not in KINDS: sys.exit(f"{m['id']}: kind must be one of {KINDS}")
         if not isinstance(m.get('priority'), int): sys.exit(f"{m['id']}: priority must be an integer")
+        if 'nexus' in m:
+            _nexus_spec(m)
+            if m.get('source'): sys.exit(f"{m['id']}: give either source or nexus, not both")
+            if m.get('enabled', True) and not (nexus_tree(m['id']) / 'Data').is_dir():
+                print(f"{m['id']}: not fetched yet: run tools/mods.py fetch --list {lst} (or vxrt_build.py mods-fetch)", file=sys.stderr); sys.exit(2)
     (out / 'merged' / 'Data').mkdir(parents=True)
     res = []; plugins = []; skse_plugins = []; shadow = []
     for m in sorted(mods, key=lambda m: (m['priority'], m['id'])):
         r = dict(id=m['id'], name=m.get('name', m['id']), kind=m['kind'], enabled=bool(m.get('enabled', True)), priority=m['priority'],
                  plugins=list(m.get('plugins', [])), memory_hint_mb=m.get('memory_hint_mb'), size_bytes=m.get('size_bytes'), files=None,
                  active=False, path=None, note=m.get('note', ''))
+        if 'nexus' in m and r['enabled']: m = dict(m, source=str(nexus_tree(m['id'])))    # (absolute: joins as itself)
         if m['kind'] == 'skse' and not m.get('source'):
             r['note'] = r['note'] or SKSE_NOTE          # (listed only: no prepared source tree)
         elif r['enabled']:
@@ -197,8 +300,9 @@ def deploy(a):
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(); sub = ap.add_subparsers(dest='cmd', required=True)
     b = sub.add_parser('build'); b.add_argument('--plugin-base', default='0x30c000000', help='arena base of the first SKSE plugin DLL module; 16 MB apart'); b.add_argument('--list', required=True); b.add_argument('--out', required=True); b.add_argument('--force', action='store_true')
+    f = sub.add_parser('fetch'); f.add_argument('--list', required=True); f.add_argument('--nxm', action='append', help='nxm:// link from the website (non-premium); repeatable'); f.add_argument('--force', action='store_true')
     s = sub.add_parser('show'); s.add_argument('pack')
     q = sub.add_parser('pipeline'); q.add_argument('pack'); q.add_argument('--config', required=True); q.add_argument('--out', required=True)
     p = sub.add_parser('deploy'); p.add_argument('pack'); p.add_argument('--bundle', required=True); p.add_argument('--device'); p.add_argument('--yes', action='store_true')
     a = ap.parse_args()
-    {'build': build, 'show': lambda a: show(a.pack), 'pipeline': pipeline, 'deploy': deploy}[a.cmd](a)
+    {'build': build, 'fetch': fetch, 'show': lambda a: show(a.pack), 'pipeline': pipeline, 'deploy': deploy}[a.cmd](a)
