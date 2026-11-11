@@ -27,6 +27,24 @@ How to read the columns:
 | 13 | `sample_c` / `gather_c` reference clamped to [0,1] (`saturate`) | Reference clamps for UNORM depth | not merged (was `33aa27e`, discarded) | **WON'T FIX** (decision 2026-11-11: merge only if the cost is none or negligible; replay GPU +2.0% inside about 4% noise, not shown negligible, and no visible change). Code discarded on the user's decision | (none, not merged; it would have changed 25 shader cache keys, `DXBC_TRANSLATOR_REV` 2) | One `air.fast_saturate` per compare in 25 of 10,818 Skyrim pixel/vertex shaders (checked on a one-compare MSL at AIR level; the GPU ISA cost is inferred to be zero or one ALU op, not disassembled). In the same replay A B B A runs as gap 6 (not separable from it). | **No visible change** in the same replay frames. Clamping also applies to real float depth, which differs from Direct3D only for a reference outside [0,1] against a stored 0 or 1. The test (`tests/draw.c`, `cmpclamp_ps`) reads 1 for ref 1.01 against stored 1.0 with LESS_EQUAL, and for ref -0.5 against 0.0 with GREATER_EQUAL. |
 | — | C runtime text mode: a file opened without `b` reads CR LF as LF (`fgets`, `fgetc`, `fread`); `rb` keeps the bytes | msvcrt text-mode translation | `55495d6` (merged into `allmods2`) | merged | none (a Windows guarantee, not a choice) | none measurable: only text-mode reads of small files take the byte-at-a-time path | Found on the headset: Skyrim reads `Plugins.txt` with `fgets` in text mode; with Windows line endings every plugin name carried a CR, no ESP matched and HIGGS stopped the game (`research/2026-11-11-skse-vr-on-aot.md` 5e). The Mac harness had hidden it by rewriting the file with LF. Fixture: `make crt-text-mode-check`. |
 
+Related, not a Metal guarantee but a missing Windows feature: XAudio2 effect chains and the built-in reverb
+(`CLSID_AudioReverb`), branch `reverb` (2026-11-11), not merged. `SetEffectChain`, `Enable/DisableEffect`,
+`GetEffectState`, `Set/GetEffectParameters` work; the reverb is our own DSP (`VXRuntime/src/xaudio2_reverb.h`: tapped
+early reflections, 8-line feedback delay network with a Hadamard matrix, all-pass diffusers, one-pole filters; no
+third-party code). What Skyrim VR asks for (Mac run, `VXRT_TRACE_AUDIO=1`): three 2-channel 48 kHz submix voices, one
+effect each; the first holds the built-in reverb (52-byte 2.7 `XAUDIO2FX_REVERB_PARAMETERS`, `WetDryMix` 100, set every
+10 ms while the game fades between cell presets); the other two hold the **game's own guest XAPO "Monitor"** (CLSID
+E2CB584D-B516-49B1-..., 1 in / 1 out), which is kept and passes the sound through unchanged, **never called** (running
+it needs a guest ABI call sequence: Initialize, LockForProcess, Process). Outdoors (Helgen) and in the Bannered Mare the game sets
+every gain to -100 dB (silent reverb); in Bleak Falls Barrow it sets e.g. RoomFilterMain -3 dB, ReflectionsGain -7 dB,
+ReverbGain 0 dB, DecayTime 2.88 s, Density 83. Off: `VXRT_XAUDIO2_NO_EFFECTS=1` (chains accepted, nothing processed:
+the earlier behaviour; then the reverb bus carries a plain copy of its input). Cost: 0.114 s CPU per 185 s of stereo
+48 kHz audio (0.06 % of a core) per reverb voice, measured with `build/xaudio2_reverb_test` (for reference the WMA
+decoder costs 0.12 s per 185 s track); a silent bus costs about nothing. Tests: `build/xaudio2_reverb_test`
+(RT60 within 2 % of DecayTime for 0.5/1/2/4 s, wet/dry, bit-exact dry at 0 %, 120 s tail without NaN/denormals, benchmark)
+and `tests/xaudio2_fx.c` + `tests/xaudio2_fx_check.py` (engine level: disabled effect and the off switch bit-exact with no chain).
+Listening: not yet heard by the user; clips in `/tmp/claude/reverb/` (private).
+
 Related, not a Metal guarantee but a missing Windows feature: xWMA (WMA v2) decoding in XAudio2, merged `43e882f`.
 Cost: about 0.12 s CPU to decode a 185 s stereo track, done packet by packet as it plays. Off: none (WMA was silent
 before, so there is nothing to fall back to).

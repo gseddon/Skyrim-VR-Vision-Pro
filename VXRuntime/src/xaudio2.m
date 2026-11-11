@@ -10,6 +10,7 @@
 #import <AudioToolbox/AudioToolbox.h>
 #include "d3d_common.h"
 #include "wmadec/wmadec.h"
+#include "xaudio2_reverb.h"
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-function"
 #pragma clang diagnostic ignored "-Wunused-variable"
@@ -50,6 +51,9 @@ enum { V_SOURCE, V_SUBMIX, V_MASTER };
 typedef struct engine engine;
 typedef struct voice voice;
 typedef struct { voice *to; float matrix[MAX_CHANNELS * MAX_CHANNELS]; } send;
+// An effect of a voice's chain: the built-in reverb (our DSP, one instance per voice) or an XAPO we do not run.
+#define MAX_EFFECTS 8
+typedef struct { void *xapo; xa_reverb *rv; int enabled; uint8_t params[64]; uint32_t params_size; } fx_slot;
 // An xWMA buffer's packets and how far they are decoded (into the queued buffer's own 16-bit PCM).
 typedef struct { const uint8_t *data; uint32_t *cumulative, packets, next; uint32_t frames, decoded; int started; } xwma_buf;
 typedef struct queued { XA_BUFFER b; uint32_t loops_left; void *own; xwma_buf *x; struct queued *next; } queued;   // own: an xWMA buffer's decoded PCM
@@ -77,6 +81,7 @@ struct voice {
     // all voices
     float volume, channel_volume[MAX_CHANNELS];
     send sends[8]; int nsends;
+    fx_slot fx[MAX_EFFECTS]; int nfx;                // the effect chain (processed in place before the sends)
     float *mix;                                   // submix and mastering voices: this pass's input
     voice *next;
 };
@@ -317,6 +322,7 @@ static void default_matrix(float *m, uint32_t in, uint32_t out) {
     if (in == 2 && out == 1) m[0] = m[1] = 0.5f;
 }
 
+static void fx_process(voice *v, float *frames, uint32_t n);
 static void one_pass(engine *e) {
     uint32_t n = e->quantum;
     for (int i = 0; i < e->ncallbacks; i++) ((*(engine_callback **)e->callbacks[i]))->pass_start(e->callbacks[i]);
@@ -329,13 +335,15 @@ static void one_pass(engine *e) {
             CALL(v->callback, pass_start, v->queue ? 0 : needed);
         }
         render_source(v, frames, n, e->master->rate);
+        fx_process(v, frames, n);
         mix_into(v, frames, n);
         if (v->callback) CALL(v->callback, pass_end);
     }
     for (uint32_t stage = 0; stage < 4; stage++)               // submixes, lower processing stages first
         for (voice *v = e->voices; v; v = v->next)
-            if (v->type == V_SUBMIX && v->stage == stage) mix_into(v, v->mix, n);
+            if (v->type == V_SUBMIX && v->stage == stage) { fx_process(v, v->mix, n); mix_into(v, v->mix, n); }
     voice *m = e->master;
+    fx_process(m, m->mix, n);
     for (uint32_t i = 0; i < n; i++) {
         float *dst = e->ring + (size_t)((e->written + i) % e->ring_frames) * m->channels;
         for (uint32_t c = 0; c < m->channels; c++) dst[c] = m->mix[(size_t)i * m->channels + c] * m->volume * m->channel_volume[c];
@@ -394,13 +402,125 @@ static voice *vself(void *this) { return this; }
 static WINAPI void voice_details(void *this, uint32_t *d) { voice *v = vself(this); d[0] = v->flags; d[1] = v->flags; d[2] = v->channels; d[3] = v->rate; }
 static WINAPI void voice_details27(void *this, uint32_t *d) { voice *v = vself(this); d[0] = v->flags; d[1] = v->channels; d[2] = v->rate; }   // 2.7: no ActiveFlags
 static WINAPI HRESULT voice_set_outputs(void *this, const VOICE_SENDS *s) { voice *v = vself(this); lock(v->eng); set_sends(v, s); unlock(v->eng); return S_OK; }
-// Effects and filters are accepted but not applied yet.
-static WINAPI HRESULT voice_set_effects(void *this, const void *chain) { (void)this; if (chain) d3d_not_implemented("IXAudio2Voice::SetEffectChain (effects)"); return S_OK; }
-static WINAPI HRESULT voice_effect_toggle(void *this, uint32_t i, uint32_t op) { (void)this; (void)i; (void)op; return S_OK; }
+// ---- effects ------------------------------------------------------------------------------------------------------------
+// A voice's effect chain (SetEffectChain): the built-in reverb (CLSID_AudioReverb) runs on our own DSP
+// (xaudio2_reverb.h); an XAPO of any other kind (a program's own: guest code) is kept but not run (logged once).
+// VXRT_XAUDIO2_NO_EFFECTS=1: chains are accepted, nothing is processed.
+static int fx_off(void) { static int off = -1; if (off < 0) { const char *t = getenv("VXRT_XAUDIO2_NO_EFFECTS"); off = t && *t == '1'; if (off) vx_log("XAudio2: effects off (VXRT_XAUDIO2_NO_EFFECTS=1): effect chains are accepted and not processed"); } return off; }
+static void **g_xapo_vtbl;
+static int is_reverb_xapo(void *xapo) { return xapo && *(void ***)xapo == g_xapo_vtbl; }
+typedef struct __attribute__((packed)) { void *effect; int32_t initial_state; uint32_t out_channels; } EFFECT_DESCRIPTOR;
+typedef struct __attribute__((packed)) { uint32_t count; const EFFECT_DESCRIPTOR *descs; } EFFECT_CHAIN;
+// VXRT_TRACE_AUDIO: what a program's own XAPO is (IXAPO::GetRegistrationProperties, a guest call: the friendly name and buffer counts).
+static void fx_trace_guest_xapo(void *xapo) {
+    void **vt = *(void ***)xapo;
+    typedef struct { GUID clsid; uint16_t name[256], copyright[256]; uint32_t major, minor, flags, min_in, max_in, min_out, max_out; } REG;
+    REG *reg = NULL;
+    HRESULT (WINAPI *get_props)(void *, REG **) = (HRESULT (WINAPI *)(void *, REG **))vt[3];
+    HRESULT hr = VX_X86FN(get_props)(xapo, &reg);
+    char name[64] = "?";
+    if (hr == S_OK && reg) { for (int i = 0; i < 63 && reg->name[i]; i++) { name[i] = (char)reg->name[i]; name[i + 1] = 0; } }
+    vx_log("XAudio2: guest XAPO %p: vtable %p, GetRegistrationProperties -> %#x \"%s\"%s", xapo, (void *)vt, (unsigned)hr, name,
+           hr == S_OK && reg ? "" : "");
+    if (hr == S_OK && reg) vx_log("XAudio2: guest XAPO %p: clsid %08X-%04X-%04X, flags %#x, input buffers %u..%u, output buffers %u..%u", xapo,
+                                  reg->clsid.d1, reg->clsid.d2, reg->clsid.d3, reg->flags, reg->min_in, reg->max_in, reg->min_out, reg->max_out);
+}
+static void fx_trace_params(uint32_t i, const void *p, uint32_t n) {
+    char hex[3 * 64 + 1]; uint32_t k = n < 64 ? n : 64;
+    for (uint32_t j = 0; j < k; j++) sprintf(hex + 3 * j, "%02x ", ((const uint8_t *)p)[j]);
+    hex[3 * k] = 0;
+    if (n >= XA_REVERB_PARAMS_SIZE_27) {
+        xa_reverb_params q; memcpy(&q, p, sizeof q);
+        vx_log("XAudio2: SetEffectParameters effect %u, %u bytes: wet %.1f refl_delay %u rev_delay %u early_diff %u late_diff %u lowEQ %u/%u highEQ %u/%u room %.0f Hz main %.1f hf %.1f refl_gain %.1f rev_gain %.1f decay %.2f s density %.0f size %.0f",
+               i, n, q.wet_dry, q.reflections_delay, q.reverb_delay, q.early_diffusion, q.late_diffusion, q.low_eq_gain, q.low_eq_cutoff, q.high_eq_gain, q.high_eq_cutoff,
+               q.room_filter_freq, q.room_filter_main, q.room_filter_hf, q.reflections_gain, q.reverb_gain, q.decay_time, q.density, q.room_size);
+    }
+    vx_log("XAudio2: SetEffectParameters effect %u raw: %s", i, hex);
+}
+static void fx_apply_params(fx_slot *f) {
+    if (!f->rv) return;
+    xa_reverb_params q; xa_reverb_defaults(&q);
+    memcpy(&q, f->params, f->params_size < sizeof q ? f->params_size : sizeof q);
+    xa_reverb_set(f->rv, &q);
+}
+static void fx_free_slot(fx_slot *f) { xa_reverb_free(f->rv); if (f->xapo) d3d_release(f->xapo); memset(f, 0, sizeof *f); }
+static WINAPI HRESULT voice_set_effects(void *this, const void *chain) {
+    voice *v = vself(this);
+    const EFFECT_CHAIN *c = chain;
+    fx_slot fresh[MAX_EFFECTS]; int n = 0;
+    memset(fresh, 0, sizeof fresh);
+    if (c && c->count) {
+        if (c->count > MAX_EFFECTS || !c->descs) return E_INVALIDARG;
+        for (uint32_t i = 0; i < c->count; i++) {
+            EFFECT_DESCRIPTOR d; memcpy(&d, &c->descs[i], sizeof d);
+            if (!d.effect) return E_INVALIDARG;
+            fx_slot *f = &fresh[n++];
+            f->xapo = d.effect; f->enabled = d.initial_state != 0;
+            int reverb = is_reverb_xapo(d.effect);
+            if (xa_trace()) vx_log("XAudio2: SetEffectChain: voice %p (type %d, %u ch, %u Hz) effect %u of %u: %s %p, initial state %d, %u output channels",
+                                   (void *)v, v->type, v->channels, v->rate, i, c->count, reverb ? "reverb" : "XAPO not ours", d.effect, d.initial_state, d.out_channels);
+            if (reverb) {
+                xa_reverb_params q; xa_reverb_defaults(&q);
+                memcpy(f->params, &q, sizeof q); f->params_size = sizeof q;
+                if (d.out_channels == v->channels) f->rv = xa_reverb_new((float)v->rate, (int)v->channels);
+                if (!f->rv) { static int noted; if (!noted++) vx_log("XAudio2: reverb on a voice of %u channels / %u output channels is not supported: it passes the sound through (logged once)", v->channels, d.out_channels); }
+            } else { if (xa_trace()) fx_trace_guest_xapo(d.effect);
+                static int noted; if (!noted++) vx_log("XAudio2: an effect that is not the built-in reverb (XAPO %p) is not run: it passes the sound through (logged once)", d.effect); }
+        }
+        for (int i = 0; i < n; i++) if (fresh[i].xapo) { d3d_addref(fresh[i].xapo); fx_apply_params(&fresh[i]); }
+    }
+    lock(v->eng);
+    fx_slot old[MAX_EFFECTS]; int nold = v->nfx;
+    memcpy(old, v->fx, sizeof old);
+    memcpy(v->fx, fresh, sizeof fresh);
+    v->nfx = n;
+    unlock(v->eng);
+    for (int i = 0; i < nold; i++) fx_free_slot(&old[i]);
+    if (n && !fx_off()) { static int noted; if (!noted++) vx_log("XAudio2: effects active: built-in reverb (own DSP, ~0.06 %% of a core per stereo voice at 48 kHz); VXRT_XAUDIO2_NO_EFFECTS=1 turns them off"); }
+    return S_OK;
+}
+// In the voice render path (the engine thread, under the engine lock): no allocation, no locks of its own.
+static void fx_process(voice *v, float *frames, uint32_t n) {
+    if (!v->nfx || fx_off()) return;
+    for (int i = 0; i < v->nfx; i++) if (v->fx[i].rv && v->fx[i].enabled) xa_reverb_process(v->fx[i].rv, frames, n);
+}
+static void fx_destroy_chain(voice *v) { for (int i = 0; i < v->nfx; i++) fx_free_slot(&v->fx[i]); v->nfx = 0; }
+static WINAPI HRESULT voice_effect_toggle_set(void *this, uint32_t i, int on) {
+    voice *v = vself(this);
+    lock(v->eng);
+    HRESULT r = S_OK;
+    if (i >= (uint32_t)v->nfx) r = XAUDIO2_E_INVALID_CALL;
+    else { if (on && !v->fx[i].enabled && v->fx[i].rv) xa_reverb_reset(v->fx[i].rv); v->fx[i].enabled = on; }
+    unlock(v->eng);
+    return r;
+}
+static WINAPI HRESULT voice_enable_effect(void *this, uint32_t i, uint32_t op) { (void)op; return voice_effect_toggle_set(this, i, 1); }
+static WINAPI HRESULT voice_disable_effect(void *this, uint32_t i, uint32_t op) { (void)op; return voice_effect_toggle_set(this, i, 0); }
 static WINAPI HRESULT voice_set_filter(void *this, const void *p, uint32_t op) { (void)this; (void)p; (void)op; return S_OK; }
-static WINAPI void voice_effect_state(void *this, uint32_t i, int *enabled) { (void)this; (void)i; *enabled = 0; }
-static WINAPI HRESULT voice_effect_params(void *this, uint32_t i, const void *p, uint32_t n, uint32_t op) { (void)this; (void)i; (void)p; (void)n; (void)op; return S_OK; }
-static WINAPI HRESULT voice_get_effect_params(void *this, uint32_t i, void *p, uint32_t n) { (void)this; (void)i; if (p) memset(p, 0, n); return S_OK; }
+static WINAPI void voice_effect_state(void *this, uint32_t i, int *enabled) { voice *v = vself(this); lock(v->eng); *enabled = i < (uint32_t)v->nfx && v->fx[i].enabled; unlock(v->eng); }
+static WINAPI HRESULT voice_effect_params(void *this, uint32_t i, const void *p, uint32_t n, uint32_t op) {
+    (void)op;
+    voice *v = vself(this);
+    if (xa_trace()) fx_trace_params(i, p, n);
+    HRESULT r = S_OK;
+    lock(v->eng);
+    if (i >= (uint32_t)v->nfx || !p) r = XAUDIO2_E_INVALID_CALL;
+    else if (v->fx[i].rv) {
+        if (n < XA_REVERB_PARAMS_SIZE_27) r = E_INVALIDARG;
+        else { v->fx[i].params_size = n < sizeof v->fx[i].params ? n : (uint32_t)sizeof v->fx[i].params; memcpy(v->fx[i].params, p, v->fx[i].params_size); fx_apply_params(&v->fx[i]); }
+    }
+    unlock(v->eng);
+    return r;
+}
+static WINAPI HRESULT voice_get_effect_params(void *this, uint32_t i, void *p, uint32_t n) {
+    voice *v = vself(this);
+    HRESULT r = S_OK;
+    lock(v->eng);
+    if (i >= (uint32_t)v->nfx || !p) r = XAUDIO2_E_INVALID_CALL;
+    else { memset(p, 0, n); memcpy(p, v->fx[i].params, n < v->fx[i].params_size ? n : v->fx[i].params_size); }
+    unlock(v->eng);
+    return r;
+}
 // XAUDIO2_FILTER_PARAMETERS: type (LowPassFilter), frequency, 1/Q; the default is a filter that passes everything.
 static WINAPI void voice_get_filter(void *this, float *p) { (void)this; memset(p, 0, 4); p[1] = 1.0f; p[2] = 1.0f; }
 static WINAPI HRESULT voice_set_output_filter(void *this, void *to, const void *p, uint32_t op) { (void)this; (void)to; (void)p; (void)op; return S_OK; }
@@ -446,6 +566,7 @@ static WINAPI void voice_destroy(void *this) {
     while (v->queue) { queued *q = v->queue; v->queue = q->next; free_queued(q); }
     unlock(e);
     vx_wma_close(v->wma); free(v->wma_scratch); free(v->carry);
+    fx_destroy_chain(v);
     free(v->mix);
     free(v);
 }
@@ -668,7 +789,19 @@ static WINAPI HRESULT engine27_create_master(void *this, voice **out, uint32_t c
     return engine_create_master(this, out, channels, rate, flags, NULL, effects, 0);
 }
 
+static const GUID CLSID_AudioReverb_27 = { 0x6a93130e, 0x1d53, 0x41d1, { 0xa9, 0xcf, 0xe7, 0x58, 0x80, 0x0b, 0xb1, 0x79 } };
+static const GUID IID_IXAPO_ = { 0xa410b984, 0x9839, 0x4819, { 0xa0, 0xbe, 0x28, 0x56, 0xae, 0x6b, 0x3a, 0xdb } };
+static const GUID IID_IXAPOParameters_ = { 0x26d95c66, 0x80f2, 0x499a, { 0xad, 0x54, 0x5a, 0xe7, 0xf0, 0x1c, 0x6d, 0x98 } };
+static WINAPI HRESULT xapo_qi(void *this, const GUID *iid, void **out) {
+    if (d3d_same_guid(iid, &IID_IUnknown_) || d3d_same_guid(iid, &IID_IXAPO_) || d3d_same_guid(iid, &IID_IXAPOParameters_)) { d3d_addref(this); *out = this; return S_OK; }
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+static WINAPI uint32_t xapo_addref(void *this) { return d3d_addref(this); }
+static WINAPI uint32_t xapo_release(void *this) { return d3d_release(this); }
+static WINAPI HRESULT xapo_unused(void *this) { (void)this; return d3d_not_implemented("IXAPO method (the reverb is processed by the voice)"); }
 static pthread_once_t g_once = PTHREAD_ONCE_INIT;
+static void make_tables(void);
 // A copy of a vtable with the named methods replaced.
 static void **patched(void **base, const char *const *names, int count, const d3d_method *impl) {
     void **vt = calloc((size_t)count, sizeof(void *));
@@ -685,7 +818,7 @@ static void make_tables(void) {
         { NULL, NULL } };
 #define VOICE_METHODS \
         { "GetVoiceDetails", (void *)voice_details }, { "SetOutputVoices", (void *)voice_set_outputs }, { "SetEffectChain", (void *)voice_set_effects }, \
-        { "EnableEffect", (void *)voice_effect_toggle }, { "DisableEffect", (void *)voice_effect_toggle }, { "SetFilterParameters", (void *)voice_set_filter }, \
+        { "EnableEffect", (void *)voice_enable_effect }, { "DisableEffect", (void *)voice_disable_effect }, { "SetFilterParameters", (void *)voice_set_filter }, \
         { "GetEffectState", (void *)voice_effect_state }, { "SetEffectParameters", (void *)voice_effect_params }, \
         { "GetEffectParameters", (void *)voice_get_effect_params }, { "GetFilterParameters", (void *)voice_get_filter }, \
         { "SetOutputFilterParameters", (void *)voice_set_output_filter }, { "GetOutputFilterParameters", (void *)voice_get_output_filter }, \
@@ -720,6 +853,14 @@ static void make_tables(void) {
         { "CreateMasteringVoice", (void *)engine27_create_master }, { "StartEngine", (void *)engine_start }, { "StopEngine", (void *)engine_stop },
         { "CommitChanges", (void *)engine_commit }, { "GetPerformanceData", (void *)engine_perf }, { "SetDebugConfiguration", (void *)engine_debug },
         { NULL, NULL } };
+    // the reverb XAPO: IUnknown and IXAPO's ten methods (unused: the voice does the work)
+    static const char *const vt_xapo[] = { "QueryInterface", "AddRef", "Release", "GetRegistrationProperties", "IsInputFormatSupported", "IsOutputFormatSupported",
+        "Initialize", "Reset", "LockForProcess", "UnlockForProcess", "Process", "CalcInputFrames", "CalcOutputFrames", "SetParameters", "GetParameters" };
+    static void *const stub_xapo[15] = { (void *)xapo_unused, (void *)xapo_unused, (void *)xapo_unused, (void *)xapo_unused, (void *)xapo_unused,
+        (void *)xapo_unused, (void *)xapo_unused, (void *)xapo_unused, (void *)xapo_unused, (void *)xapo_unused, (void *)xapo_unused, (void *)xapo_unused,
+        (void *)xapo_unused, (void *)xapo_unused, (void *)xapo_unused };
+    static const d3d_method xapo_impl[] = { { "QueryInterface", (void *)xapo_qi }, { "AddRef", (void *)xapo_addref }, { "Release", (void *)xapo_release }, { NULL, NULL } };
+    g_xapo_vtbl = d3d_vtable(vt_xapo, stub_xapo, 15, xapo_impl);
     g_engine27_vtbl = d3d_vtable(vt_engine27, stub_engine27, 16, eng27);
 }
 
@@ -749,16 +890,28 @@ static HRESULT create_engine27(const void *iid, void **out) {
     d3d_release(&e->base);
     return r;
 }
+// The reverb XAPO a program gets from CoCreateInstance(CLSID_AudioReverb) (2.7) or XAudio2CreateReverb (2.8+): an
+// IXAPO object that is only a handle. The voice it is put on runs our DSP with its parameters (SetEffectParameters).
+static HRESULT create_reverb(const void *iid, void **out) {
+    pthread_once(&g_once, make_tables);
+    if (xa_trace()) vx_log("XAudio2: CoCreateInstance (CLSID_AudioReverb)");
+    d3d_object *o = d3d_alloc(sizeof *o, K_STATE, g_xapo_vtbl, NULL);
+    HRESULT r = xapo_qi(o, iid, out);
+    d3d_release(o);
+    return r;
+}
+static WINAPI HRESULT XAudio2CreateReverb(void **out, uint32_t flags) { (void)flags; return create_reverb(&IID_IUnknown_, out); }
 static WINAPI HRESULT XAudio2CreateWithVersionInfo(void **out, uint32_t flags, uint32_t processor, DWORD version) { (void)version; return XAudio2Create(out, flags, processor); }
 
 void vx_com_register_class(const void *clsid, HRESULT (*create)(const void *iid, void **out));
-static const vx_export xaudio2[] = { VX_EXPORT(XAudio2Create), VX_EXPORT(XAudio2CreateWithVersionInfo) };
+static const vx_export xaudio2[] = { VX_EXPORT(XAudio2Create), VX_EXPORT(XAudio2CreateWithVersionInfo), VX_EXPORT(XAudio2CreateReverb) };
 void vx_xaudio2_init(void) {
     vx_register_module("xaudio2_9.dll", xaudio2, sizeof xaudio2 / sizeof xaudio2[0]);
     vx_register_module("xaudio2_9redist.dll", xaudio2, sizeof xaudio2 / sizeof xaudio2[0]);
     vx_register_module("xaudio2_8.dll", xaudio2, sizeof xaudio2 / sizeof xaudio2[0]);
     vx_com_register_class(&CLSID_XAudio2_27, create_engine27);
     vx_com_register_class(&CLSID_XAudio2_27_Debug, create_engine27);
+    vx_com_register_class(&CLSID_AudioReverb_27, create_reverb);
 }
 
 #ifdef __aarch64__
