@@ -6,6 +6,8 @@
 //
 //  VXRT_PRELOAD=<dll>;<dll>...   loaded in this process after the program's image and TLS callbacks, before its entry
 //                                point (where the injected thread's LoadLibrary ran), in order.
+//  VXRT_PRELOAD_AT=telemetry     load the list when the program's start-up code calls __telemetry_main_invoke_trigger (after its
+//                                static constructors, before main) instead of before its entry point.
 //  VXRT_EXEC_REGION=<dll name>   executable VirtualAlloc commits (the script extender's branch trampoline and code buffer)
 //                                are served from the first section of that already loaded image, 64 KB slices in
 //                                request order, zeroed. The image is a module made ahead of time from a capture, so the
@@ -315,8 +317,24 @@ static void watch_start(void) {
     vx_log("codehooks: watching %d executable sections and the region every %d ms for code writes outside the capture", g_nwatch, g_watch_ms);
 }
 
-// Called by the loader once the program's image is mapped and its imports are bound.
+static int g_preload_done;
+static void preload_now(void);
+// Called by the loader once the program's image is mapped and its imports are bound: the place the injected thread's LoadLibrary ran.
+// With VXRT_PRELOAD_AT=telemetry the list is loaded later instead, when the program's C runtime start-up calls
+// VCRUNTIME140!__telemetry_main_invoke_trigger (after its static constructors, right before main): where sksevr_steam_loader.dll
+// loads SKSE for the Steam build, and what plugins that read game objects (SkyrimVRTools) need.
 void vx_codehooks_preload(void) {
+    const char *at = getenv("VXRT_PRELOAD_AT");
+    if (at && !strcmp(at, "telemetry")) return;
+    preload_now();
+}
+void vx_codehooks_telemetry(void) {
+    const char *at = getenv("VXRT_PRELOAD_AT");
+    if (at && !strcmp(at, "telemetry")) preload_now();
+}
+static void preload_now(void) {
+    if (g_preload_done) return;
+    g_preload_done = 1;
     const char *list = getenv("VXRT_PRELOAD");
     if (!list || !*list) return;
     void *(WINAPI *load)(const char *) = (void *(WINAPI *)(const char *))vx_find_export("kernel32.dll", "LoadLibraryA");

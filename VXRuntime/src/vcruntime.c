@@ -611,7 +611,7 @@ static WINAPI BOOL __vcrt_InitializeCriticalSectionEx(void *cs, DWORD spin, DWOR
 }
 // The supported Microsoft runtime implements both hooks as empty returns.
 // Preserve the caller's last error and leave initialization unaffected.
-static WINAPI void __telemetry_main_invoke_trigger(void *instance) { }
+static WINAPI void __telemetry_main_invoke_trigger(void *instance) { void vx_codehooks_telemetry(void); vx_codehooks_telemetry(); }   // (VXRT_PRELOAD_AT=telemetry: where SKSE VR's steam loader loads it)
 static WINAPI void __telemetry_main_return_trigger(void *instance) { }
 static vx_export g_vcruntime[] = {
     VX_EXPORT(__vcrt_InitializeCriticalSectionEx),

@@ -96,7 +96,7 @@ def build(a):
         if m.get('kind') not in KINDS: sys.exit(f"{m['id']}: kind must be one of {KINDS}")
         if not isinstance(m.get('priority'), int): sys.exit(f"{m['id']}: priority must be an integer")
     (out / 'merged' / 'Data').mkdir(parents=True)
-    res = []; plugins = []; skse_plugins = []
+    res = []; plugins = []; skse_plugins = []; shadow = []
     for m in sorted(mods, key=lambda m: (m['priority'], m['id'])):
         r = dict(id=m['id'], name=m.get('name', m['id']), kind=m['kind'], enabled=bool(m.get('enabled', True)), priority=m['priority'],
                  plugins=list(m.get('plugins', [])), memory_hint_mb=m.get('memory_hint_mb'), size_bytes=m.get('size_bytes'), files=None,
@@ -111,6 +111,9 @@ def build(a):
             clone(src / 'Data', out / 'mods' / m['id'] / 'Data')
             clone(src / 'Data', out / 'merged' / 'Data')          # in priority order, so a higher priority overwrites
             r.update(active=True, path=f"mods/{m['id']}", files=n, size_bytes=size)
+            if m.get('shadow_install'):                      # (this mod's files may replace loose files of the install: SKSE's own .pex scripts)
+                r['shadow_install'] = True
+                shadow.extend(str(q.relative_to(src / 'Data')).replace(os.sep, '/') for q in sorted((src / 'Data').rglob('*')) if q.is_file())
             if m['kind'] == 'skse':
                 for e in skse_plugin_files(src / 'Data'):
                     e['mod'] = m['id']
@@ -130,7 +133,7 @@ def build(a):
     (out / 'Plugins.txt').write_text(ptxt, newline=''); (out / 'merged' / 'Plugins.txt').write_text(ptxt, newline='')
     act = [r for r in res if r['active']]
     doc = dict(version=1, profile=cfg.get('profile', 'default'), merged='merged', plugins_txt='Plugins.txt', plugins=plugins, mods=res,
-               skse_plugins=skse_plugins,
+               skse_plugins=skse_plugins, shadow_install=shadow,
                totals=dict(active_mods=len(act), active_files=sum(r['files'] for r in act), active_size_bytes=sum(r['size_bytes'] for r in act),
                            active_memory_hint_mb=sum(r['memory_hint_mb'] or 0 for r in act)))
     (out / 'mods.json').write_text(json.dumps(doc, indent=1))
