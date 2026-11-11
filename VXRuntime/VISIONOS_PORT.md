@@ -15,7 +15,7 @@ The answer, with evidence, and a plan for each wall.
   8 are left out and 3 added (below). Every source is compiled with `xros/vx_xros.h` included first and `xros/include` ahead of
   the SDK, so most macOS-only calls are answered there instead of in the sources.
 - **The app "VX Runtime"** (`xros/app`, bundle id `exampleprefix.VXRuntimeHost`, team EXAMPLETEAM, xcodegen;
-  `make xros-app`). Separate from VX Proto (`exampleprefix.VisionOSProto`) and the VeRantyx client
+  `make xros-app`). Separate from VX Proto and the streaming client
   (`exampleprefix.VisionSpatialTools`). One flat UIKit window; the Windows program named by `-test <name>` runs in it.
   Entitlements: `increased-memory-limit`, `extended-virtual-addressing` (both granted by the team's automatic
   profile, checked with `codesign -d --entitlements`). 19 MB installed, of which 15.6 MB is the executable.
@@ -67,7 +67,7 @@ Not walls at compile time: Rosetta-only paths (the ARM64 build has none), pthrea
 ## What runs (visionOS 26.0 simulator on this Mac; the headset run is pending: see below)
 
 Each from the bundle, `VXRT_AOT_STRICT=1`, no JIT, modules linked into the app. Logs in
-`~/Verantyx_VR_Drive/wt/runs/avp-port/sim/`.
+the author's run folder `avp-port/sim/` (not in git).
 
 | Program | Result |
 | --- | --- |
@@ -86,7 +86,7 @@ signals, x86 SEH and unwinding, threads and TLS, SIMD. The GPU side has to be ju
 ## On the headset (Vision Pro M2, visionOS 27.0, 08:49-09:10)
 
 Run with `tools/xros_device_run.sh` once the headset was worn; logs and crash reports in
-`~/Verantyx_VR_Drive/wt/runs/avp-port/device/`.
+the author's run folder `avp-port/device/` (not in git).
 
 **First run: every program died at its first instruction.** Crash reports: `EXC_BAD_ACCESS (SIGKILL)
 KERN_PROTECTION_FAILURE at 0x1400020e0`, termination `CODESIGNING / Invalid Page`, from `program_thread`. The ARM64
@@ -119,7 +119,7 @@ Memory while D3D12 ran: at least 8021 MB still available.
 
 ## Round 2 (2026-10-30, 09:30-11:00): VR first, the arena, frameworks, the walls 5, 6, 9, 11
 
-All on the headset unless said; logs in `~/Verantyx_VR_Drive/wt/runs/avp-port/device2..5` (and `sim/`).
+All on the headset unless said; logs in the author's run folder `avp-port/device2..5` (not in git) (and `sim/`).
 
 ### The immersive presentation (wall 10: done for our test programs)
 
@@ -320,7 +320,7 @@ install into `Documents/root/drive_c/...`, UserSettings.json). No Steam client i
 ## Round 3 (2026-10-30, 11:50-12:55): Cyberpunk 2077 launched on the headset
 
 avp-mem and avp-preflight merged (Mac `make check`: 591 "ok" lines before and after). Logs:
-`~/Verantyx_VR_Drive/wt/runs/avp-port/cp1..cp9` (device), `runs/avp-port/mac/hw1..hw7` (Mac, same game, Steam-less).
+the author's run folder `avp-port/cp1..cp9` (not in git) (device), `runs/avp-port/mac/hw1..hw7` (Mac, same game, Steam-less).
 
 **Launch path.** `-game cyberpunk` (main.m `game_start`): the install already in `Documents/root/drive_c/Program Files
 (x86)/Steam/steamapps/common/Cyberpunk 2077` (checked before and after every `devicectl device install app`; never
