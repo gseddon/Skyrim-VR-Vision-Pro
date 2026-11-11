@@ -30,9 +30,10 @@
 # tools/skyrim_aot_pipeline.py with the lazy-FPCR stubs; the previous set is $B/aot-splits4a); SKYRIM_ASSET_ROOT; STEAMVR_WIN64_DLLS; XRIZER_RUST_ROOT.
 set -eu
 R=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-B=${SKYRIM_AOT_BASE:-/Users/gseddon/git/Skyrim-VR-Vision-Pro/build/worktrees/terra-skyrim-aot/build/private/skyrimvr/6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971}
-ASSETS=${SKYRIM_ASSET_ROOT:-/Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SkyrimVR}
-VRWEB=${STEAMVR_WIN64_DLLS:-/Users/gseddon/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SteamVR/bin/vrwebhelper/win64}
+[ -f "${VXRT_LOCAL_ENV:-$R/local/env.sh}" ] && . "${VXRT_LOCAL_ENV:-$R/local/env.sh}"   # the player's own settings (local.example.sh)
+B=${SKYRIM_AOT_BASE:-${VXRT_SKYRIM_DIR:-${VXRT_PRIVATE_ROOT:-$R/build/private}/skyrimvr/6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971}}
+ASSETS=${SKYRIM_ASSET_ROOT:?set SKYRIM_ASSET_ROOT to your SkyrimVR folder (local/env.sh; docs/SETUP_SKYRIM.md)}
+VRWEB=${STEAMVR_WIN64_DLLS:?set STEAMVR_WIN64_DLLS to the bin/vrwebhelper/win64 folder of SteamVR (local/env.sh)}
 XRIZER_ENV_DIR=$R/third_party/xrizer; . "$XRIZER_ENV_DIR/rust-env.sh"; T=$XRIZER_RUST_ROOT
 SECONDS_LIMIT=3600; BUILD=1; RUN=1; MUTE=0; HUD=0; KEYSCRIPT=; TRACE_CALLS=0; HELGEN=0; XRIZER_PROFILE=release; MODS=; MODSCFG=
 while [ $# -gt 0 ]; do
