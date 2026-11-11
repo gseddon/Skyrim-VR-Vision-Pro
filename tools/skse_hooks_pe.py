@@ -41,11 +41,15 @@ def main():
     ap.add_argument('--capture')
     ap.add_argument('--image', action='append', default=[])
     ap.add_argument('--roots')
+    ap.add_argument('--exe-roots', help='write the addresses in the region that point into the program image, as roots for its module '
+                    '(where a stub jumps back to: after the bytes a hook replaced, which nothing else reaches); needs --exe-base/-preferred/-size')
+    ap.add_argument('--exe-base'); ap.add_argument('--exe-preferred'); ap.add_argument('--exe-size')
     a = ap.parse_args()
     base, size = int(a.base, 16), int(a.size, 16)
     bases = {k.lower(): int(v, 16) for k, v in (x.split('=') for x in a.image)}
     content = bytearray()
     patches = []
+    pointers = []     # 'T' lines: pointers into the region written into data (vtable swaps)
     if a.capture:
         with open(a.capture) as f:
             for line in f:
@@ -56,6 +60,8 @@ def main():
                     off = int(p[2], 16)
                     assert off == 0x1000, 'region offset %#x: the region is the first section at RVA 0x1000' % off
                     content = bytearray.fromhex(p[3])
+                elif p[0] == 'T':
+                    pointers.append(int(p[3], 16))
                 elif p[0] == 'P':
                     patches.append((p[1].lower(), int(p[2], 16), bytes.fromhex(p[3])))
     roots = set()
@@ -70,6 +76,34 @@ def main():
                 t = bases[name] + rva + i + 5 + rel
                 if base + 0x1000 <= t < base + 0x1000 + len(content):
                     roots.add(t)
+    lo, hi = base + 0x1000, base + 0x1000 + len(content)
+    # rel32 patches through a pointer slot (FF 15 / FF 25: Write6Branch/Write6Call): the slot is in the region and holds the stub
+    for name, rva, data in patches:
+        if name not in bases:
+            continue
+        for i in range(0, max(0, len(data) - 5)):
+            if data[i] == 0xff and data[i + 1] in (0x15, 0x25):
+                slot = bases[name] + rva + i + 6 + struct.unpack_from('<i', data, i + 2)[0]
+                if lo <= slot and slot + 8 <= hi:
+                    t = struct.unpack_from('<Q', content, slot - lo)[0]
+                    if lo <= t < hi:
+                        roots.add(t)
+    roots.update(pointers)
+    # and any 8-byte value inside the region that points into it (a stub reached through a data pointer): a root is harmless if it
+    # is not code, the generator refuses what it cannot decode
+    for i in range(0, max(0, len(content) - 7)):
+        t = struct.unpack_from('<Q', content, i)[0]
+        if lo <= t < hi:
+            roots.add(t)
+    if a.exe_roots:
+        eb, ep, es = int(a.exe_base, 16), int(a.exe_preferred, 16), int(a.exe_size, 16)
+        er = set()
+        for i in range(0, max(0, len(content) - 7)):
+            t = struct.unpack_from('<Q', content, i)[0]
+            if eb <= t < eb + es:
+                er.add(t - eb + ep)       # (the pipeline shifts roots from the preferred base)
+        open(a.exe_roots, 'w').write(''.join('%x\n' % r for r in sorted(er)))
+        print('%d roots in the program image' % len(er), file=sys.stderr)
     open(a.out, 'wb').write(build(base, size, content))
     if a.roots:
         open(a.roots, 'w').write(''.join('%x\n' % r for r in sorted(roots)))
