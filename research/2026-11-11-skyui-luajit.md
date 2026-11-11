@@ -30,3 +30,15 @@ The JIT engine has to be off: `jit.off()` is `luaJIT_setmode(L, 0, LUAJIT_MODE_E
 ## Capture note
 
 The capture depends on the plugin load order; `FindFirstFile` has returned sorted names since 03:30 (section 5d), so the captures of the 01:xx SkyUI runs (host order) fail `VXRT_CODE_VERIFY` with the current runtime (60 entries differ). All runs here use a new capture (`cap-dev5`, 104 code runs, taken at the device bases with the four plugins in sorted order).
+
+## Validation (subject: actual game on the Mac, strict AOT, device module layout `VXRT_AOT_ARENA=0x7000000000`, 1 GB; not a headset run, not a playability claim)
+
+Modules: the SKSE set with SkyrimVRTools, HIGGS, PLANCK and SkyUI VR (SkyUI sweep `1000-5200`), made from `cap-dev5` (taken on the Mac at the device bases, sorted plugin order), hooks module hash as in `pipe-d5`; pack = the earlier mods-set plus `skyui-vr-nojit`. `VXRT_CODE_VERIFY` + `VXRT_CODE_WATCH=1000`, input A every 2 s (Helgen path), 200 s limit (the harness ends the run: `timed_out`, returncode -9 is the limit, not a crash).
+
+| Run | Pack | Result |
+| --- | --- | --- |
+| `play-081138` | old capture `cap-dev-early` (host-order) | `VXRT_CODE_VERIFY` stops at start-up: 60 of 105 entries differ (capture invalid with sorted listings) |
+| `play-082014` | with `cap-dev5`, no `jit.off()` | guard log, `PANIC ... runtime code generation failed`, strict stop at `0x704210fe54` after 37 s: the original failure reproduced |
+| `play-082505`, `play-082829`, `play-083153` | with `cap-dev5`, `skyui-vr-nojit` | 200 s, 1.41 G / 0.98 G / 1.25 G entries into recompiled code, **0 fallbacks**, no LATE CODE WRITE, verify passed, no 1655 refusal (LuaJIT never tries to compile), no PANIC |
+
+Three runs, not five: the series was cancelled by the user after run 3. `make -C VXRuntime check` was not run after this change; `make dynamic-code-check` (new) and `python3 -I tests/mods_override_test.py` pass. Not observed: SkyUI's inventory/MCM menus (Helgen cart), the device (the SKSE agent owns it).
