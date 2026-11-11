@@ -252,3 +252,92 @@ Smallest first milestones, in order:
 2. Static replay on the Mac: apply that diff to a private copy of the PE, AOT the patched exe plus the SKSE and HIGGS DLLs plus a stub module, run strict AOT: HIGGS logs its load line, zero fallback, no runtime code writes.
 3. A fixture round-trip for the OpenVR calls HIGGS makes (role lookup, connected, pose velocities, haptic pulse) through the generated guest stubs against xrizer, with the Sense fixture.
 4. Only then add VRIK (capture first), then PLANCK; then a physical-headset session for feel, grip offsets and frame cost.
+
+## 8. Findings from the user's downloads (2026-11-11): HIGGS 1.10.10, PLANCK 0.8.2, SkyUI
+
+Subject: static reading of the zip files in `~/Downloads` (listed and parsed in memory by `python3 -I` scripts kept outside the repo; nothing extracted or run). Complements section 7, which read the source. Combined plan: [plans/2026-11-11-skyrim-mods-combined.md](../plans/2026-11-11-skyrim-mods-combined.md).
+
+### 8.1 HIGGS 1.10.10 and PLANCK 0.8.2 [measured]
+
+| | HIGGS 1.10.10 | PLANCK 0.8.2 |
+| --- | --- | --- |
+| Archive | `HIGGS 1.10.10-43930-1-10-10-1768263289.zip`, 11 entries | `PLANCK 0.8.2 66025 ... .zip`, 10 entries |
+| DLL | `SKSE/Plugins/higgs_vr.dll`, 877,568 bytes, x64, PE time stamp 2026-01-13 | `SKSE/Plugins/activeragdoll.dll`, 736,768 bytes, x64, time stamp 2026-10-12 |
+| Exports | `SKSEPlugin_Query`, `SKSEPlugin_Load` (old SKSE plugin API, so SKSE VR 2.0.12 style; no `SKSEPlugin_Version`) | same |
+| Imports | KERNEL32 (112), USER32 (`MessageBoxA`), SHELL32 (`SHGetFolderPathA`), WINMM (`timeGetTime`, `timeBeginPeriod`, `timeGetDevCaps`). No OpenVR, no Address Library DLL | KERNEL32 (98), same others |
+| Notable kernel32 | `VirtualProtect/Alloc/Free/Query`, `GetModuleHandleA/W/ExW`, `GetProcAddress`, `LoadLibraryExW`, `RtlVirtualUnwind`, `SetUnhandledExceptionFilter`, `CreateThread/ExitThread/FreeLibraryAndExitThread`, `GetPrivateProfileStringA` | same minus the thread functions |
+| Data files | `higgs_vr.esp` (TES4, form 44, not ESL, masters Skyrim.esm and Update.esm), `Scripts/HiggsVR.pex` (+ `.psc`), `higgs_vr.ini` (593 lines), a 17.5 MB `.pdb` | `Scripts/planck.pex` (+ `.psc`), `activeragdoll.ini` (758 lines), a 17.5 MB `.pdb`; **no ESP** |
+| Needs | SKSE VR (messages, task and Papyrus interfaces; "Couldn't get SKSE VR interface. You probably have an outdated SKSE version"); the ESP active; VRIK optional | SKSE VR; HIGGS (interface and minimum version); a branch trampoline **and a code-generation buffer** from SKSE (both fatal when missing) |
+| Log files | via `Data\SKSE\Plugins\higgs_vr.ini` for settings | `\My Games\Skyrim VR\SKSE\activeragdoll.log` |
+
+Strings in the release builds match the source reading of section 7: HIGGS reports hooks such as "PlayerCharacter::Update pre-vrik hook complete", "Actor::Jump bhkCharacterController::SetJumping hook complete", "ArrowProjectile::AddImpact bhkCollisionObject::GetRigidBody hook complete", "Adding listeners and collision to new havok world", Papyrus events for grab, pull, drop, stash, consume and two-handing; PLANCK has hook functions such as `BSLookAtModifier_modify_Hook`, `ahkpCharacterProxy_updateManifold_Hook`, `ActorProcess_ExitFurniture_ResetRagdoll_Hook` and RTTI of `hkbRagdollDriver`, `hkpContactListener`. This confirms the hook families; the exact byte sites of these two versions still need the Mac capture (the source I read in section 7 is a later push than the HIGGS build date: the API showed 2026-05-15 for HIGGS, the DLL is 2026-01-13, so the site list could differ by version) [inferred].
+
+### 8.2 What our runtime needs to load them
+
+1. **A Plugins.txt and ESP layer.** HIGGS stops if its ESP is not active. In the Mac trace the game tried `C:\users\vxrt\AppData\Local\Skyrim VR\Plugins.txt` and failed to open it [measured]; nothing writes it. M0 of the combined plan.
+2. **An in-process SKSE VR.** The loader (`skse_loader.exe`) starts the game suspended and injects `sksevr_1_4_15.dll`; neither step exists for us (`posix_spawn` refused on visionOS, `VISIONOS_PORT.md:308`; no remote thread). The core DLL then patches the exe (Papyrus registration, game-start and save/load hooks, Scaleform, messaging). Under strict AOT the translated exe never reads its own code bytes, so those writes must be captured and baked in (option A), or the exe translated with patch slots (option B/catalog).
+3. **AOT of the plugin DLLs** with the same pipeline as the game DLLs (`tools/skyrim_aot_pipeline.py`); both are plain x64 DLLs with a small import set, no TLS callbacks were checked [unverified: `.tls` directory and static constructors need a look when the DLL is first translated].
+4. **The generated stubs**: HIGGS and PLANCK write Xbyak code into the SKSE codegen buffer at load; capture it on the Mac and ship it as an extra AOT module whose addresses match (fixed base).
+5. **Address Library**: not needed by these two. Needed only by other plugins.
+6. **Havok, player character, controller input**: all inside the exe at fixed offsets (called or hooked); controller input is the game's cached `IVRSystem` pose array and role lookups, which xrizer implements (section 7.3). No new OpenVR hook.
+7. **A guest ABI check** for the calls HIGGS and PLANCK make through the game's `IVRSystem` (haptics, velocities), per `AGENTS.md`.
+
+### 8.3 SkyUI package [measured]
+
+`SkyUI-12604-6-11-1778020881.zip`: two entries. `SkyUI_SE.esp` (2433 bytes, TES4 flags 0x200 = **ESL**, form version 44, HEDR 1.70, master Skyrim.esm, SNAM "SkyUI SE 6.0") and `SkyUI_SE.bsa` (2.9 MB, v105, flags 0x3, uncompressed; 71 files: 47 SWF, 12 PEX, 11 text, 1 DDS). The SWFs replace vanilla menus (inventory, magic, barter, container, gift, favorites, crafting, map, quest journal, start menu, HUD, loading, message box, ...) and add `skyui/` panels, icon sets and MCM (`configpanel.swf`, `mcm_splash.swf`). The scripts are `ski_main`, `ski_configbase`, `ski_configmanager`, `ski_configmenu`, `ski_favoritesmanager`, `ski_settingsmanager`, `ski_widgetbase`, `ski_widgetmanager`, `ski_activeeffectswidget`, `ski_questbase`, `ski_qf_configmanagerinstance`, `ski_playerloadgamealias`. There is no `*vr*` file name; whether this is the VR-usable build is for the user to confirm on the Nexus page [unverified].
+
+SKSE dependency, measured in the data: `SKI_Main.pex` has the error constants `ERR_SKSE_MISSING`, `ERR_SKSE_VERSION_RT`, `ERR_SKSE_VERSION_SCPT`, `ERR_SKSE_BROKEN`, `MinSKSERelease` and the messages "The Skyrim Script Extender (SKSE64) is not running", "SKSE64 is outdated", with `GetVersionRelease`; 15 SWFs contain the `skse` identifier (inventory 12, magic 12, container 12, map 11, configpanel 11, crafting 10, barter 10, gift 10, favorites 9, inventorylists 9, mapfinderpanel 9, bottombar 5, itemcard 5, widgetloader 2, activeeffects 3, plus single references in start menu, message box and quest journal); the Papyrus uses `UI.Invoke`, `InvokeBool/Int/String/...A`, `RegisterForModEvent`, `SendModEvent`, `RegisterForMenu`. So: without SKSE the SWFs may load but the menus lose their extended data, and `SKI_Main` shows its error box. They do not work usefully without SKSE; they need from the SKSE core only (a) the Papyrus natives `SKSE`, `UI`, `ModEvent`, menu registration, (b) the Scaleform `skse` object and `ExtendData` hooks. Both live in the SKSE core DLL, no per-game-site patches of SkyUI's own.
+
+### 8.4 SkyUI, data side through `--mods-dir`
+
+The BSA loads automatically because its name matches the ESP (`SkyUI_SE.esp`/`.bsa`) when the ESP is active [community]; both files are top-level entries of `Data/`, which `--mods-dir` already links as symlinks (the lever links any top-level entry; `tools/skyland_flatten.py` refuses `.esp/.bsa` on purpose, so a general flattener is needed, M0). Needs: `Plugins.txt` with `*SkyUI_SE.esp`; the ESL flag solved (the VR exe has no light-plugin support [community]: either the "Skyrim VR ESL Support" plugin or a private copy of the ESP with bit 0x200 of the TES4 flags cleared; check the record list first); the game's `Interface/Translations` lookups find `skyui_se_english.txt` inside the BSA. Scaleform rendering of the extra SWFs is the game's own code path (the vanilla `interface` BSA is already used), so no new renderer work is expected [inferred]; the VR menus are drawn on the game's own VR UI quad.
+
+### 8.5 Phasing of SkyUI (also in the combined plan)
+
+After the data layer (M0) and the SKSE core (M1/M2), before HIGGS: SkyUI needs no exe patches of its own, so it is the cheapest consumer of the SKSE bootstrap and the first end-to-end proof of Papyrus natives and Scaleform extension. Acceptance: Mac strict AOT, no `ERR_SKSE_*` box, MCM page opens and saves a setting to the overlay; the headset check is a human opening the menu with the Sense controllers and reading it.
+
+## 9. Skyland on the Mac: loose-file proof, A/B, full-install smoke (2026-11-11)
+
+Subject: actual game on the Mac development host (strict AOT, `--experimental-xrizer`, synthetic head, Helgen cart intro with the scripted pad, empty `sIntroSequence` through `--overlay-ini`), **not a headset**. Runtime built from this branch; AOT set `aot-fpcr-d5b2320`; shader cache a private clone of the 10,807-entry cache (no `pending/` appeared in any run, so no new shader was needed). Texture bytes are summed from `VXRT_TRACE_TEXTURES` lines (`Direct3D: texture WxH ... mips M format F`), BC block sizes from the DXGI format, all mips; the host is not paced by a display, so its frame rate is a throughput proxy and noisy. Logs: `build/mods-<label>/startup.log` in the worktree (git-ignored); runs list `/tmp/claude/perf/mods/runs.log`.
+
+### 9.1 Loose files override the BSAs with no ini change [measured]
+
+| Run | Mods | What the trace shows |
+| --- | --- | --- |
+| P0 | none | `GetFileAttributesEx(...\data\TEXTURES\): error 2`, same for `MESHES`: the game probes the loose directories at start and finds none |
+| P1 | one file, `Textures/Landscape/dirt01.dds` (from Skyland) | `data\TEXTURES\` found; `FindFirstFile` lists `Landscape\` and `dirt01.dds` (size 699192 = the mod's file); later `CreateFile(...\data\TEXTURES\Landscape\dirt01.dds): opened`. No `[Archive]` key was set |
+| S1 | full install (below) | 414 loose texture opens and 314 loose mesh opens, `Plugins.txt` opened, both ESPs opened (`fopen(...\DATA\Lit Road Signs.esp)`); the game also looked for `data/Lit Road Signs.ini`, i.e. it registered the plugin |
+
+So `--mods-dir` works for textures, meshes and ESPs, and `bInvalidateOlderFiles` / `sResourceDataDirsFinal` are not needed (the section 2 assumption holds for VR 1.4.15 on our runtime).
+
+### 9.2 A/B, tier 1 (Landscapes + Whiterun, 516 files, 661 MB), 150 s each, order A B B A
+
+| Run | Mod | Textures created | BC bytes | Other bytes | Total | Frames / s (proxy) | Fallbacks | Footprint max |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A1 | no | 2517 | 1467 MB | 686 MB | 2153 MB | 6001 in 141 s (42) | 0 | 6439 MB |
+| B1 | tier 1 | 2570 | 1478 MB | 690 MB | 2168 MB | 8274 in 142 s (58) | 0 | not captured |
+| B2 | tier 1 | 2568 | 1480 MB | 690 MB | 2169 MB | 8545 in 143 s (60) | 0 | not captured |
+| A2 | no | 2542 | 1489 MB | 682 MB | 2171 MB | 9871 in 144 s (69) | 0 | not captured |
+
+Reading: **texture memory created is the same with and without the mod (2153 to 2171 without, 2168 and 2169 with; the spread between the two identical no-mod runs is 18 MB)**, in this scene (Helgen forest, the part of the world the tier-1 files cover least). The frame-rate proxy ranges overlap (42 and 69 without, 58 and 60 with) and cannot show a difference; it is not a measure of the headset. Footprint: only A1 was captured correctly (6.3 to 6.4 GB; my sampler matched the Python wrapper in the other three runs: a sampler bug, fixed afterwards). A planned B3/A3 pair was refused by the harness (`user_not_playing`: another agent's `vxrt-d3d11-replay` was running), not overridden. No crash in any run (exit by the harness time limit).
+
+### 9.3 Full install smoke, S1 [measured]
+
+Install: `tools/fomod_auto.py` applied the FOMOD's own choices into `build/private/mods/skyland-aio-1k-full` (APFS clones; df before and after: 82.99 GB and 83.00 GB free). Rules: every option of a SelectAny group; the first (preselected) option of an exclusive group, which gives Tan Granite Mountains (4096x4096, the "default" variant), Skyking Galaxy night sky (4096x2048), Grey towns, Dirt Roads "No" and Snowy Stone Roads (the first options, no files), Blended Roads and the SMIM patch, all ten cities, forts, ruins, ships, tents, windows, road signs and lanterns, Dawnguard, Dragonborn and the road-sign add-ons except Point The Way (the FOMOD says it conflicts with Lit Road Signs). Plugins with official masters only: `Lit Road Signs.esp` and `Skyland Watercolor - Slow Green-Vanilla.esp` (the iNeed twin has the same size and records and is an alternative; the two RW2 ones are skipped). 34 LE-format NIFs removed and listed in `manifest.json` (not copied). Three tool logs in the download were not copied.
+
+| Item | Value |
+| --- | --- |
+| Files | 2057 (1917 DDS, 138 NIF, 2 ESP) |
+| Size | 2,632,276,741 bytes (2.45 GiB) |
+| `Plugins.txt` | `*Lit Road Signs.esp`, `*Skyland Watercolor - Slow Green-Vanilla.esp` (SE-style; the game reads `C:\users\vxrt\AppData\Local\Skyrim VR\Plugins.txt`, which the runtime maps to `<root>/drive_c/users/vxrt/AppData/Local/Skyrim VR/Plugins.txt`) |
+| Lite variant (no mountains, no night sky) | `skyland-aio-1k-full-lite`, 2049 files, 2,507,844,381 bytes |
+
+S1 (200 s, tracing every open, so slower than the A/B runs): textures created 2583, 2157 MB (BC 1468 MB), 14,684 frames in 191 s, **0 fallbacks, no crash**, no new shader (`pending/` absent), footprint rose to a **maximum of 6688 MB** against 6439 MB in A1 (single runs, and S1 ran 50 s longer with all-opens tracing: +250 MB is an upper estimate of the difference, not a measurement of it). The full install again created the same texture bytes (2157 MB), so the first look suggests the cost is not in the textures this scene loads; the 4096x4096 mountain textures only load where the mountains are in view.
+
+### 9.4 Eye crops (left eye, 1024x1024 raw RGBA dumped by the dev host)
+
+`/tmp/claude/perf/mods/crops/` (private game imagery, not committed): `compare_A2_f6600_NOMOD_vs_B1_f5850_MOD.png`, `compare_A1_f5550_NOMOD_vs_B1_f6000_MOD.png`, `compare_A2_f6300_NOMOD_vs_B2_f5700_MOD.png` (no mod on the left, tier 1 on the right, a magenta bar between, a 600x400 crop of the lower scene) and the whole left eyes `A*_f*_lefteye.png`, `B*_f*_lefteye.png`. The pairs were chosen as the frames with the smallest 128x128 pixel difference between runs, because the cart's position at a given frame number differs between runs (the best same-config pairs, A1/A2 and B1/B2, differ by 7 to 10 of 255 on average, the same as no-mod against mod, so a pixel difference cannot be attributed to the mod; the eye can judge the rocks and road). First look at A2/B1: the boulders and the wooden cart parts differ in grain and contrast; the scene is dark fog and an unquantified claim of "better" is not made here.
+
+### 9.5 Readiness for a headset try
+
+Ready for a first device copy of the full tree, with these cautions: (1) the device file system is case-sensitive, so the build must contain the `files.c` change of this branch (overlay names looked up case-insensitively); the test for it passes on a Mac but only the device exercises it; (2) the footprint margin on the headset was about 1 GB at a 7.2 GB peak, the Mac showed up to +250 MB with the full install: use the lite tree first if `available_mb` falls under 400; (3) HIGGS, PLANCK and SkyUI need SKSE VR, which the runtime cannot load yet, so they are not in this run. Nothing here says the look or the frame time are acceptable on the headset.
