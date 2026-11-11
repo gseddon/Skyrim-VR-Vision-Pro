@@ -68,6 +68,23 @@ int main(int argc, char **argv) {
     assert(vx_xros_controllers_sample(NULL, &s) == XR_SUCCESS && isnan(s.hand[1].controls.trigger) && isnan(s.hand[1].controls.stick_x) && isnan(s.hand[1].controls.stick_y));
     h[1].aim[3] = 2.f; vx_xros_controllers_publish(h, at + 200);
     assert(vx_xros_controllers_sample(NULL, &s) == XR_SUCCESS && !s.hand[1].controls.connected && !s.hand[1].profile);
+    /* a controller that connects after launch (device run4, 2026-11-11): nothing, then the left alone, then a gap with both gone (the ARKit
+     * re-run of a second connect), then both back: the sticks, buttons and profile reach the sample the same as for one present at launch */
+    {
+        vx_xros_controller_hand none[2]; memset(none, 0, sizeof none);
+        vx_xros_controllers_publish(none, at + 300);
+        vx_xros_controller_hand late[2] = { rest(0), none[1] };
+        late[0].stick_x = .3f; late[0].stick_y = -.6f; late[0].trigger = 0.f;
+        vx_xros_controllers_publish(late, at + 400);
+        assert(vx_xros_controllers_sample(NULL, &s) == XR_SUCCESS && s.hand[0].controls.connected && !s.hand[1].controls.connected && s.hand[0].controls.stick_x == .3f && s.hand[0].controls.stick_y == -.6f);
+        vx_xros_controllers_publish(none, at + 500);
+        assert(vx_xros_controllers_sample(NULL, &s) == XR_SUCCESS && !s.hand[0].controls.connected);
+        late[1] = rest(1); late[1].stick_x = -1.f; late[1].stick_y = 1.f; late[1].trigger = .5f; late[1].primary = 1;
+        vx_xros_controllers_publish(late, at + 600);
+        assert(vx_xros_controllers_sample(NULL, &s) == XR_SUCCESS);
+        for (int i = 0; i < 2; i++) assert(s.hand[i].controls.connected && s.hand[i].profile == KL_NATIVE_INPUT_PROFILE_OCULUS_TOUCH);
+        assert(s.hand[0].controls.stick_x == .3f && s.hand[0].controls.stick_y == -.6f && s.hand[1].controls.stick_x == -1.f && s.hand[1].controls.stick_y == 1.f && s.hand[1].controls.primary_pressed == XR_TRUE);
+    }
     /* haptics: logged without a sink, delivered with one; the minimum duration is a short pulse; a bad hand is refused */
     KlNativeHapticVibration hv = { 50000000, 160.f, 0.5f };
     assert(vx_xros_haptics_apply(NULL, 1, &hv) == XR_SUCCESS && sink_calls == 0);
