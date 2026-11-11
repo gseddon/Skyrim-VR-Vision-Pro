@@ -253,7 +253,7 @@ check: native-vr-unit-check xros-settings-check xros-mods-check
 xros-mods-check: tests/xros_mods_test.swift xros/app/Sources/VXMods.swift
 	@mkdir -p build
 	swiftc -parse-as-library -o build/xros_mods_test xros/app/Sources/VXMods.swift tests/xros_mods_test.swift
-	build/xros_mods_test
+	build/xros_mods_test tests/fixtures/mods_pack_skyland.json
 .PHONY: xros-settings-check xros-mods-check
 
 native-vr-check: build/vxrt build/vxrt-arm64 build/vxrt-aot build/native_vr_d3d11.exe build/native_vr_test
