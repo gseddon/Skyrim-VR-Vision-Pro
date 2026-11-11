@@ -467,6 +467,24 @@ static int skyrimvr_start(const char *root, char **exe_out, char ***argv_out, in
     setenv("VXRT_SKYRIM_PRESET", "p2", 0);   // the "P2 balanced" settings preset (client.c; research/2026-11-10-skyrim-vr-performance-settings.md); VXRT_SKYRIM_PRESET=off for an A/B
     snprintf(ov, sizeof ov, "%s:%s/overlay_skyrimvr", dir_game, root);
     setenv("VXRT_OVERLAY", ov, 0);
+    {   // SKSE VR (research/2026-11-11-skse-vr-on-aot.md): the core DLL, the stub module and the capture the modules were made from sit in
+        // the overlay root (copied there from the user's own downloads; private). SKSE finds its plugins in <game dir>/Data/SKSE/Plugins,
+        // which the overlay serves. Loaded where the Steam loader loads it (after the exe's static constructors); no JIT: the stubs
+        // are an AOT module at the address the capture was taken at; VXRT_CODE_VERIFY stops the run if the live code differs from the capture.
+        char core[1700], hooks[1700], cap[1700]; struct stat sk;
+        snprintf(core, sizeof core, "%s/overlay_skyrimvr/sksevr_1_4_15.dll", root);
+        snprintf(hooks, sizeof hooks, "%s/overlay_skyrimvr/vxrt_hooks.dll", root);
+        snprintf(cap, sizeof cap, "%s/overlay_skyrimvr/skse_capture.txt", root);
+        int have = !stat(core, &sk) && !stat(hooks, &sk);
+        jlog("skse", "\"present\":%d,\"core\":\"%s\",\"capture\":%d", have, core, !stat(cap, &sk));
+        if (have) {
+            char list[3500]; snprintf(list, sizeof list, "%s;%s", hooks, core);
+            setenv("VXRT_PRELOAD", list, 0);
+            setenv("VXRT_PRELOAD_AT", "telemetry", 0);
+            setenv("VXRT_EXEC_REGION", "vxrt_hooks.dll", 0);
+            if (!stat(cap, &sk)) setenv("VXRT_CODE_VERIFY", cap, 0);
+        }
+    }
     log_mods(root);
     log_overlay_summary(root);
     snprintf(dir, sizeof dir, "%s/bundle/redist", NSBundle.mainBundle.resourcePath.fileSystemRepresentation);

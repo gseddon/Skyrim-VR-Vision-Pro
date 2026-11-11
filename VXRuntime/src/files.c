@@ -34,7 +34,10 @@ const char *vx_root(void) { return g_root; }
 // directory's names, and rewritten with the names found (a part found nowhere and the rest are left as written: a new
 // file keeps its name, in a folder whose names were corrected). Elsewhere a no-op.
 void vx_ci_path(char *p, size_t cap) {
-#if VX_XROS
+    // (VXRT_CI_PATHS=1: on for a case-sensitive volume on the Mac too, for tests/files_overlay_ci_check.py)
+    static int on = -1;
+    if (on < 0) on = VX_XROS || (getenv("VXRT_CI_PATHS") && *getenv("VXRT_CI_PATHS") == '1');
+    if (on) {
     struct stat st;
     if (!p[0] || !lstat(p, &st)) return;
     char buf[MAX_PATH_LEN];
@@ -62,9 +65,7 @@ void vx_ci_path(char *p, size_t cap) {
         c = slash + 1;
     }
     snprintf(p, cap, "%s", buf);
-#else
-    (void)p; (void)cap;
-#endif
+    }
 }
 
 // Windows error codes for errno values.
@@ -733,29 +734,65 @@ _Static_assert(sizeof(FIND_DATA_W) == 592, "WIN32_FIND_DATAW");
 // the overlay has. (Half-Life: Alyx gathers save/*.hl? into each save: listing only the original, where the save folder
 // of an earlier Windows installation was, its saves came out empty, and loading one left another game's level state
 // in place: the next level change crashed.)
-typedef struct { DIR *dirs[2]; char paths[2][MAX_PATH_LEN]; int ndirs, at; char pattern[256]; } find_state;
-static void find_destroy(void *p) { find_state *f = p; for (int i = 0; i < f->ndirs; i++) if (f->dirs[i]) closedir(f->dirs[i]); free(f); }
+// The entries are read when the listing starts, merged (the overlay's name wins, compared without case) and given in the order NTFS
+// gives them - "." and ".." first, then by name without case - not in the order the host file system happens to return them (APFS: by a
+// hash of the name, so it differs between a case-insensitive and a case-sensitive volume, a Mac and the headset). A game that builds a load
+// order from a directory scan may depend on that order. VXRT_DIR_ORDER=native|reverse: the old behaviour, or its opposite (tests).
+typedef struct { char name[256]; int from; } find_entry;
+typedef struct { find_entry *e; int n, at; char paths[2][MAX_PATH_LEN]; char pattern[256]; int ndirs; } find_state;
+static void find_destroy(void *p) { find_state *f = p; free(f->e); free(f); }
+static int find_cmp(const void *a, const void *b) {
+    const find_entry *x = a, *y = b;
+    int dx = !strcmp(x->name, ".") ? 0 : !strcmp(x->name, "..") ? 1 : 2, dy = !strcmp(y->name, ".") ? 0 : !strcmp(y->name, "..") ? 1 : 2;
+    if (dx != dy) return dx - dy;
+    int c = strcasecmp(x->name, y->name);
+    return c ? c : strcmp(x->name, y->name);
+}
+static void find_load(find_state *f) {
+    const char *order = getenv("VXRT_DIR_ORDER");
+    int cap = 0;
+    for (int di = 0; di < f->ndirs; di++) {
+        DIR *d = opendir(f->paths[di]);
+        if (!d) continue;
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            const char *pat = !strcmp(f->pattern, "*.*") ? "*" : f->pattern;
+            if (fnmatch(pat, e->d_name, FNM_CASEFOLD | FNM_NOESCAPE)) continue;
+            int dup = 0;
+            for (int k = 0; k < f->n && !dup; k++) if (!strcasecmp(f->e[k].name, e->d_name)) dup = 1;   // (the overlay is read first: it wins)
+            if (dup) continue;
+            if (f->n == cap) { cap = cap ? cap * 2 : 64; f->e = realloc(f->e, (size_t)cap * sizeof *f->e); }
+            snprintf(f->e[f->n].name, sizeof f->e[f->n].name, "%s", e->d_name);
+            f->e[f->n++].from = di;
+        }
+        closedir(d);
+    }
+    if (!order || strcmp(order, "native")) qsort(f->e, (size_t)f->n, sizeof *f->e, find_cmp);
+    if (order && !strncmp(order, "first:", 6)) {                // (tests) names after "first:", separated by '|', come first in that order
+        char list[1024]; snprintf(list, sizeof list, "%s", order + 6);
+        int at = 0;
+        while (at < f->n && (!strcmp(f->e[at].name, ".") || !strcmp(f->e[at].name, ".."))) at++;
+        for (char *c = list; *c; c++) if (*c == '~') *c = ' ';            // ('~' stands for a space: the value passes through shell scripts)
+        for (char *save = NULL, *nm = strtok_r(list, "|", &save); nm; nm = strtok_r(NULL, "|", &save))
+            for (int k = at; k < f->n; k++) if (!strcasecmp(f->e[k].name, nm)) { find_entry t = f->e[k]; memmove(&f->e[at + 1], &f->e[at], (size_t)(k - at) * sizeof t); f->e[at++] = t; break; }
+    }
+    if (order && !strcmp(order, "reverse")) for (int i = 0, j = f->n - 1; i < j; i++, j--) { find_entry t = f->e[i]; f->e[i] = f->e[j]; f->e[j] = t; }
+}
 
-// Fills *d with the next entry matching the pattern (Windows wildcards: '*' and '?', case-insensitive; "*.*"
-// matches every name). Returns 0 at the end.
+// Fills *d with the next entry (matching the pattern already: Windows wildcards '*' and '?', case-insensitive; "*.*" matches every name).
+// Returns 0 at the end.
 static int find_next(find_state *f, FIND_DATA_A *d) {
-    struct dirent *e;
-    for (; f->at < f->ndirs; f->at++) while ((e = readdir(f->dirs[f->at]))) {
-        const char *pat = !strcmp(f->pattern, "*.*") ? "*" : f->pattern;
-        if (fnmatch(pat, e->d_name, FNM_CASEFOLD | FNM_NOESCAPE)) continue;
+    while (f->at < f->n) {
+        const find_entry *e = &f->e[f->at++];
         char full[MAX_PATH_LEN * 2];
         struct stat st;
-        if (f->at > 0) {                                           // (the original: unless the overlay has the name)
-            snprintf(full, sizeof full, "%s/%s", f->paths[0], e->d_name);
-            if (!lstat(full, &st)) continue;
-        }
-        snprintf(full, sizeof full, "%s/%s", f->paths[f->at], e->d_name);
+        snprintf(full, sizeof full, "%s/%s", f->paths[e->from], e->name);
         if (stat(full, &st)) continue;
         memset(d, 0, sizeof *d);
-        d->attrs = attributes(&st, e->d_name);
+        d->attrs = attributes(&st, e->name);
         filetime(&st.st_birthtimespec, d->created); filetime(&st.st_atimespec, d->accessed); filetime(&st.st_mtimespec, d->written);
         if (!S_ISDIR(st.st_mode)) { d->size_high = (DWORD)((uint64_t)st.st_size >> 32); d->size_low = (DWORD)st.st_size; }
-        snprintf(d->name, sizeof d->name, "%s", e->d_name);
+        snprintf(d->name, sizeof d->name, "%s", e->name);
         return 1;
     }
     return 0;
@@ -774,10 +811,10 @@ static HANDLE find_first(const char *spec, FIND_DATA_A *d) {
     if (!vx_unix_path(full, dir, sizeof dir)) { free(f); return INVALID_HANDLE; }
     struct stat st;
     if (overlay_shadow(dir, shadow, sizeof shadow)) vx_ci_path(shadow, sizeof shadow);   // (visionOS: the overlay's names differ in case)
-    if (*shadow && !stat(shadow, &st) && S_ISDIR(st.st_mode) && (f->dirs[f->ndirs] = opendir(shadow)))
-        snprintf(f->paths[f->ndirs++], MAX_PATH_LEN, "%s", shadow);
-    if (strcmp(dir, f->ndirs ? f->paths[0] : "") && (f->dirs[f->ndirs] = opendir(dir))) snprintf(f->paths[f->ndirs++], MAX_PATH_LEN, "%s", dir);
-    if (!f->ndirs) { if (vx_trace || find_trace()) vx_log("FindFirstFile(%s): no directory %s", spec, dir); DWORD e = vx_error_from_errno(errno); free(f); vx_set_last_error(e == 2 ? 3 : e); return INVALID_HANDLE; }
+    if (*shadow && !stat(shadow, &st) && S_ISDIR(st.st_mode)) snprintf(f->paths[f->ndirs++], MAX_PATH_LEN, "%s", shadow);
+    if (strcmp(dir, f->ndirs ? f->paths[0] : "") && !stat(dir, &st) && S_ISDIR(st.st_mode)) snprintf(f->paths[f->ndirs++], MAX_PATH_LEN, "%s", dir);
+    if (!f->ndirs) { if (vx_trace || find_trace()) vx_log("FindFirstFile(%s): no directory %s", spec, dir); DWORD e = vx_error_from_errno(stat(dir, &st) ? errno : ENOTDIR); free(f); vx_set_last_error(e == 2 ? 3 : e); return INVALID_HANDLE; }
+    find_load(f);
     if (!find_next(f, d)) {
         if (vx_trace || find_trace()) vx_log("FindFirstFile(%s): nothing in %s%s%s matches %s", spec, f->paths[0], f->ndirs > 1 ? " or " : "", f->ndirs > 1 ? f->paths[1] : "", f->pattern);
         find_destroy(f); vx_set_last_error(2 /* ERROR_FILE_NOT_FOUND */); return INVALID_HANDLE;
