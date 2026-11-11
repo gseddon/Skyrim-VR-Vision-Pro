@@ -432,7 +432,7 @@ $(VXRT_ARM64_TARGET): src/native_vr.h src/native_openvr.h $(ARM64_SRC) src/npu_i
 tests: build/hello_k32.exe build/hello_crt.exe build/threads.exe build/cxx_exceptions.exe build/hw_exceptions.exe build/seh_try.exe build/unwind.exe build/breakpoint.exe build/child_stdout.exe \
        build/files.exe build/ini.exe build/dll_test.exe build/vxplugin.dll build/dllprobe.exe \
        build/window.exe build/winsta.exe build/scm.exe build/net.exe build/winhttp.exe build/winhttp_proxy.exe build/iphlp.exe build/winsock_nsp.exe build/midi.exe build/directinput.exe build/msvc_eh.exe build/com.exe build/msxml.exe build/vxcom.dll build/iocp.exe build/d3d11.exe build/egl_host.exe build/gl.exe build/hlslc.exe build/dxbc2msl build/vxrt-shader-manifest build/draw.exe build/compute.exe build/d3d12.exe build/d3d12_engine.exe build/d3d12_fxc.exe build/d3d11on12.exe build/input.exe build/xinput_script.exe build/audio.exe build/xaudio2.exe build/xaudio2_27.exe build/dwrite.exe build/dxbcscan build/pipes.exe build/ipc.exe build/shared.exe build/steam.exe build/smc.exe build/order.exe build/lowmem.exe build/clip.exe build/shoplist.exe build/vulkan_win.exe build/vulkan_features.exe build/vulkan_shaders.exe build/game_imports.exe build/ucrt_extra.exe build/kernelx.exe build/jobs.exe build/security.exe \
-       build/sysdlls.exe build/dbghelp.exe build/crypt32.exe build/webhelper_apis.exe build/steam_client_ui.exe build/handle_xfer.exe build/open_thread.exe build/version_info.exe build/section_access.exe build/dbfiles.exe build/updater_files.exe build/shlock.exe build/net_events.exe build/regwait.exe build/tcptable.exe build/winprops.exe build/a11y.exe build/gdi_xform.exe build/view_align.exe \
+       build/sysdlls.exe build/dbghelp.exe build/crypt32.exe build/webhelper_apis.exe build/steam_client_ui.exe build/skyrim_preset.exe build/handle_xfer.exe build/open_thread.exe build/version_info.exe build/section_access.exe build/dbfiles.exe build/updater_files.exe build/shlock.exe build/net_events.exe build/regwait.exe build/tcptable.exe build/winprops.exe build/a11y.exe build/gdi_xform.exe build/view_align.exe \
        build/client_imports.exe build/hello32.exe build/clipboard.exe build/input_route.exe build/name_reuse.exe
 
 build/hello_k32.exe: tests/hello_k32.c
@@ -688,6 +688,10 @@ build/webhelper_apis.exe: tests/webhelper_apis.c
 # TLS expansion slots, GetClassWord(GCW_ATOM), WindowFromPoint, WM_WINDOWPOSCHANGING/CHANGED (src/kernel32.c, client.c,
 # user32.c): what the Windows Steam client's steam.exe needed past its Steam Service Error box.
 build/steam_client_ui.exe: tests/steam_client_ui.c
+	@mkdir -p build
+	$(MINGW) -O1 -o $@ $<
+
+build/skyrim_preset.exe: tests/skyrim_preset.c
 	@mkdir -p build
 	$(MINGW) -O1 -o $@ $<
 
@@ -1850,6 +1854,9 @@ runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d1
 	$(VXRT) build/dbghelp.exe
 	$(VXRT) build/webhelper_apis.exe
 	$(VXRT) build/steam_client_ui.exe
+	VXRT_SKYRIM_PRESET=p2 $(VXRT) build/skyrim_preset.exe p2
+	VXRT_SKYRIM_PRESET=p2 VXRT_INI_SET='Display.iShadowMapResolution=1024;Display.bUseTAA=0' $(VXRT) build/skyrim_preset.exe p2 set
+	VXRT_SKYRIM_PRESET=off $(VXRT) build/skyrim_preset.exe off
 	$(VXRT) build/handle_xfer.exe
 	$(VXRT) build/open_thread.exe
 	$(VXRT) build/version_info.exe build/hello_crt.exe

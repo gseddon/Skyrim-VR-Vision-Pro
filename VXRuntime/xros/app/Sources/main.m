@@ -464,6 +464,7 @@ static int skyrimvr_start(const char *root, char **exe_out, char ***argv_out, in
     for (unsigned i = 0; i < sizeof steam / sizeof *steam; i++) unsetenv(steam[i]);
     setenv("VXRT_STEAM_BRIDGE", "0", 1);
     setenv("VXRT_NO_WINE", "1", 0);
+    setenv("VXRT_SKYRIM_PRESET", "p2", 0);   // the "P2 balanced" settings preset (client.c; research/2026-11-10-skyrim-vr-performance-settings.md); VXRT_SKYRIM_PRESET=off for an A/B
     snprintf(ov, sizeof ov, "%s:%s/overlay_skyrimvr", dir_game, root);
     setenv("VXRT_OVERLAY", ov, 0);
     log_mods(root);
