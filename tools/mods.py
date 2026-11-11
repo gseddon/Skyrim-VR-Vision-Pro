@@ -2,7 +2,7 @@
 """Mac-side mod pack tool for the Skyrim VR runtime: prepared mod folders + a mods list -> one pack.
 
   python3 -I tools/mods.py build  --list mods-list.json --out PACK [--force]
-  python3 -I tools/mods.py fetch  --list mods-list.json [--nxm nxm://...] [--force]       (Nexus entries only; needs NEXUS_API_KEY)
+  python3 -I tools/mods.py fetch  --list mods-list.json [--nxm nxm://...] [--force]       (Nexus entries only; a NEXUS_API_KEY is optional)
   python3 -I tools/mods.py show   PACK
   python3 -I tools/mods.py deploy PACK --bundle BUNDLE_ID [--device ID] [--yes]     (prints the devicectl commands; runs them only with --yes)
 
@@ -13,8 +13,7 @@ mods-list.json (written by hand or by a later UI):
                 "plugins": ["Lit Road Signs.esp"], "memory_hint_mb": 250, "note": "" },
               { "id": "higgs", "name": "HIGGS 1.10.10", "kind": "skse", "enabled": true, "priority": 40, "size_bytes": 5128085 } ] }
 A mod may instead name a Nexus Mods file: "nexus": {"game": "skyrimspecialedition", "mod_id": 43930, "file_id": 12345, "md5": "<pinned>"}
-(no "source"). `mods.py fetch --list L [--nxm nxm://...]` downloads it through tools/nexus.py (NEXUS_API_KEY; a non-premium account passes the
-website's nxm link), pins its md5 in the list, and unpacks it to <VXRT_PRIVATE_ROOT>/mods-src/<id>/ (a tree with Data/), which build then uses.
+(no "source"). `mods.py fetch --list L [--nxm nxm://...]` downloads it through tools/nexus.py (with NEXUS_API_KEY; without a key, from the browser's Downloads folder), pins its md5 in the list, and unpacks it to <VXRT_PRIVATE_ROOT>/mods-src/<id>/ (a tree with Data/), which build then uses.
 kind: files (loose assets), plugin (assets plus ESP/ESM/ESL; listed in plugins), skse (needs SKSE VR; listed, never applied).
 
 PACK/ gets
@@ -162,8 +161,8 @@ def fetch(a):
             print(f"{m['id']}: already fetched and unpacked (md5 {pinned})"); continue
         todo += 1
         try:
-            r = nexus.download(game, mod, fid, nxm=links.get((game.lower(), mod, fid)), md5=pinned, wait=nexus.default_wait(a.wait),
-                               progress='%d of %d done' % (done, len(pending)))
+            r = nexus.fetch_file(game, mod, fid, nxm=links.get((game.lower(), mod, fid)), md5=pinned, wait=nexus.default_wait(a.wait),
+                                 progress=(done, len(pending)), name=m.get('name') or m['id'], manual=a.manual, accept_name=a.accept_name_match)
             tmp = tree.with_name(tree.name + '.tmp')
             if tmp.exists(): shutil.rmtree(tmp)
             raw = tmp / 'raw'; _unpack(Path(r['path']), raw)
@@ -308,7 +307,7 @@ def deploy(a):
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(); sub = ap.add_subparsers(dest='cmd', required=True)
     b = sub.add_parser('build'); b.add_argument('--plugin-base', default='0x30c000000', help='arena base of the first SKSE plugin DLL module; 16 MB apart'); b.add_argument('--list', required=True); b.add_argument('--out', required=True); b.add_argument('--force', action='store_true')
-    f = sub.add_parser('fetch'); f.add_argument('--list', required=True); f.add_argument('--nxm', action='append', help='nxm:// link from the website (non-premium); repeatable'); f.add_argument('--force', action='store_true'); f.add_argument('--wait', type=int, help='seconds to wait per file for its nxm link without Premium (default 600 in a terminal, else 0)')
+    f = sub.add_parser('fetch'); f.add_argument('--list', required=True); f.add_argument('--nxm', action='append', help='nxm:// link from the website (non-premium); repeatable'); f.add_argument('--force', action='store_true'); f.add_argument('--manual', action='store_true', help='download in the browser and take the archive from the Downloads folder even if NEXUS_API_KEY is set'); f.add_argument('--accept-name-match', action='store_true', help='without a terminal: accept an archive whose name carries the mod id'); f.add_argument('--wait', type=int, help='seconds to wait per file for its nxm link without Premium (default 600 in a terminal, else 0)')
     s = sub.add_parser('show'); s.add_argument('pack')
     q = sub.add_parser('pipeline'); q.add_argument('pack'); q.add_argument('--config', required=True); q.add_argument('--out', required=True)
     p = sub.add_parser('deploy'); p.add_argument('pack'); p.add_argument('--bundle', required=True); p.add_argument('--device'); p.add_argument('--yes', action='store_true')

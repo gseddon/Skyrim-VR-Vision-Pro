@@ -9,7 +9,7 @@
     shaders           Metal shader set from the committed manifest        -> $VXRT_PRIVATE_ROOT/shadercache-xros-manifest
     app               build and sign the app  (--unsigned: no signing; --install: devicectl install, needs VXRT_DEVICE_ID)
     stage-to-device   copy the game tree to the headset (dry run unless --run)
-    mods-fetch        download the Nexus Mods files of a mods list, pin their md5, unpack  (--list L [--nxm nxm://...]; needs NEXUS_API_KEY)
+    mods-fetch        fetch the Nexus Mods files of a mods list, pin their md5, unpack  (--list L; the key is optional: without it, from ~/Downloads)
     mods              build a mod pack  (--list mods-list.json [--out DIR] [--deploy])
 
 Rules every stage follows: inputs come from the environment or arguments (local/env.sh, copied from local.example.sh, is read
@@ -178,9 +178,9 @@ def stage_mods_fetch(a):
     need_path(a.list, None, 'the mods list')
     out = priv() / 'downloads' / 'nexus'
     # mods.py fetch asks for the key only when a mod still has to be downloaded, so a finished list needs no key and does nothing.
-    rc = run([sys.executable, '-I', REPO / 'tools' / 'mods.py', 'fetch', '--list', a.list] + [x for u in (a.nxm or []) for x in ('--nxm', u)] + (['--force'] if a.force else []) + (['--wait', str(a.wait)] if a.wait is not None else []))
+    rc = run([sys.executable, '-I', REPO / 'tools' / 'mods.py', 'fetch', '--list', a.list] + [x for u in (a.nxm or []) for x in ('--nxm', u)] + (['--force'] if a.force else []) + (['--wait', str(a.wait)] if a.wait is not None else []) + (['--manual'] if a.manual else []) + (['--accept-name-match'] if a.accept_name_match else []))
     if rc == MISSING:
-        raise NeedInput('NEXUS_API_KEY is missing, or a non-Premium file has no nxm link yet (skipped or timed out); see the message above and docs/SETUP_SKYRIM.md')
+        raise NeedInput('a Nexus file is not available yet (no matching archive in the Downloads folder, or no link; skipped or timed out); see the message above and docs/SETUP_SKYRIM.md')
     return rc, [str(out)]
 
 
@@ -240,6 +240,8 @@ def main():
     ap.add_argument('--run', action='store_true', help='stage-to-device: really copy (default: dry run)')
     ap.add_argument('--list', help='mods: the mods list')
     ap.add_argument('--out', help='mods: the pack directory')
+    ap.add_argument('--manual', action='store_true', help='mods-fetch: use the browser and the Downloads folder even if NEXUS_API_KEY is set')
+    ap.add_argument('--accept-name-match', action='store_true', help='mods-fetch: without a terminal, accept an archive whose name carries the mod id')
     ap.add_argument('--wait', type=int, help='mods-fetch: seconds to wait per file for its nxm link (non-premium)')
     ap.add_argument('--nxm', action='append', help='mods-fetch: nxm:// link from the Nexus website for a file (without Premium); repeatable')
     ap.add_argument('--deploy', action='store_true', help='mods: copy the pack to the headset')
