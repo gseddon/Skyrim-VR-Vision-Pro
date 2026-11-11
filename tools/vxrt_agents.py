@@ -5,7 +5,7 @@ Codex, Gemini CLI, Cursor) gets the same commands, the same tools and the same r
 
     Claude Code   CLAUDE.md (@AGENTS.md), .mcp.json, .claude/commands/*.md, .claude/skills -> .agents/skills
     Codex         AGENTS.md, .agents/skills, .codex/config.toml (MCP; Codex reads it once you trust the project)
-    Gemini CLI    GEMINI.md (@AGENTS.md), .gemini/settings.json (MCP), .gemini/commands/*.toml
+    Gemini CLI    .gemini/settings.json (MCP), .gemini/commands/*.toml (no GEMINI.md is written)
     Cursor        AGENTS.md, .cursor/rules/vxrt.mdc, .cursor/mcp.json, .cursor/commands/*.md
 
     tools/vxrt_agents.py sync     # write them (after changing a source)
@@ -71,7 +71,6 @@ def outputs():
         f"# {NOTE.format('.mcp.json')}\n# Codex reads a project's .codex/config.toml once you trust the project.\n"
         f"[mcp_servers.vxrt]\ncommand = {toml_str(cmd)}\nargs = [{', '.join(toml_str(a) for a in args)}]\n"
         f"tool_timeout_sec = {MCP_TIMEOUT_S}\n")
-    out["GEMINI.md"] = f"<!-- {NOTE.format('AGENTS.md')} -->\n@./AGENTS.md\n"
     out[".cursor/rules/vxrt.mdc"] = (
         "---\ndescription: VeRantyx / VXRuntime rules for AI agents\nalwaysApply: true\n---\n"
         f"<!-- {NOTE.format('AGENTS.md')} -->\n"
