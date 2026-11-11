@@ -26,4 +26,10 @@ with tempfile.TemporaryDirectory() as t:
     got = p.read_text().split()
     assert len(got) == before + 2 and '0x140000010' in got and '0x140000020' in got and S.status() == 'ok'
     S.merge(rec, p, 0x308000000); assert len(p.read_text().split()) == before + 2        # adding again changes nothing
+    # the tour: one coc per place, the first repeated, as many places as fit; F2 once, a backtick before each, and every entry fits the dev host's script limits
+    script, plan = S.tour_script(900)
+    assert [c for _, c in plan] == [S.TOUR_CELLS[0]] + S.TOUR_CELLS and len(S.TOUR_CELLS) == 7 and plan[1][0] == plan[0][0] + 40
+    ev = script.split(',')
+    assert len(ev) * 2 <= 1024 and ev[0].endswith(':f2:0.10') and ev[-1].split(':')[1] == 'return' and sum(e.split(':')[1] == 'f2' for e in ev) == 1 and sum(e.split(':')[1] == 'grave' for e in ev) == len(plan) and sum(e.split(':')[1] == 'return' for e in ev) == len(plan)
+    assert S.tour_script(130) == ('', []) and len(S.tour_script(300)[1]) == 3         # (too short for a place: no keys)
 print('skyrim_splits_test: ok')

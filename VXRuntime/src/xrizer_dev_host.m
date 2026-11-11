@@ -146,7 +146,7 @@ static struct {
     _Atomic int drag_dx_milli, drag_dy_milli;         /* unapplied mouse drag, thousandths of a point */
     _Atomic int aim_dx_milli, aim_dy_milli;           /* unapplied right-button drag (hands' aim) */
     _Atomic uint32_t aim_yaw_bits, aim_pitch_bits;    /* the hands' aim relative to the head (float bits, radians) */
-    dk_event script[256]; unsigned script_count;
+    dk_event script[1024]; unsigned script_count;
     XrTime start, last_head;
     pthread_mutex_t lock;                             /* the sample below */
     uint64_t sample_id; XrTime sample_time; KlNativeInputHand3 hands[2]; unsigned changes;

@@ -14,10 +14,17 @@ the game and, as an exception the user authorized on 2026-11-11 (it is only addr
 exe is committed (tools/profiles/); the build uses it first and records only when the exe does not match. Either way it is kept in
 <VXRT_AOT_INPUTS>/splits-1022-at-0x140000000.txt with its sha256 beside it (.sha256), which the pipeline config pins (${VXRT_SPLITS_SHA256}).
 
-  python3 -I tools/skyrim_splits.py record [--force] [--rounds N] [--seconds 600]    build an unsplit Mac module set, run the game on the Mac with the
-                                                                        scripted pad input, keep every address seen (a re-run adds to the file)
+  python3 -I tools/skyrim_splits.py record [--force] [--rounds N] [--seconds 600] [--no-tour]    build an unsplit Mac module set, run the game on the Mac with the
+                                                                        scripted pad input, keep every address seen (a re-run adds to the file).
+                                                                        A top-up round (one that starts from a profile) also tours: see TOUR below.
   python3 -I tools/skyrim_splits.py install                             use the profile tracked in the repository (tools/profiles/), which the build does first
   python3 -I tools/skyrim_splits.py status                              prints ok / missing / mismatch
+
+TOUR (default for a round that starts from a profile; --no-tour turns it off): the game only runs an instruction when the player gets to it, so a top-up
+round loads a copy of the "race" autosave (a character already in the world, from build/private/saves/race; the player's own saves are never written)
+and teleports with the developer console to a spread of places: it presses F2 once, then for each place the backtick, types "coc <cell>" and Return
+(the game closes the console when the teleport starts; the keys go through the dev keyboard, tools/play_skyrim_dev.sh --key-script), one place about every 110 s after the first 100 s. The first place is
+typed twice, because the save may still be loading at the first try. Pictures from the sparse eye dumps show which places were reached.
 
 Subject: the actual game on the Mac development host (non-strict AOT: an unsplit exe still runs, slowly, and the runtime fixes each access up);
 the profile is as complete as the run's path through the game. Exit 0 ok, 2 an input is missing, 1 failed.
@@ -93,13 +100,52 @@ def record(a):
     for n in range(1, rounds + 1):
         # round 1 without any profile runs an unsplit exe, which is slow (the load alone takes minutes): it learns the load and the menus.
         # Later rounds run modules made with what is known, which is fast enough to reach Helgen, and add what is still missing.
-        rc = one_round(a, n, a.seconds if not f.is_file() else min(a.seconds, a.top_up_seconds))
+        tour = f.is_file() and a.tour is not False
+        rc = one_round(a, n, a.seconds if not f.is_file() else (a.top_up_seconds or (a.seconds if tour else 300)), tour)
         if rc:
             return rc
     return 0
 
 
-def one_round(a, n, seconds):
+# Places for the tour: cell ids of Skyrim.esm that `coc` accepts (interiors, exteriors and wilderness; checked against the cell records of the supported game).
+TOUR_CELLS = ['WhiterunDragonsreach', 'RiverwoodSleepingGiantInn', 'BleakFallsBarrow01', 'SolitudeCastleDour', 'MarkarthUnderStoneKeep',
+              'WhiterunExterior12', 'POITundra03']
+TOUR_FIRST, TOUR_EVERY = 100, 110
+
+
+def tour_script(seconds):
+    """VXRT_XRIZER_DEV_KEY_SCRIPT for the tour (START:KEY:HOLD,..., seconds since the run started): one coc per slot; the first is repeated 40 s later.
+    Returns (script, [(second, cell)]) for as many places as fit before the end of the run."""
+    plan = [(TOUR_FIRST + i * TOUR_EVERY, c) for i, c in enumerate(TOUR_CELLS) if TOUR_FIRST + i * TOUR_EVERY + 40 <= seconds]
+    if plan:
+        plan.insert(1, (plan[0][0] + 40, plan[0][1]))
+    # F2 once (the keys then go to the game), then per place: backtick opens the console, "coc <cell>", Return. No backtick afterwards: the game closes the
+    # console itself when the teleport starts, so a closing backtick would open it again and turn every later place into stray game keys (seen 2026-11-11).
+    keys = [(plan[0][0] - .5, 'f2', .1)] if plan else []
+    for t0, cell in plan:
+        keys.append((t0, 'grave', .2))
+        t = t0 + .75
+        for ch in 'coc ' + cell.lower():
+            keys.append((t, 'space' if ch == ' ' else ch, .1))
+            t += .25
+        keys.append((t + .25, 'return', .2))
+    return ','.join('%.2f:%s:%.2f' % k for k in keys), plan
+
+
+def tour_saves(work):
+    """A fresh saves directory holding only a copy of the newest 'race' autosave (a character already in the world; `coc` does nothing in the opening or the race menu)."""
+    src = sorted((E.private_root() / 'saves' / 'race').glob('Autosave*.ess'), key=lambda p: p.stat().st_mtime)
+    if not src:
+        return None
+    import shutil
+    d = work / 'tour-saves'
+    shutil.rmtree(d, ignore_errors=True)
+    d.mkdir()
+    shutil.copy(src[-1], d)
+    return d
+
+
+def one_round(a, n, seconds, tour):
     f = splits_path()
     priv = E.private_root()
     work = priv / 'skyrimvr' / E.ORIGINAL_EXE_SHA256 / 'aot-splits-record'
@@ -123,11 +169,21 @@ def one_round(a, n, seconds):
     rec.unlink(missing_ok=True)
     print('splits: round %d: running the game on the Mac for %d s' % (n, seconds), file=sys.stderr)
     log = work / 'record-run.log'
+    env, tour_args, a_until = dict(os.environ, SKYRIM_AOT_DIR=str(out / 'modules')), [], max(10, seconds - 10)
+    if tour:
+        saves, (script, plan) = tour_saves(work), tour_script(seconds)
+        if saves is None:
+            print('splits: no "race" autosave in %s (a character in the world): --no-tour runs without the teleports' % (E.private_root() / 'saves' / 'race'), file=sys.stderr)
+            return 2
+        env['SKYRIM_SAVES_DIR'] = str(saves)
+        tour_args, a_until = ['--key-script', script], TOUR_FIRST - 5            # (the pad's A would press into the console)
+        (work / 'tour-plan.json').write_text(json.dumps(plan))
+        print('splits: round %d: tour (seconds into the run): %s' % (n, ', '.join('%d %s' % p for p in plan)), file=sys.stderr)
     with open(log, 'wb') as lf:
-        subprocess.run([str(REPO / 'tools' / 'play_skyrim_dev.sh'), '--no-build', '--mute', '--seconds', str(seconds), '--',
-                        '--overlay-ini', 'Skyrim.ini:General:sIntroSequence=', '--xinput-repeat', 'A@6-%d/2:0.3' % max(10, seconds - 10),
+        subprocess.run([str(REPO / 'tools' / 'play_skyrim_dev.sh'), '--no-build', '--mute', '--seconds', str(seconds)] + tour_args + ['--',
+                        '--overlay-ini', 'Skyrim.ini:General:sIntroSequence=', '--xinput-repeat', 'A@6-%d/2:0.3' % a_until,
                         '--aot-splits', str(rec), '--dump-eyes', '--diag-env', 'VXRT_XRIZER_DEV_DUMP_EVERY=%d' % a.eye_every],
-                       env=dict(os.environ, SKYRIM_AOT_DIR=str(out / 'modules')), stdout=lf, stderr=subprocess.STDOUT)
+                       env=env, stdout=lf, stderr=subprocess.STDOUT)
     evidence(log, work, a, 'r%d' % n)
     if not rec.is_file():
         print('splits: the run wrote no profile (see %s)' % log, file=sys.stderr)
@@ -164,7 +220,9 @@ def evidence(log, work, a, tag):
     eyes = out / 'eyes'
     files = sorted(eyes.glob('frame*_eye0_*.rgba'), key=lambda p: int(re.match(r'frame(\d+)_', p.name).group(1))) if eyes.is_dir() else []
     ev = work / ('evidence-' + tag)
-    ev.mkdir(exist_ok=True)
+    import shutil
+    shutil.rmtree(ev, ignore_errors=True)
+    ev.mkdir()
     first = min((p.stat().st_mtime for p in files), default=None)
     rows = []
     for p in files:
@@ -211,8 +269,10 @@ def main():
     r.add_argument('--force', action='store_true', help='record even if a profile is in place (adds to it)')
     r.add_argument('--eye-every', type=int, default=1500, help='keep a picture every N rendered frames as evidence that the run reached the game (then delete the raw dumps)')
     r.add_argument('--keep-eyes', action='store_true')
+    r.add_argument('--tour', dest='tour', action='store_true', default=None, help='teleport with the developer console during the round (coc to %d places, from a copy of the "race" autosave); the default for a round that starts from a profile' % len(TOUR_CELLS))
+    r.add_argument('--no-tour', dest='tour', action='store_false', help='do not teleport: the round only plays through the opening')
     r.add_argument('--rounds', type=int, help='recording rounds (default 2 without a profile, 1 when adding to one): each round after the first runs modules made with the profile so far')
-    r.add_argument('--top-up-seconds', type=int, default=300, help='length of every round that starts from a profile')
+    r.add_argument('--top-up-seconds', type=int, help='length of every round that starts from a profile (default: --seconds with the tour, 300 s without)')
     sub.add_parser('status')
     sub.add_parser('install')
     a = ap.parse_args()
