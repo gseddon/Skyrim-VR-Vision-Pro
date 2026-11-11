@@ -5,7 +5,7 @@
   "Mods come from Nexus Mods (your own account, personal use; see docs/SETUP_SKYRIM.md): python3 tools/vxrt_build.py mods-fetch, then mods.",
   "nexus.md5 pins the exact archive. nexus.file_id is null until recorded (python3 -I tools/nexus.py files skyrimspecialedition MOD_ID lists the ids and md5s); the Downloads-folder fetch matches by md5 meanwhile.",
   "Load order of the plugins in the built pack: Lit Road Signs.esp, Skyland Watercolor - Slow Green-Vanilla.esp, higgs_vr.esp, SkyUI_SE.esp, vrik.esp (by priority).",
-  "The SKSE VR runtime files (core DLL, hooks module, capture) are private and are not part of this list: add a skse_runtime section to your own copy."
+  "SKSE VR core: the skse-core entry takes sksevr_1_4_15.dll from the official archive (not redistributable: your own download, checked by md5, from the Downloads folder). The stub module and the capture of the plugins' code patches are made for your plugin set by python3 tools/vxrt_build.py skse-capture (runs the game on the Mac for a few minutes) and are picked up by the next mods build; a skse_runtime section in your own copy of this list (core, hooks, capture: file paths) overrides them."
  ],
  "mods": [
   {
@@ -50,6 +50,22 @@
     "md5": "eafdd0f8163b3131435d54f01977b445",
     "extract": "Data/Scripts/*.pex",
     "note": "not on Nexus; only the 85 compiled scripts are used (no DLL, no loader, no Source)"
+   }
+  },
+  {
+   "id": "skse-core",
+   "name": "SKSE VR 2.0.12 core (sksevr_1_4_15.dll)",
+   "kind": "runtime",
+   "provides": "skse_core",
+   "enabled": true,
+   "priority": 11,
+   "size_bytes": 1504768,
+   "external": {
+    "url": "https://skse.silverlock.org/beta/sksevr_2_00_12.7z",
+    "file_name": "sksevr_2_00_12.7z",
+    "md5": "eafdd0f8163b3131435d54f01977b445",
+    "extract": "sksevr_1_4_15.dll",
+    "note": "the same archive as sksevr-scripts; only the core DLL is used (private, never redistributed; it goes to the app's overlay root, not into Data)"
    }
   },
   {
@@ -141,7 +157,11 @@
      "source/*",
      ".gitignore"
     ]
-   }
+   },
+   "aot": {
+    "sweep": "1000-5200"
+   },
+   "note": "the SkyUI VR plugin embeds a Lua VM whose computed jumps go through a table filled at run time: aot.sweep makes every instruction start of its code section an AOT root"
   },
   {
    "id": "skyui-vr-nojit",

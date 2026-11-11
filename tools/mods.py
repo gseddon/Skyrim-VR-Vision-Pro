@@ -20,7 +20,12 @@ Other keys of an entry: "nexus.file_id" may be null when "nexus.md5" is pinned (
 "Folder" (the archive's Data content is inside it), "exclude": [fnmatch patterns on Data-relative paths, e.g. "*.pdb"]}; "external": {url, file_name, md5,
 extract: glob under the archive's top folder} for a mod that is not on Nexus (put the archive in <VXRT_PRIVATE_ROOT>/downloads or ~/Downloads; checked by md5);
 "recipe": {"kind": "fomod_auto", "allow_plugins": [...]} (unpack a FOMOD by its own defaults) or {"kind": "skyui_nojit", "from": "<skyui mod id>"} (the LuaJIT-off overlay).
-kind: files (loose assets), plugin (assets plus ESP/ESM/ESL; listed in plugins), skse (needs SKSE VR; listed, never applied).
+kind: files (loose assets), plugin (assets plus ESP/ESM/ESL; listed in plugins), skse (SKSE plugins: DLLs, ini, lua under Data/SKSE/Plugins, plus any ESP/scripts),
+runtime (with "provides": "skse_core" and an "external" archive: the SKSE VR core DLL; it goes to PACK/overlay_root, never into Data/).
+A skse mod may carry "aot": {"sweep": "1000-5200"} (options for the AOT module of its DLL, passed on by tools/skse_capture.py).
+SKSE VR needs three private files at the app's overlay root: the core DLL (from the list's runtime entry, or "skse_runtime": {"core": PATH}), the stub module and
+the capture of the plugins' code patches (made by `tools/vxrt_build.py skse-capture`, or "skse_runtime": {"hooks": PATH, "capture": PATH}). build copies them into
+PACK/overlay_root; hooks and capture are only taken from skse-capture when it was made for exactly this plugin set.
 
 PACK/ gets
   mods.json         the same list with what was done (active, size_bytes, files, path); read by tools/vxrt_native_startup.py --mods-config,
@@ -36,7 +41,7 @@ from pathlib import Path
 
 OFFICIAL = {'skyrim.esm', 'update.esm', 'dawnguard.esm', 'hearthfires.esm', 'dragonborn.esm', 'skyrimvr.esm'}
 REFUSE = ('.dll', '.exe', '.bat', '.cmd', '.sh', '.py', '.ps1', '.dylib', '.command')
-KINDS = ('files', 'plugin', 'skse')
+KINDS = ('files', 'plugin', 'skse', 'runtime')      # runtime: a private runtime file for the app (the SKSE core DLL), not a mod: never in Data/
 SKSE_NOTE = 'SKSE: configure on the Mac. Needs SKSE VR, which this runtime cannot load yet, so it is not applied.'
 
 
@@ -84,6 +89,23 @@ def skse_plugin_files(data):
                 p = Path(dp) / f
                 out.append(dict(path='/'.join((*rel, f)), sha256=sha256(p), size=p.stat().st_size, dll=f.lower().endswith('.dll')))
     return sorted(out, key=lambda e: e['path'].lower())
+
+
+def skse_plugin_set(skse_plugins, core_sha):
+    """The identity of what an SKSE capture depends on: the core DLL and every file under Data/SKSE/Plugins (a plugin's ini can gate a code write),
+    with the AOT options of its module. A capture is valid for exactly this set; any change needs `vxrt_build.py skse-capture` again."""
+    items = sorted([e['path'].lower(), e['sha256'], json.dumps(e.get('aot') or {}, sort_keys=True)] for e in skse_plugins)
+    return hashlib.sha256(json.dumps([core_sha, items]).encode()).hexdigest()
+
+
+def skse_capture_files(plugin_set):
+    """{'hooks': path, 'capture': path} of the last `vxrt_build.py skse-capture` when it was made for this plugin set, else {}."""
+    d = private_root() / 'skse-capture'
+    try: st = json.loads((d / 'state.json').read_text())
+    except (OSError, ValueError): return {}
+    if st.get('plugin_set') != plugin_set or not st.get('complete'): return {}
+    got = {'hooks': d / 'vxrt_hooks.dll', 'capture': d / 'skse_capture.txt'}
+    return got if all(p.is_file() for p in got.values()) else {}
 
 
 def clone(src, dst):
@@ -139,7 +161,8 @@ def list_problems(cfg):
         r = m.get('recipe')
         if r is not None and r.get('kind') not in ('fomod_auto', 'skyui_nojit'): out.append(f'{i}: recipe kind must be fomod_auto or skyui_nojit')
         if r and r.get('kind') == 'skyui_nojit' and r.get('from') not in {x.get('id') for x in cfg['mods']}: out.append(f'{i}: recipe.from names no mod of the list')
-        if m.get('enabled', True) and m['kind'] != 'skse' and not any(k in m for k in ('source', 'nexus', 'external', 'recipe')): out.append(f'{i}: enabled but no source, nexus, external or recipe')
+        if m.get('kind') == 'runtime' and (m.get('provides') != 'skse_core' or 'external' not in m): out.append(f'{i}: a runtime entry needs "provides": "skse_core" and an external archive')
+        if m.get('enabled', True) and m['kind'] not in ('skse', 'runtime') and not any(k in m for k in ('source', 'nexus', 'external', 'recipe')): out.append(f'{i}: enabled but no source, nexus, external or recipe')
         text = json.dumps(m)
         if re.search(r'/Users/|/home/|\b[A-Za-z]:\\\\', text): out.append(f'{i}: contains a machine path')
     return out
@@ -213,26 +236,31 @@ def _fomod(raw, tree, recipe):
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
 
 
-def _fetch_external(m, lst):
+def _tree_ok(m, tree):
+    if m.get('kind') == 'runtime': return (tree / Path(m['external']['extract']).name).is_file()
+    return (tree / 'Data').is_dir()
+
+
+def _fetch_external(m, lst, wait=0):
     """A mod that is not on Nexus (SKSE VR's scripts): the archive named in m['external'] from the private downloads folder or the browser's
     Downloads folder, checked against its md5, then only the files matching m['external']['extract'] (a glob under the archive's top folder)."""
     import shutil, tempfile
     x = m['external']; tree = nexus_tree(m['id']); marker = tree / '.external-md5'
-    if marker.is_file() and marker.read_text().strip() == x['md5'].lower() and (tree / 'Data').is_dir():
+    if marker.is_file() and marker.read_text().strip() == x['md5'].lower() and _tree_ok(m, tree):
         print(f"{m['id']}: already fetched and unpacked (md5 {x['md5']})"); return False
-    cands = [private_root() / 'downloads' / x['file_name'], Path.home() / 'Downloads' / x['file_name']]
-    found = next((c for c in cands if c.is_file() and hashlib.md5(c.read_bytes()).hexdigest() == x['md5'].lower()), None)
-    if not found:
-        print(f"{m['id']}: download {x['url']} (md5 {x['md5']}) into {cands[0].parent} or ~/Downloads as {x['file_name']}, then fetch again", file=sys.stderr)
-        return None
+    import nexus
+    try: found = nexus.external_fetch(m.get('name') or m['id'], x['url'], x['file_name'], x['md5'], wait=wait)
+    except nexus.Skipped as e:
+        print(f"{m['id']}: {e}", file=sys.stderr); return None
     with tempfile.TemporaryDirectory() as t:
         raw = Path(t) / 'raw'; _unpack(found, raw)
         top = list(raw.iterdir()); base = top[0] if len(top) == 1 and top[0].is_dir() else raw
         files = [p for p in sorted(base.glob(x['extract'])) if p.is_file()]
         if not files: raise ValueError(f"{m['id']}: nothing in {found.name} matches {x['extract']}")
+        if m.get('kind') == 'runtime' and len(files) != 1: raise ValueError(f"{m['id']}: expected one file for {x['extract']}, found {len(files)}")
         new = Path(t) / 'tree'
         for p in files:
-            d = new / p.relative_to(base); d.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(p, d)
+            d = new / (Path(p.name) if m.get('kind') == 'runtime' else p.relative_to(base)); d.parent.mkdir(parents=True, exist_ok=True); shutil.copyfile(p, d)
         (new / '.external-md5').write_text(x['md5'].lower() + '\n')
         if tree.exists(): shutil.rmtree(tree)
         tree.parent.mkdir(parents=True, exist_ok=True); shutil.move(str(new), str(tree))
@@ -256,7 +284,7 @@ def fetch(a):
     done = 0
     for m in cfg['mods']:
         if 'external' in m and m.get('enabled', True) and not m.get('source'):
-            try: r = _fetch_external(m, lst)
+            try: r = _fetch_external(m, lst, nexus.default_wait(a.wait))
             except (ValueError, OSError) as e: print(f"{m['id']}: {e}", file=sys.stderr); sys.exit(1)
             if r is None: skipped.append(m['id'])
             elif r: todo += 1; print(f"{m['id']}: unpacked {m['external']['extract']}")
@@ -314,7 +342,7 @@ def build(a):
         if 'nexus' in m:
             _nexus_spec(m)
             if m.get('source'): sys.exit(f"{m['id']}: give either source or nexus, not both")
-        if m.get('enabled', True) and not m.get('source') and any(k in m for k in ('nexus', 'external')) and not (nexus_tree(m['id']) / 'Data').is_dir():
+        if m.get('enabled', True) and not m.get('source') and any(k in m for k in ('nexus', 'external')) and not _tree_ok(m, nexus_tree(m['id'])):
             print(f"{m['id']}: not fetched yet: run tools/mods.py fetch --list {lst} (or vxrt_build.py mods-fetch)", file=sys.stderr); sys.exit(2)
     for m in mods:                                   # (generated mods: the SkyUI LuaJIT-off overlay, from the fetched SkyUI tree)
         r = m.get('recipe') or {}
@@ -327,14 +355,20 @@ def build(a):
             sys.path.insert(0, str(Path(__file__).resolve().parent)); import skyui_nojit
             skyui_nojit.main(str(sdir / 'Data'), str(tree))
     (out / 'merged' / 'Data').mkdir(parents=True)
-    res = []; plugins = []; skse_plugins = []; shadow = []
+    res = []; plugins = []; skse_plugins = []; shadow = []; runtime = {}
     for m in sorted(mods, key=lambda m: (m['priority'], m['id'])):
         r = dict(id=m['id'], name=m.get('name', m['id']), kind=m['kind'], enabled=bool(m.get('enabled', True)), priority=m['priority'],
                  plugins=list(m.get('plugins', [])), memory_hint_mb=m.get('memory_hint_mb'), size_bytes=m.get('size_bytes'), files=None,
                  active=False, path=None, note=m.get('note', ''))
         if r['enabled'] and not m.get('source') and any(k in m for k in ('nexus', 'external')) or (r['enabled'] and (m.get('recipe') or {}).get('kind') == 'skyui_nojit'):
             m = dict(m, source=str(nexus_tree(m['id'])))    # (absolute: joins as itself)
-        if m['kind'] == 'skse' and not m.get('source'):
+        if m['kind'] == 'runtime':
+            if r['enabled']:                              # (the SKSE core DLL: copied to overlay_root below, never merged into Data/)
+                f = nexus_tree(m['id']) / Path(m['external']['extract']).name
+                r.update(active=True, path=f"runtime/{f.name}", files=1, size_bytes=f.stat().st_size)
+                runtime[m['provides']] = f
+            else: r['note'] = r['note'] or 'disabled in the list'
+        elif m['kind'] == 'skse' and not m.get('source'):
             r['note'] = r['note'] or SKSE_NOTE          # (listed only: no prepared source tree)
         elif r['enabled']:
             if not m.get('source'): sys.exit(f"{m['id']}: kind {m['kind']} needs a source")
@@ -350,6 +384,7 @@ def build(a):
             if m['kind'] == 'skse':
                 for e in skse_plugin_files(src / 'Data'):
                     e['mod'] = m['id']
+                    if m.get('aot'): e['aot'] = m['aot']
                     same = [x for x in skse_plugins if x['path'].lower() == e['path'].lower()]
                     if same:                                  # (a higher priority replaces the file in the merged tree: the list says what is there)
                         e['replaces_mod'] = same[0]['mod']
@@ -369,19 +404,29 @@ def build(a):
             r['note'] = r['note'] or 'disabled in the list'
         res.append(r)
     # SKSE VR itself: the core DLL, the stub module and the capture the AOT modules were made from, at the root of the overlay (the app
-    # preloads them: xros/app main.m skyrimvr_start). Given as paths in the list's "skse_runtime"; private files, hashed here.
+    # preloads them: xros/app main.m skyrimvr_start). The core comes from the list's runtime entry (the SKSE archive, fetched), or from
+    # "skse_runtime" in the list; the stub module and the capture from "skse_runtime" or from `vxrt_build.py skse-capture` when that was made for this
+    # exact plugin set. Private files, hashed here.
     root_files = []
-    if cfg.get('skse_runtime'):
+    rt = {k: Path(v) for k, v in (cfg.get('skse_runtime') or {}).items()}
+    core = rt.get('core') or runtime.get('skse_core')
+    if skse_plugins and core:
+        made = skse_capture_files(skse_plugin_set(skse_plugins, sha256(core)))
+        for k in ('hooks', 'capture'):
+            if k not in rt and k in made: rt[k] = made[k]
+    if core or rt:
+        rt['core'] = core
         (out / 'overlay_root').mkdir()
         for want, name in (('core', 'sksevr_1_4_15.dll'), ('hooks', 'vxrt_hooks.dll'), ('capture', 'skse_capture.txt')):
-            src = Path(cfg['skse_runtime'][want]).resolve(strict=True)
+            if not rt.get(want): continue
+            src = Path(rt[want]).resolve(strict=True)
             subprocess.run(['cp', '-c', str(src), str(out / 'overlay_root' / name)], check=True)
             root_files.append(dict(name=name, sha256=sha256(out / 'overlay_root' / name), size=src.stat().st_size))
     ptxt = ''.join(f'*{p}\r\n' for p in plugins)
     (out / 'Plugins.txt').write_text(ptxt, newline=''); (out / 'merged' / 'Plugins.txt').write_text(ptxt, newline='')
     act = [r for r in res if r['active']]
     doc = dict(version=1, profile=cfg.get('profile', 'default'), merged='merged', plugins_txt='Plugins.txt', plugins=plugins, mods=res,
-               skse_plugins=skse_plugins, shadow_install=shadow, overlay_root_files=root_files,
+               skse_plugins=skse_plugins, skse_plugin_set=skse_plugin_set(skse_plugins, next((f['sha256'] for f in root_files if f['name'] == 'sksevr_1_4_15.dll'), '')) if skse_plugins else None, shadow_install=shadow, overlay_root_files=root_files,
                totals=dict(active_mods=len(act), active_files=sum(r['files'] for r in act), active_size_bytes=sum(r['size_bytes'] for r in act),
                            active_memory_hint_mb=sum(r['memory_hint_mb'] or 0 for r in act)))
     (out / 'mods.json').write_text(json.dumps(doc, indent=1))
@@ -410,7 +455,7 @@ def pipeline(a):
         if e['dll']:
             p = pack / 'merged' / 'Data' / e['path']
             if sha256(p) != e['sha256']: sys.exit(f'{p} changed since the pack was built')
-            cfg['dlls'].append(dict(path=str(p), sha256=e['sha256'], base=e['module_base']))
+            cfg['dlls'].append(dict(path=str(p), sha256=e['sha256'], base=e['module_base'], **(e.get('aot') or {})))
     Path(a.out).write_text(json.dumps(cfg, indent=1)); print(f"{a.out}: {sum(1 for e in d.get('skse_plugins', []) if e['dll'])} plugin DLLs added")
 
 

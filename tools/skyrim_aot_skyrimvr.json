@@ -1,5 +1,5 @@
 {
- "_note": "SkyrimVR AOT module set for the arena at 0x300000000 (exe rebased to 0x308000000), as a template with no machine paths: ${NAME} comes from the environment or tools/vxrt_env.py (defaults under VXRT_PRIVATE_ROOT, default build/private; docs/SETUP_SKYRIM.md). Run it with `python3 tools/vxrt_build.py aot`, or python3 tools/skyrim_aot_pipeline.py --config tools/skyrim_aot_skyrimvr.json --build --target xros --out <new dir under the private root>. SHA-256 pins are of the player's own private files (hashes only are committed). inputs/ holds the Steam DLLs binkw64, openvr_api, steam_api64 (from the game folder) and msvcp140 (from SteamVR's bin/vrwebhelper/win64), copied unmodified by `vxrt_build.py prepare`. The split profile (a speed aid recorded from a Mac run, derived from the game, never committed) is optional: without the file the exe is built unsplit by the compiler's default part size. The compiler is this checkout's VXRuntime/build/vxrt-aot (hash recorded, not pinned); no runtime block (only --probe needs one).",
+ "_note": "SkyrimVR AOT module set for the arena at 0x300000000 (exe rebased to 0x308000000), as a template with no machine paths: ${NAME} comes from the environment or tools/vxrt_env.py (defaults under VXRT_PRIVATE_ROOT, default build/private; docs/SETUP_SKYRIM.md). Run it with `python3 tools/vxrt_build.py aot`, or python3 tools/skyrim_aot_pipeline.py --config tools/skyrim_aot_skyrimvr.json --build --target xros --out <new dir under the private root>. SHA-256 pins are of the player's own private files (hashes only are committed). inputs/ holds the Steam DLLs binkw64, openvr_api, steam_api64 (from the game folder) and msvcp140 (from SteamVR's bin/vrwebhelper/win64), copied unmodified by `vxrt_build.py prepare`. The split profile (the x86 instructions whose ordered access crosses 16 bytes, recorded from a Mac run by tools/skyrim_splits.py, derived from the game, never committed) is REQUIRED for new builds: `vxrt_build.py aot` records it first if it is missing (an exe built without it crashed in SkyrimVRTools, research/2026-11-11-skse-vr-on-aot.md). Its hash is pinned in <file>.sha256 next to it (VXRT_SPLITS_SHA256). The compiler is this checkout's VXRuntime/build/vxrt-aot (hash recorded, not pinned); no runtime block (only --probe needs one).",
  "original": {
   "path": "${SKYRIM_ASSET_ROOT}/SkyrimVR.exe",
   "sha256": "6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b7f87971"
@@ -13,7 +13,7 @@
   "part_mb": 16,
   "splits": {
    "path": "${VXRT_SPLITS_FILE}",
-   "sha256": "0e8c8cca4402dc853652eab6c3a71df1d78a19740e4e8b5b6055ebc84cd757ae"
+   "sha256": "${VXRT_SPLITS_SHA256}"
   },
   "roots": null
  },

@@ -103,9 +103,26 @@ def stage_prepare(a):
     return run([sys.executable, REPO / 'tools' / 'skyrim_prepare.py', 'all']), [v()['VXRT_PREPARED_EXE'], v()['VXRT_AOT_INPUTS'], v()['VXRT_REDIST_DIR']]
 
 
+def ensure_splits(a):
+    """New builds always carry the module-splits profile: record it (tools/skyrim_splits.py, a Mac game run) when it is missing or does not match its hash."""
+    import skyrim_splits
+    st = skyrim_splits.status()
+    if st == 'ok' or skyrim_splits.install():
+        return
+    say('aot: the module-splits profile is %s (%s). It is a list of places in the game where it does a kind of memory access Apple chips cannot do in one go; the recompiler must know them in advance, and learns them by watching the game run on this Mac for about 10 minutes. Recording it now.' % (st, skyrim_splits.splits_path()))
+    rc = run([sys.executable, REPO / 'tools' / 'skyrim_splits.py', 'record'] + (['--force'] if st == 'mismatch' else []))
+    if rc == MISSING:
+        raise NeedInput('the module-splits profile could not be recorded (see above); it is made by: python3 tools/skyrim_splits.py record')
+    if rc or skyrim_splits.status() != 'ok':
+        raise NeedInput('the module-splits profile is missing and recording it failed; run python3 tools/skyrim_splits.py record and read its output')
+
+
 def stage_aot(a):
     need_env('SKYRIM_ASSET_ROOT')
     need_path(v()['VXRT_PREPARED_EXE'], 'prepare', 'the prepared SkyrimVR.exe')
+    link0 = priv() / 'game_fw-xros'
+    if a.force or not link0.exists():
+        ensure_splits(a)
     link = priv() / 'game_fw-xros'
     if link.exists() and not a.force:
         say('aot: %s already exists (--force to compile again)' % link)
@@ -140,9 +157,23 @@ def stage_shaders(a):
 APP = REPO / 'VXRuntime/build/xros-xrizer-fixture/derived/Build/Products/Debug-xros/VXRuntimeHost.app'
 
 
+def skse_modules(plain):
+    """The module set the app embeds: the plain one, or (when the mod pack has SKSE plugins) the one made by skse-capture for exactly that plugin set."""
+    import skse_capture
+    pack = priv() / 'mods-pack'
+    st = skse_capture.status(pack)
+    if st == 'n/a':
+        return plain
+    if st != 'done':
+        raise NeedInput('the mod pack %s has SKSE plugins but the SKSE capture is %s: the app would stop at start-up (made by: tools/vxrt_build.py skse-capture)' % (pack, st))
+    say('app: embedding the SKSE module set %s' % (priv() / 'game_fw-xros-skse'))
+    return priv() / 'game_fw-xros-skse'
+
+
 def stage_app(a):
     link = priv() / 'game_fw-xros'
     need_path(link, 'aot', 'the compiled game modules')
+    link = skse_modules(link)
     need_path(priv() / 'shadercache-xros-manifest' / '.complete', 'shaders', 'the shader set')
     if not rustc_ok():
         raise NeedInput('no Rust toolchain at %s (made by: tools/vxrt_build.py toolchain)' % os.environ.get('XRIZER_RUST_ROOT', REPO / 'build/toolchains/xrizer-rust'))
@@ -201,12 +232,38 @@ def stage_mods(a):
     return rc, [str(out)]
 
 
+def stage_skse_capture(a):
+    pack = Path(a.out) if a.out else priv() / 'mods-pack'
+    need_path(pack / 'mods.json', 'mods', 'the mod pack')
+    import skyrim_splits
+    if skyrim_splits.status() != 'ok':
+        raise NeedInput('the module-splits profile is %s: %s. It lists the places where the game does a memory access Apple chips cannot do in one go; the recompiler needs it in advance (made by: tools/vxrt_build.py aot, which records it by running the game on your Mac for about 10 minutes)' % (skyrim_splits.status(), skyrim_splits.splits_path()))
+    import skse_capture
+    st = skse_capture.status(pack)
+    if st == 'n/a':
+        need_path(pack / 'overlay_root' / skse_capture.CORE_NAME, 'mods-fetch (the skse-core entry), then mods --force', 'the SKSE VR core DLL in the pack')
+        raise NeedInput('the pack has no SKSE plugin DLLs: nothing to capture')
+    ns = argparse.Namespace(pack=str(pack), force=a.force, late_seconds=a.late_seconds, verify_seconds=a.verify_seconds, wait=a.wait_session)
+    try:
+        skse_capture.stage(ns)
+    except skse_capture.NeedInput as e:
+        raise NeedInput(str(e))
+    except skse_capture.Failed as e:
+        say('skse-capture: FAILED: %s' % e)
+        return FAIL, []
+    return OK, [str(priv() / 'skse-capture' / 'state.json'), str(priv() / 'game_fw-xros-skse')]
+
+
 STAGES = {'toolchain': stage_toolchain, 'prepare': stage_prepare, 'aot': stage_aot, 'shaders': stage_shaders, 'app': stage_app,
-          'stage-to-device': stage_stage, 'mods-fetch': stage_mods_fetch, 'mods': stage_mods}
+          'stage-to-device': stage_stage, 'mods-fetch': stage_mods_fetch, 'mods': stage_mods, 'skse-capture': stage_skse_capture}
 
 
 def stage_state(s):
     """done / missing, from the manifest's output paths (not for the headset)."""
+    if s['name'] == 'skse-capture':
+        import skse_capture
+        st = skse_capture.status(E.private_root() / 'mods-pack')
+        return {'done': 'done', 'stale': 'stale', 'n/a': 'unknown'}.get(st, 'missing')
     outs = [E.expand(o) for o in s['outputs'] if not o.startswith('(')]
     if not outs:
         return 'unknown'
@@ -237,11 +294,14 @@ def main():
     ap.add_argument('--install', action='store_true', help='app: install on the headset after the build')
     ap.add_argument('--run', action='store_true', help='stage-to-device: really copy (default: dry run)')
     ap.add_argument('--list', help='mods: the mods list')
-    ap.add_argument('--out', help='mods: the pack directory')
+    ap.add_argument('--out', help='mods, skse-capture: the pack directory')
     ap.add_argument('--manual', action='store_true', help='mods-fetch: use the browser and the Downloads folder even if NEXUS_API_KEY is set')
     ap.add_argument('--accept-name-match', action='store_true', help='mods-fetch: without a terminal, accept an archive whose name carries the mod id')
     ap.add_argument('--wait', type=int, help='mods-fetch: seconds to wait per file for its nxm link (non-premium)')
     ap.add_argument('--nxm', action='append', help='mods-fetch: nxm:// link from the Nexus website for a file (without Premium); repeatable')
+    ap.add_argument('--late-seconds', type=int, default=100, help='skse-capture: seconds into the game when the late capture is taken')
+    ap.add_argument('--verify-seconds', type=int, default=200, help='skse-capture: length of the strict verify run')
+    ap.add_argument('--wait-session', type=int, default=3600, help='skse-capture: seconds to wait for another Skyrim run to end before giving up')
     ap.add_argument('--deploy', action='store_true', help='mods: copy the pack to the headset')
     a = ap.parse_args()
     try:

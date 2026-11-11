@@ -114,6 +114,24 @@ def checks(a):
     add('ok' if fw.is_dir() else 'warn', 'compiled game modules (game_fw)', str(fw), 'tools/vxrt_build.py aot')
     shd = Path(os.environ.get('XROS_SHADER_DIR') or priv / 'shadercache-xros-manifest')
     add('ok' if (shd / '.complete').is_file() else 'warn', 'shader set', str(shd), 'tools/vxrt_build.py shaders')
+    sp = Path(v['VXRT_SPLITS_FILE'])
+    side = sp.with_name(sp.name + '.sha256')
+    want = side.read_text().split()[0] if side.is_file() else E.SPLITS_SHA256
+    ok = sp.is_file() and E.sha256_file(sp) == want
+    add('ok' if ok else 'FAIL', 'module-splits profile (every new build needs it)', str(sp) if ok else ('hash differs from its pin: ' + str(sp) if sp.is_file() else 'missing: ' + str(sp)),
+        'a list of places where the game does a memory access Apple chips cannot do in one go, which the recompiler must know in advance; tools/vxrt_build.py aot records it first by watching the game run on your Mac for about 10 minutes (or python3 tools/skyrim_splits.py record)')
+    # --- SKSE VR (optional: only for SKSE plugins such as HIGGS, PLANCK, VRIK)
+    import hashlib
+    SKSE_MD5, SKSE_FILE = 'eafdd0f8163b3131435d54f01977b445', 'sksevr_2_00_12.7z'
+    folders = [priv / 'downloads', Path(os.environ.get('VXRT_DOWNLOADS_DIR') or '~/Downloads').expanduser()]
+    have = next((f / SKSE_FILE for f in folders if (f / SKSE_FILE).is_file() and hashlib.md5((f / SKSE_FILE).read_bytes()).hexdigest() == SKSE_MD5), None)
+    core = priv / 'mods-src' / 'skse-core' / 'sksevr_1_4_15.dll'
+    add('ok' if core.is_file() or have else 'warn', 'SKSE VR 2.0.12 archive (for SKSE plugins; not on Nexus)',
+        str(core) if core.is_file() else (str(have) if have else 'not downloaded'),
+        'download https://skse.silverlock.org/beta/sksevr_2_00_12.7z in your browser (no account), then tools/vxrt_build.py mods-fetch')
+    cap = priv / 'skse-capture' / 'state.json'
+    add('ok' if cap.is_file() else 'warn', 'SKSE capture for the pack (skse-capture)', str(cap) if cap.is_file() else 'not made yet',
+        'tools/vxrt_build.py skse-capture (runs the game on the Mac for a few minutes; needed again whenever the SKSE plugin set changes)')
     free = shutil.disk_usage(priv if priv.exists() else priv.parent if priv.parent.exists() else E.REPO).free / 2**30
     add('ok' if free >= 40 else 'warn', 'free disk for the private root (40 GB advised)', '%.0f GB' % free, 'AOT scratch, shader set and the staging tree need space')
     if a.build:
