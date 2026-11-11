@@ -1573,6 +1573,7 @@ static int run_program(void *arg) {
     if (!m) return 1;
     if (vx_trace) vx_log("%s: entry %#x", m->name, m->entry_rva);
     tls_callbacks(m, 1 /* DLL_PROCESS_ATTACH */);
+    { void vx_codehooks_preload(void); vx_codehooks_preload(); }   // (VXRT_PRELOAD: where an injected thread's LoadLibrary ran; codehooks.c)
     typedef DWORD (WINAPI *entry_fn)(void);
     DWORD rc = ((entry_fn)(m->base + m->entry_rva))();
     fflush(stdout);

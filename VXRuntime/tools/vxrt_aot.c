@@ -29,6 +29,7 @@
 #include <mach/mach.h>
 #include <mach-o/dyld.h>
 #include <unistd.h>
+#include <strings.h>
 #include <mach/mach_vm.h>
 #include <time.h>
 
@@ -121,6 +122,26 @@ static void load(image *im, const char *path) {
             b += block;
         }
     } else if (delta) die("%s: VXRT_AOT_BASE given and the image has no relocations", path);
+    // VXRT_AOT_PATCHES=<file>: the code a script extender wrote into this image (VXRuntime/src/codehooks.c, VXRT_CODE_CAPTURE:
+    // "P <image name> <rva> <hex>" lines) is applied to the copy the code is found in, after relocation. The module is still
+    // named by the file's own hash: the runtime maps the unpatched file, the extender writes the same bytes again at start-up,
+    // and VXRT_CODE_VERIFY compares them.
+    if (getenv("VXRT_AOT_PATCHES")) {
+        FILE *pf = fopen(getenv("VXRT_AOT_PATCHES"), "r");
+        if (!pf) die("cannot read VXRT_AOT_PATCHES %s", getenv("VXRT_AOT_PATCHES"));
+        size_t cap = 1 << 20; char *line = malloc(cap); unsigned long napplied = 0, nbytes = 0;
+        while (fgets(line, (int)cap, pf)) {
+            char kind, name[128]; unsigned rva; int used = 0;
+            if (sscanf(line, "%c %127s %x %n", &kind, name, &rva, &used) != 3 || kind != 'P' || !used) continue;
+            if (strcasecmp(name, im->name)) continue;
+            size_t n = strcspn(line + used, " \r\n") / 2;
+            if ((uint64_t)rva + n > im->size) die("patch at %#x+%zu is outside %s", rva, n, im->name);
+            for (size_t i = 0; i < n; i++) { unsigned v; if (sscanf(line + used + 2 * i, "%2x", &v) != 1) die("bad hex in patch at %#x", rva); im->mem[rva + i] = (uint8_t)v; }
+            napplied++; nbytes += (unsigned long)n;
+        }
+        fclose(pf); free(line);
+        fprintf(stderr, "vxrt-aot: %s: %lu patches (%lu bytes) from %s\n", im->name, napplied, nbytes, getenv("VXRT_AOT_PATCHES"));
+    }
 }
 static int exec_rva(const image *im, uint64_t rva) {
     for (int i = 0; i < im->nsec; i++)
@@ -667,6 +688,18 @@ static void roots(const char *addresses) {
         while (f && fgets(line, sizeof line, f)) { uint64_t a = strtoull(line, NULL, 16); if (exec_va(G, a)) { push(a, R_LIST); n++; } }
         if (f) fclose(f);
         fprintf(stderr, "vxrt-aot: %llu roots from %s\n", (unsigned long long)n, getenv("VXRT_AOT_ROOTS"));
+    }
+    if (getenv("VXRT_AOT_SWEEP")) {                                         // VXRT_AOT_SWEEP=<lo>-<hi> (hex RVAs, may repeat with ';'): every instruction start found
+        char spec[256]; snprintf(spec, sizeof spec, "%s", getenv("VXRT_AOT_SWEEP"));   // by a linear decode of that range is a root. For an interpreter loop whose
+        uint64_t n = 0;                                                     // jump table is filled at run time (SkyUI-VR's Lua: labels in the middle of handlers).
+        for (char *rng = strtok(spec, ";"); rng; rng = strtok(NULL, ";")) {
+            uint64_t lo = strtoull(rng, NULL, 16), hi = strchr(rng, '-') ? strtoull(strchr(rng, '-') + 1, NULL, 16) : lo;
+            for (uint64_t r = lo; r < hi && r < G->size;) {
+                x86_insn d; uint64_t va = G->base + r;
+                if (exec_va(G, va) && decode_at(va, &d) && d.len > 0) { push(va, R_LIST); n++; r += d.len; } else r++;
+            }
+        }
+        fprintf(stderr, "vxrt-aot: %llu roots from the sweep %s\n", (unsigned long long)n, getenv("VXRT_AOT_SWEEP"));
     }
     if (addresses) {                                                        // a list of addresses: "0001:<offset>" or hex RVAs
         FILE *f = fopen(addresses, "r");

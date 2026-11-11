@@ -1049,8 +1049,34 @@ static kern_return_t xr_alloc(mach_vm_address_t *out, mach_vm_size_t len) {
     }
     return KERN_NO_SPACE;
 }
+// Strict AOT (VXRT_AOT_STRICT): the program may not make run-time code. Nothing outside an image can run (the translator is not
+// there to run it: a jump into such memory is a fallback and ends the run), so a request for executable memory that is not an
+// image's own (SKSE patching a module's code is; the hooks region is part of an image) fails as Windows does under a
+// process policy that prohibits dynamic code (ProhibitDynamicCode): ERROR_DYNAMIC_CODE_BLOCKED, 1655. A JIT built into a
+// plugin (SkyUI VR's LuaJIT 2.1.0-beta3 allocates its machine-code area read-write and then calls VirtualProtect with
+// PAGE_EXECUTE_READ, whose failure it handles: the trace is abandoned and the interpreter goes on) sees an environment
+// where its JIT cannot work. VXRT_AOT_DYNAMIC_CODE=1 allows it again. The first calls are logged with the caller.
+static int dynamic_code_blocked(const void *addr, DWORD prot, const char *what, void *caller) {
+    static int strict = -1; static unsigned told;
+    if (!(prot & 0xF0)) return 0;                                // PAGE_EXECUTE, _READ, _READWRITE, _WRITECOPY
+    if (strict < 0) { const char *e = getenv("VXRT_AOT_STRICT"), *d = getenv("VXRT_AOT_DYNAMIC_CODE"); strict = e && atoi(e) && !(d && atoi(d)); }
+    if (!strict || (addr && vx_image_at((uint64_t)(uintptr_t)addr))) return 0;
+    if (__atomic_fetch_add(&told, 1, __ATOMIC_RELAXED) < 8) {
+        const vx_image *m = vx_image_at((uint64_t)(uintptr_t)caller);
+        vx_log("%s(%p, protect %#x): refused, 1655 ERROR_DYNAMIC_CODE_BLOCKED (VXRT_AOT_STRICT: no run-time code), from %s+%#llx", what, addr, (unsigned)prot,
+               m ? m->name : "?", m ? (unsigned long long)((uint8_t *)caller - m->base) : 0ull);
+    }
+    vx_set_last_error(1655);
+    return 1;
+}
 static WINAPI void *VirtualAlloc(void *addr, size_t size, DWORD type, DWORD protect) {
     if (!size) { vx_set_last_error(87); return NULL; }
+    if ((type & MEM_COMMIT) && (protect & 0xf0) && !(addr && find_reservation((uintptr_t)addr))) {   // (VXRT_EXEC_REGION, codehooks.c)
+        void *vx_exec_region_alloc(size_t);
+        void *p = vx_exec_region_alloc(size);
+        if (p) return p;
+    }
+    if ((type & MEM_COMMIT) && dynamic_code_blocked(addr, protect, "VirtualAlloc", VX_RETURN_ADDRESS())) return NULL;
     VX_NO_STOP_LOCK(&g_vm_lock);
     reservation *r = addr ? find_reservation((uintptr_t)addr) : NULL;
     if (r && (type & (MEM_RESET | MEM_RESET_UNDO)) && !(type & (MEM_RESERVE | MEM_COMMIT))) {
@@ -1381,6 +1407,7 @@ static int never_writable(uintptr_t start, uintptr_t end) {
     return 1;
 }
 static WINAPI BOOL VirtualProtect(void *addr, size_t size, DWORD prot, DWORD *old) {
+    if (dynamic_code_blocked(addr, prot, "VirtualProtect", VX_RETURN_ADDRESS())) return 0;
     uintptr_t start = (uintptr_t)addr & ~(uintptr_t)0xfff, end = ((uintptr_t)addr + (size ? size : 1) + 0xfff) & ~(uintptr_t)0xfff;
     const vx_image *img = vx_image_at(start);
     if (!img && (prot & 0xCC) && never_writable(start, end)) {   // PAGE_READWRITE, WRITECOPY, EXECUTE_READWRITE, EXECUTE_WRITECOPY
@@ -1410,6 +1437,16 @@ static DWORD mach_protect(vm_prot_t p) {
 static size_t virtual_query(const void *addr, MEMORY_BASIC_INFORMATION *mbi, size_t len);
 // (the vCPU's low memory: its addresses as the program has them)
 static WINAPI size_t VirtualQuery(const void *addr, MEMORY_BASIC_INFORMATION *mbi, size_t len) {
+    {   // (VXRT_EXEC_REGION, codehooks.c: what is left of the region reads as free space, which the extender's search for room
+        //  near the program finds; its VirtualAlloc there is then served from the region)
+        size_t vx_exec_region_free(const void *addr, uint8_t **base);
+        uint8_t *fb; size_t fn = vx_exec_region_free(addr, &fb);
+        if (fn && len >= sizeof *mbi) {
+            memset(mbi, 0, sizeof *mbi);
+            mbi->base = fb; mbi->alloc_base = fb; mbi->region = fn; mbi->state = MEM_FREE; mbi->protect = 0x01;
+            return sizeof *mbi;
+        }
+    }
     size_t r = virtual_query(addr, mbi, len);
     if (r && in_low((uintptr_t)mbi->base)) {
         mbi->base = (uint8_t *)mbi->base - vx_low_base;

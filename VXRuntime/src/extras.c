@@ -815,6 +815,7 @@ static WINAPI unsigned GlobalFlags(void *p) { (void)p; return 0; }
 static WINAPI void *LocalLock(void *p) { return p; }
 static WINAPI BOOL LocalUnlock(void *p) { (void)p; vx_set_last_error(0); return 0; }   // (not locked any more)
 static WINAPI char *lstrcpyA(char *a, const char *b) { memmove(a, b, strlen(b) + 1); return a; }
+static WINAPI char *lstrcatA(char *a, const char *b) { size_t n = strlen(a); memmove(a + n, b, strlen(b) + 1); return a; }   // (SKSE plugins built against the CRT-less kernel32 use it)
 static WINAPI uint16_t GetSystemDefaultUILanguage(void) { return 0x409; }
 static WINAPI BOOL GetStringTypeExW(DWORD lcid, DWORD type, const WCHAR *src, int n, uint16_t *out) {
     (void)lcid;
@@ -903,7 +904,7 @@ static WINAPI unsigned GlobalGetAtomNameW(uint16_t atom, WCHAR *out, int cap) {
 }
 static const vx_export kernel32_mfc[] = {
     VX_EXPORT(GlobalHandle), VX_EXPORT(GlobalReAlloc), VX_EXPORT(GlobalFlags), VX_EXPORT(LocalLock), VX_EXPORT(LocalUnlock),
-    VX_EXPORT(lstrcpyA), VX_EXPORT(GetSystemDefaultUILanguage), VX_EXPORT(GetStringTypeExW), VX_EXPORT(WritePrivateProfileStringW),
+    VX_EXPORT(lstrcpyA), VX_EXPORT(lstrcatA), VX_EXPORT(GetSystemDefaultUILanguage), VX_EXPORT(GetStringTypeExW), VX_EXPORT(WritePrivateProfileStringW),
     VX_EXPORT(WritePrivateProfileStringA), VX_EXPORT(CompareFileTime),
     VX_EXPORT(GlobalAddAtomW), VX_EXPORT(GlobalFindAtomW), VX_EXPORT(GlobalDeleteAtom), VX_EXPORT(GlobalGetAtomNameW),
     { "AddAtomW", (void *)GlobalAddAtomW }, { "FindAtomW", (void *)GlobalFindAtomW }, { "DeleteAtom", (void *)GlobalDeleteAtom },

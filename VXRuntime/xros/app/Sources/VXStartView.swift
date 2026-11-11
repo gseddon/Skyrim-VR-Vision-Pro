@@ -190,6 +190,24 @@ struct VXSettingsPage: View {
                             note(settings.upscale == .metalfx
                                  ? "Apple's MetalFX spatial upscaler brings the game's picture up to the display's size: sharper than plain scaling."
                                  : "The display's own sampler stretches the picture: softer, with no extra work.")
+                            Toggle("Sharpening off", isOn: Binding(get: { settings.sharpen == nil }, set: { settings.sharpen = $0 ? nil : 0.35 }))
+                            if let v = settings.sharpen {
+                                HStack {
+                                    Text("Sharpening")
+                                    Slider(value: Binding(get: { v }, set: { settings.sharpen = $0 }), in: VXSettings.unitRange, step: 0.05)
+                                    Text(String(format: "%.2f", v)).font(.system(.body, design: .monospaced)).frame(width: 70)
+                                }
+                            }
+                            note("A light sharpening pass on the final picture. Off by default; about 0.35 is a start. Next launch.")
+                            Toggle("Display quality: system default", isOn: Binding(get: { settings.renderQuality == nil }, set: { settings.renderQuality = $0 ? nil : 1.0 }))
+                            if let q = settings.renderQuality {
+                                HStack {
+                                    Text("Display quality")
+                                    Slider(value: Binding(get: { q }, set: { settings.renderQuality = $0 }), in: VXSettings.unitRange, step: 0.05)
+                                    Text(String(format: "%.2f", q)).font(.system(.body, design: .monospaced)).frame(width: 70)
+                                }
+                            }
+                            note("The size of the picture the system gives the app to fill. Higher is finer but heavier; the game's own size is a share of it, so lower Resolution to match. Next launch.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                     GroupBox("Latency") {
@@ -211,6 +229,60 @@ struct VXSettingsPage: View {
                             Toggle("Show my real hands over the game", isOn: $settings.showHands)
                             note("Off by default: the game draws its own controllers, and your real hands would be a second pair in the same place. Takes effect at once.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    GroupBox("Turning") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Turning", selection: $settings.turn) {
+                                Text("Game default").tag(VXTurn.game)
+                                Text("Snap").tag(VXTurn.snap)
+                                Text("Smooth").tag(VXTurn.smooth)
+                            }.pickerStyle(.segmented).labelsHidden()
+                            note(settings.turn == .game
+                                 ? "Leaves turning as the game has it."
+                                 : settings.turn == .snap
+                                 ? "Flicking the right stick turns you in steps."
+                                 : "Holding the right stick turns you smoothly. Some people find this uncomfortable.")
+                            Toggle("Snap angle: game default", isOn: Binding(get: { settings.snapAngle == nil }, set: { settings.snapAngle = $0 ? nil : VXSettings.snapAngleBuiltIn }))
+                            if let a = settings.snapAngle {
+                                HStack {
+                                    Slider(value: Binding(get: { a }, set: { settings.snapAngle = $0 }), in: VXSettings.snapAngleRange, step: 5)
+                                    Text(String(format: "%.0f°", a)).font(.system(.body, design: .monospaced)).frame(width: 70)
+                                }
+                            }
+                            Toggle("Turn speed: game default", isOn: Binding(get: { settings.turnSpeed == nil }, set: { settings.turnSpeed = $0 ? nil : VXSettings.turnSpeedBuiltIn }))
+                            if let v = settings.turnSpeed {
+                                HStack {
+                                    Slider(value: Binding(get: { v }, set: { settings.turnSpeed = $0 }), in: VXSettings.turnSpeedRange, step: 0.1)
+                                    Text(String(format: "%.1f", v)).font(.system(.body, design: .monospaced)).frame(width: 70)
+                                }
+                            }
+                            note("Game default writes nothing: the game keeps its own choice. The snap angle is for Snap turning and the speed for Smooth turning. Applies the next time you start.")
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    GroupBox("Movement") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Movement", selection: $settings.move) {
+                                Text("Game default").tag(VXMove.game)
+                                Text("Teleport").tag(VXMove.teleport)
+                                Text("Walk").tag(VXMove.walk)
+                            }.pickerStyle(.segmented).labelsHidden()
+                            note(settings.move == .game
+                                 ? "Leaves movement as the game has it."
+                                 : settings.move == .teleport
+                                 ? "Push the left stick forward to aim and release to jump there."
+                                 : "The left stick walks you around directly.")
+                            note("Applies the next time you start.")
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    ForEach(VXIniSetting.Group.allCases, id: \.self) { g in
+                        GroupBox(g.rawValue) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(VXIniSetting.all.filter { $0.group == g }) { item in iniRow(item) }
+                                note(g == .body || g == .teleport
+                                     ? "Game default writes nothing: the game keeps its own value. Number ranges are cautious bounds, not the game's. Applies the next time you start."
+                                     : "Game default writes nothing: the game keeps its own value. Applies the next time you start.")
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                     GroupBox("Mods") {
                         VXModsList()
@@ -288,6 +360,32 @@ struct VXSettingsPage: View {
                     }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder private func iniRow(_ item: VXIniSetting) -> some View {
+        switch item.kind {
+        case .flag:
+            HStack {
+                Text(item.title)
+                Spacer()
+                Picker(item.title, selection: Binding(get: { settings.flag(item.id) }, set: { settings.setFlag(item.id, $0) })) {
+                    Text("Game default").tag(Bool?.none)
+                    Text("On").tag(Bool?.some(true))
+                    Text("Off").tag(Bool?.some(false))
+                }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 360)
+            }
+        case .number(let range, let step, let unit):
+            VStack(alignment: .leading) {
+                Toggle("\(item.title): game default", isOn: Binding(get: { settings.number(item.id) == nil },
+                                                                   set: { settings.setNumber(item.id, $0 ? nil : (range.lowerBound + range.upperBound) / 2) }))
+                if let v = settings.number(item.id) {
+                    HStack {
+                        Slider(value: Binding(get: { v }, set: { settings.setNumber(item.id, $0) }), in: range, step: step)
+                        Text(String(format: "%g%@", v, unit)).font(.system(.body, design: .monospaced)).frame(width: 70)
+                    }
+                }
+            }
         }
     }
 
