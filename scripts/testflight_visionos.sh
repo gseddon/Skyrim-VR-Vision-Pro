@@ -7,7 +7,7 @@
 #
 # Before the first --export / --upload (once, by the account holder):
 #   1. App Store Connect > Apps > "+" > New App: platform visionOS, bundle ID
-#      exampleprefix.VisionSpatialTools (VERANTYX_BUNDLE_ID to change it), SKU of your choice.
+#      <prefix>.VisionSpatialTools (VERANTYX_BUNDLE_ID to change it), SKU of your choice.
 #   2. Xcode > Settings > Accounts: the Apple ID of team EXAMPLETEAM is signed in.
 #      The first export creates an Apple Distribution certificate in that account.
 #
@@ -21,7 +21,7 @@ PROJECT="$REPO_ROOT/VisionProClient/VisionSpatialTools/VisionSpatialTools.xcodep
 OUT="$REPO_ROOT/build/testflight"
 ARCHIVE="$OUT/VeRantyx.xcarchive"
 TEAM="${VERANTYX_TEAM:-EXAMPLETEAM}"
-BUNDLE_ID="${VERANTYX_BUNDLE_ID:-exampleprefix.VisionSpatialTools}"
+BUNDLE_ID="${VERANTYX_BUNDLE_ID:-${XROS_BUNDLE_PREFIX:-dev.example.vxrt}.VisionSpatialTools}"
 VERSION="${VERANTYX_VERSION:-1.0}"
 BUILD_NUMBER="$(date -u +%Y%m%d%H%M)"
 MODE="${1:-}"

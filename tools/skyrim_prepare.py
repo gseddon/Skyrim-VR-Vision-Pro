@@ -4,8 +4,8 @@ result against the pinned hash, and collect the pipeline's input DLLs.
 
     tools/skyrim_prepare.py status          what is there, what is missing (changes nothing)
     tools/skyrim_prepare.py fetch-tools     download Steamless (source) and the .NET SDK into <private root>/skyrim-tools and
-                                            build Steamless (asks first; --yes skips the question). The only step that
-                                            downloads.
+                                            build Steamless (prints what it downloads and goes ahead;
+                                            --confirm asks first). The only step that downloads.
     tools/skyrim_prepare.py unpack          copy SKYRIM_ASSET_ROOT/SkyrimVR.exe, unpack the copy, verify, install as
                                             <skyrim dir>/prepared/SkyrimVR.exe
     tools/skyrim_prepare.py inputs          copy binkw64/openvr_api/steam_api64 (game folder) and msvcp140 (SteamVR's
@@ -102,13 +102,13 @@ def csproj(name, refs=(), extra=''):
             '  </ItemGroup>\n</Project>\n') % (name, extra, ';'.join('**/' + n for n in sorted(UI_ONLY)), items)
 
 
-def fetch_tools(yes):
+def fetch_tools(confirm=False):
     t = tools_dir()
     print('This downloads, into %s only:' % t)
     print('  1. %s   (Steamless source at the pinned commit; CC BY-NC-ND 4.0)' % STEAMLESS_URL)
     print('  2. %s   (Microsoft, MIT) and through it the .NET SDK %s for macOS arm64 (MIT)' % (DOTNET_INSTALL_URL, DOTNET_VERSION))
     print('  3. NuGet packages that restore pulls for the build, into %s' % (t / 'nuget'))
-    if not yes and input('Download and build? [y/N] ').strip().lower() != 'y':
+    if confirm and input('Download and build? [y/N] ').strip().lower() != 'y':
         raise Refuse('not confirmed')
     for d in ('src', 'tmp', 'home', 'nuget', 'steamless-bin'):
         (t / d).mkdir(parents=True, exist_ok=True)
@@ -233,7 +233,8 @@ def status():
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('command', choices=['status', 'fetch-tools', 'unpack', 'inputs', 'all'])
-    ap.add_argument('--yes', action='store_true', help='fetch-tools: do not ask before downloading')
+    ap.add_argument('--confirm', action='store_true', help='fetch-tools: ask before downloading (default: print the list and go ahead)')
+    ap.add_argument('--yes', action='store_true', help=argparse.SUPPRESS)    # accepted for old callers; now the default
     a = ap.parse_args()
     for k, v in E.load_local_env().items():
         os.environ.setdefault(k, v)
@@ -241,7 +242,7 @@ def main():
         if a.command == 'status':
             return status()
         if a.command == 'fetch-tools':
-            fetch_tools(a.yes)
+            fetch_tools(a.confirm and not a.yes)
         if a.command in ('unpack', 'all'):
             unpack()
         if a.command in ('inputs', 'all'):

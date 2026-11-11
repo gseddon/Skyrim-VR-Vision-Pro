@@ -25,7 +25,7 @@
 	<key>CFBundleExecutable</key>
 	<string>VeRantyx</string>
 	<key>CFBundleIdentifier</key>
-	<string>exampleprefix.VeRantyx.mac</string>
+	<string>dev.example.vxrt.VeRantyx.mac</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleInfoDictionaryVersion</key>

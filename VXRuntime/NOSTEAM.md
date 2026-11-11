@@ -40,7 +40,7 @@ documented command-line option. Not needed either: without Steam the engine alre
 Also seen: the game starts `REDEngineErrorReporter.exe` as a child process (it ran under vxrt on the Mac). The
 headset has no posix_spawn for us: in-process thread, or confirm the game goes on when the spawn fails.
 
-## The same layout on the Vision Pro (exampleprefix.VXRuntimeHost)
+## The same layout on the Vision Pro (dev.example.vxrt.VXRuntimeHost)
 
 The app (`xros/app/Sources/main.m`, avp-port) already sets `VXRT_ROOT=Documents/root` and never sets
 `VXRT_STEAM_BRIDGE`, so `vx_steam_registry()` writes nothing and registry.txt gets only the defaults. Layout:
