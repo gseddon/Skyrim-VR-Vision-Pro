@@ -2,11 +2,11 @@
 
 This repository preserves VeRantyx-authored source and its notices, with the following third-party components and local adaptations:
 
-- `VRDriver/include/openvr.h`, `VRDriver/include/openvr_driver.h` and
-  `NativeARM/vrruntime/openvr/` are the OpenVR SDK headers, Copyright (c)
-  Valve Corporation, used under the BSD-3-Clause license
-  (https://github.com/ValveSoftware/openvr). They are needed to compile the
-  SteamVR driver, the OpenVR capture proxy and the native OpenVR runtime.
+- `VXRuntime/tests/openvr/openvr.h` (with its `LICENSE`) is the OpenVR SDK
+  header, Copyright (c) Valve Corporation, used under the BSD-3-Clause license
+  (https://github.com/ValveSoftware/openvr). It is needed to compile the
+  `native_vr_d3d11` guest test. xrizer's own headers are under
+  `third_party/xrizer/upstream/openvr/headers/`.
 - `NativeARM/vrruntime/hand_skeleton_alvr.inc` contains hand-skeleton bone
   poses taken unchanged from ALVR (https://github.com/alvr-org/ALVR,
   `alvr/server_openvr/cpp/alvr_server/Controller.cpp`), Copyright (c)

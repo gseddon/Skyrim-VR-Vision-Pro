@@ -1,5 +1,5 @@
 // Compile-only ABI probe for the checked-in OpenVR Windows C++ interface.
-#include "../../VRDriver/include/openvr.h"
+#include "openvr/openvr.h"
 
 extern "C" void native_vr_abi_probe(vr::IVRSystem *system, vr::IVRCompositor *compositor,
                                     vr::HmdMatrix44_t *projection, vr::HmdMatrix34_t *eye,

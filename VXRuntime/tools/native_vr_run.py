@@ -19,7 +19,7 @@ SOURCES = ('VXRuntime/tests/native_vr_d3d11.cpp', 'VXRuntime/src/native_openvr.m
            'VXRuntime/translator/engine.c', 'VXRuntime/translator/aot.c', 'VXRuntime/translator/aot.h',
            'VXRuntime/translator/xlat.h', 'VXRuntime/translator/xlat_sse.inc', 'VXRuntime/translator/x86dec.c',
            'VXRuntime/translator/x87.c', 'VXRuntime/translator/a64.h', 'VXRuntime/Makefile',
-           'VRDriver/include/openvr.h', 'VXRuntime/tools/native_vr_run.py')
+           'VXRuntime/tests/openvr/openvr.h', 'VXRuntime/tools/native_vr_run.py')
 
 
 def digest(path):
