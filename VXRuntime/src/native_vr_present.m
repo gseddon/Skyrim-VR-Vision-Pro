@@ -186,6 +186,7 @@ int vx_xros_immersive_stats(char *buf, uint32_t len) {
 }
 #endif
 
+#include "sharpen_cas.h"
 // float4-aligned layout matches the Metal shader's parameter structure.
 typedef struct { float rot[12], src[4], dst[4], bounds[4], probe[4], maskins[4], maskrad[4]; } native_params;
 static NSString *const g_native_shader = @
@@ -232,6 +233,7 @@ static NSString *const g_native_shader = @
 " float4 c=img.sample(smp,float2(p12.x,p0.y))*(w12.x*w0.y)+img.sample(smp,float2(p0.x,p12.y))*(w0.x*w12.y)+img.sample(smp,p12)*(w12.x*w12.y)\n"
 "  +img.sample(smp,float2(p3.x,p12.y))*(w3.x*w12.y)+img.sample(smp,float2(p12.x,p3.y))*(w12.x*w3.y);\n"
 " float wsum=w12.x*w0.y+w0.x*w12.y+w12.x*w12.y+w3.x*w12.y+w12.x*w3.y; return max(c/wsum,0.); }\n"
+VX_CAS_MSL
 "fragment float4 nf(V v [[stage_in]], texture2d<float> img [[texture(0)]], constant P &p [[buffer(0)]]) {\n"
 " float2 t=float2(mix(-p.dst.x,p.dst.y,v.uv.x),mix(p.dst.z,-p.dst.w,v.uv.y));\n"
 " float3 d=float3(t,-1); float3 s=float3(dot(p.r[0].xyz,d),dot(p.r[1].xyz,d),dot(p.r[2].xyz,d));\n"
@@ -240,8 +242,14 @@ static NSString *const g_native_shader = @
 " bool inside = okd && !(any(uv<0) || any(uv>1));\n"
 " constexpr sampler smp(coord::normalized,filter::linear,address::clamp_to_edge);\n"
 " float4 game = float4(0,0,0,1);\n"
-" if (inside) { float2 tu=mix(p.bounds.xy,p.bounds.zw,uv);\n"
-"  if (p.probe.y>.5) game=catmull(img,smp,tu); else game=img.sample(smp,tu); }\n"
+" float2 tu=mix(p.bounds.xy,p.bounds.zw,uv); float2 tdx=dfdx(tu), tdy=dfdy(tu);\n"
+" if (inside) {\n"
+"  if (p.probe.y>.5) game=catmull(img,smp,tu); else game=img.sample(smp,tu);\n"
+/* VXRT_SHARPEN=s (0..1, default 0 = off): CAS on the final resample. The five taps are bilinear at one drawable pixel around the sample (cheap); the CAS delta
+ * (sharpened - unsharpened, taken in sqrt space) is added to the Catmull-Rom centre, so the filter that makes repeats stable is kept. */
+"  if (p.probe.z>0.) { float3 c0=sqrt(max(img.sample(smp,tu).rgb,0.)); float3 cu=sqrt(max(img.sample(smp,tu-tdy).rgb,0.)), cd=sqrt(max(img.sample(smp,tu+tdy).rgb,0.));\n"
+"   float3 cl=sqrt(max(img.sample(smp,tu-tdx).rgb,0.)), cr=sqrt(max(img.sample(smp,tu+tdx).rgb,0.)); float3 sh=vx_cas(c0,cu,cd,cl,cr,p.probe.z);\n"
+"   game.rgb=max(game.rgb+(sh*sh-c0*c0),0.); } }\n"
 " if (p.probe.x>.5) { float3 pc=probe(t,p.dst,uv,p.maskins,p.maskrad); if (p.probe.x>1.5) { bool ink=any(abs(pc-float3(.05,.05,.07))>.02); return ink?float4(pc,1):game; } return float4(pc,1); }\n"
 " return game; }\n";
 
@@ -303,6 +311,10 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
     {   static int bicubic = -1;                 // VXRT_REPROJ_FILTER=bicubic|bilinear (default bicubic)
         if (bicubic < 0) { const char *f = getenv("VXRT_REPROJ_FILTER"); bicubic = !(f && !strcmp(f, "bilinear")); if (bicubic) vx_log("reprojection filter: Catmull-Rom (the default; VXRT_REPROJ_FILTER=bilinear selects bilinear)"); }
         p.probe[1] = bicubic ? 1.f : 0.f;
+    }
+    {   static float sharpen = -1;               // VXRT_SHARPEN=0..1 (default 0: off), contrast-adaptive sharpening of the final resample
+        if (sharpen < 0) { const char *e = getenv("VXRT_SHARPEN"); char *end = NULL; float v = e && *e ? strtof(e, &end) : 0.f; sharpen = (e && *e && (!end || *end || v < 0.f || v > 1.f)) ? 0.f : v; if (sharpen > 0.f) vx_log("sharpen: CAS strength %.2f (VXRT_SHARPEN)", sharpen); }
+        p.probe[2] = sharpen;
     }
     p.bounds[0]=e->u_min; p.bounds[1]=e->v_min; p.bounds[2]=e->u_max; p.bounds[3]=e->v_max;
     {   /* VXRT_VISMASK_PROBE: the calibration pattern (see vismask_shape.h) */
