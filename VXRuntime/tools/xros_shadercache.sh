@@ -6,8 +6,8 @@
 #   compile <pending> <out>: just that (the Mac's own sources can be compiled the same way)
 #   device (default): pending from the headset, compiled, the .metallib files back into Documents/shadercache
 set -e
-DEV=${DEV:-717AC0D2-8713-5537-8D5F-A611235E7D35}
-APP=${APP:-gseddon.dev.vxrt.VXRuntimeHost}
+DEV=${DEV:-${VXRT_DEVICE_ID:-}}
+APP=${APP:-${XROS_BUNDLE_PREFIX:-dev.example.vxrt}.VXRuntimeHost}
 compile() {
     in=$1; out=$2; mkdir -p "$out"; n=0; t0=$(date +%s)
     for m in "$in"/*.metal; do
@@ -23,7 +23,8 @@ compile() {
 case "${1:-device}" in
 compile) compile "$2" "$3" ;;
 device)
-    w=${OUT:-$HOME/Verantyx_VR_Drive/wt/runs/avp-port/shadercache}; rm -rf "$w"; mkdir -p "$w"
+    [ -n "$DEV" ] || { echo 'xros_shadercache: set DEV or VXRT_DEVICE_ID (xcrun devicectl list devices)' >&2; exit 2; }
+    w=${OUT:-${VXRT_PRIVATE_ROOT:-build/private}/shadercache-device}; rm -rf "$w"; mkdir -p "$w"
     xcrun devicectl device copy from --device "$DEV" --domain-type appDataContainer --domain-identifier "$APP" \
         --source Documents/shadercache/pending --destination "$w/pending" > "$w/pull.txt" 2>&1 || { tail -3 "$w/pull.txt"; exit 1; }
     compile "$w/pending" "$w/out"

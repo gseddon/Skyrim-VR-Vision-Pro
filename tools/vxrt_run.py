@@ -26,7 +26,7 @@ import vxrt_games as profiles_db                                # noqa: E402
 import vxrt_runtime_sessions as sessions                        # noqa: E402
 
 REPO = doctor.REPO
-DRIVE = os.path.expanduser(os.environ.get("VERANTYX_VR_DRIVE", "~/Verantyx_VR_Drive"))
+DRIVE = os.path.expanduser(os.environ.get("VXRT_DRIVE") or os.path.join(os.environ.get("VXRT_PRIVATE_ROOT") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "private"), "drive"))
 USER_ROOTS = {os.path.join(DRIVE, "vxrt_root"), os.path.join(DRIVE, "vxrt_steam_overlay")}   # the player's: never used
 HARNESS = os.path.join(DRIVE, "vxrt_harness")                  # this tool's roots (kept between runs: game settings, caches)
 # Settings a run may set (AGENTS.md, "Settings you may tune"); recorded in the result. Anything else is refused.

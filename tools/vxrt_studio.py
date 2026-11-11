@@ -20,7 +20,7 @@ import vxrt_doctor as doctor                                    # noqa: E402
 
 REPO = doctor.REPO
 TOKEN = secrets.token_urlsafe(18)                               # in the page: a request starting an agent must carry it
-DRIVE = os.path.expanduser(os.environ.get("VERANTYX_VR_DRIVE", "~/Verantyx_VR_Drive"))
+DRIVE = os.path.expanduser(os.environ.get("VXRT_DRIVE") or os.path.join(os.environ.get("VXRT_PRIVATE_ROOT") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "private"), "drive"))
 PREFIX = os.environ.get("WINEPREFIX", os.path.join(DRIVE, "SteamVR_Prefix_Wine11_Test"))
 STEAM_ROOT = os.path.join(PREFIX, "drive_c", "Program Files (x86)", "steam")
 LIBRARY = os.path.join(DRIVE, "vxrt_library")                  # scripts/fetch_windows_vr_app.sh installs here

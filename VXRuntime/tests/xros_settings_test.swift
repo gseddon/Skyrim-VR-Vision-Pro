@@ -25,6 +25,36 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         s2.predictMs = nil; s2.stageEyeHeight = nil
         check(d.object(forKey: "vxrt.predictMs") == nil && d.object(forKey: "vxrt.stageEyeHeight") == nil, "auto removes the stored value")
 
+        // gameplay: Skyrim's own settings go out as VXRT_INI_SET only when picked; "game default" writes nothing
+        d = fresh()
+        s = VXSettings(defaults: d, info: [:], environment: [:])
+        check(s.turn == .game && s.move == .game && s.snapAngle == nil && s.turnSpeed == nil && map(s)["VXRT_INI_SET"] == nil, "gameplay defaults write nothing")
+        s.turn = .snap; s.move = .walk; s.snapAngle = 45
+        check(map(s)["VXRT_INI_SET"] == "VRInput.bGamepadLookAngleSnapping=1;VRInput.bGamepadLookAngleSnapSmoothing=0;VRInput.bDirectMovementWithWands=1;VRInput.fGamepadLookAngleSnapAmount=45", "snap/walk ini \(map(s)["VXRT_INI_SET"] ?? "nil")")
+        s.turn = .smooth; s.move = .teleport; s.snapAngle = nil; s.turnSpeed = 2.5
+        check(map(s)["VXRT_INI_SET"] == "VRInput.bGamepadLookAngleSnapping=0;VRInput.bDirectMovementWithWands=0;VRInput.fGamepadLookAngleSnapSmoothingSpeed=2.50", "smooth/teleport ini \(map(s)["VXRT_INI_SET"] ?? "nil")")
+        check(d.string(forKey: "vxrt.turn") == "smooth" && d.string(forKey: "vxrt.move") == "teleport" && d.double(forKey: "vxrt.turnSpeed") == 2.5 && d.object(forKey: "vxrt.snapAngle") == nil, "gameplay stored under vxrt.*")
+        let g = VXSettings(defaults: d, info: [:], environment: [:])
+        check(g.turn == .smooth && g.move == .teleport && g.turnSpeed == 2.5 && g.snapAngle == nil, "gameplay read back")
+        g.turn = .game; g.move = .game; g.turnSpeed = nil
+        check(map(g)["VXRT_INI_SET"] == nil && d.object(forKey: "vxrt.turnSpeed") == nil, "back to game default writes nothing")
+        // out-of-range values are clamped in the export; plist defaults sit below saved; env beats saved
+        s = VXSettings(defaults: fresh(), info: ["VXTurnDefault": "snap", "VXMoveDefault": "walk"], environment: [:])
+        check(s.turn == .snap && s.move == .walk, "gameplay plist defaults")
+        s = VXSettings(defaults: d, info: [:], environment: ["VXRT_SNAP_ANGLE": "200"])
+        check(map(s)["VXRT_INI_SET"] == "VRInput.fGamepadLookAngleSnapAmount=90", "snap angle clamped \(map(s)["VXRT_INI_SET"] ?? "nil")")
+        s.turn = .smooth; s.move = .walk
+        s = VXSettings(defaults: d, info: ["VXTurnDefault": "snap"], environment: ["VXRT_TURN": "snap", "VXRT_MOVE": "teleport"])
+        check(s.turn == .snap && s.move == .teleport, "env beats saved gameplay")
+        // a launch's own VXRT_INI_SET goes first (the first match wins in client.c) and is kept
+        s = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_INI_SET": "Display.bUseTAA=0;VRInput.bDirectMovementWithWands=1", "VXRT_MOVE": "teleport"])
+        check(map(s)["VXRT_INI_SET"] == "Display.bUseTAA=0;VRInput.bDirectMovementWithWands=1;VRInput.bDirectMovementWithWands=0", "launch ini first \(map(s)["VXRT_INI_SET"] ?? "nil")")
+        setenv("VXRT_INI_SET", "Display.bUseTAA=0", 1); unsetenv("VXRT_MOVE")
+        s = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_INI_SET": "Display.bUseTAA=0", "VXRT_MOVE": "walk"])
+        _ = s.applyEnvironment()
+        check(getenv("VXRT_INI_SET").map { String(cString: $0) } == "Display.bUseTAA=0;VRInput.bDirectMovementWithWands=1", "applyEnvironment merges VXRT_INI_SET")
+        for n in ["VXRT_INI_SET", "VXRT_RENDER_SCALE", "VXRT_UPSCALE", "VXRT_GATE"] { unsetenv(n) }
+
         // clamping and steps
         check(VXSettings.clampScale(0.1) == 0.5 && VXSettings.clampScale(3) == 1.0 && abs(VXSettings.clampScale(0.73) - 0.75) < 1e-9, "clamp")
         d = fresh(); d.set(0.2, forKey: "klepton.renderScale")

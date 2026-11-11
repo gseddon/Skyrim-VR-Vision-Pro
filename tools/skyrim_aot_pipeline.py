@@ -12,9 +12,14 @@ ImageBase) and passes to vxrt-aot as VXRT_AOT_SPLITS and VXRT_AOT_ROOTS
 VXRT_AOT_PART_MB. compiler is an optional pinned
 {path,sha256,source_commit} vxrt-aot; without it this checkout's
 VXRuntime/build/vxrt-aot is used and only its hash is recorded.
-Paths must be absolute. Inputs are pinned; the prepared exe, DLLs and address
+Paths must be absolute after expansion; strings may use ${REPO}, ${VXRT_PRIVATE_ROOT}, ${VXRT_SKYRIM_DIR},
+${VXRT_AOT_INPUTS}, ${VXRT_REDIST_DIR}, ${VXRT_PREPARED_EXE}, ${VXRT_SPLITS_FILE}, ${SKYRIM_ASSET_ROOT},
+${STEAMVR_WIN64_DLLS} (tools/vxrt_env.py: defaults under VXRT_PRIVATE_ROOT, default build/private), so a config holds no
+machine path. A dll_roots entry whose variable is unset is left out; any other unset variable is an error. runtime is
+optional (only --probe needs it); splits may be null (the split profile is a speed aid recorded from a Mac run, see
+docs/SETUP_SKYRIM.md). Inputs are pinned; the prepared exe, DLLs and address
 files must be private copies inside the repository's main checkout (which
-contains its worktrees). Each module is built by vxrt-aot gen, then every part
+contains its worktrees) or inside VXRT_PRIVATE_ROOT. Each module is built by vxrt-aot gen, then every part
 is assembled and linked in parallel; a dylib's install name is
 dylibs/<name> wherever it is built. --probe requires --build and an explicit
 passing gate.
@@ -48,6 +53,9 @@ import struct
 import subprocess
 import sys
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import vxrt_env
 
 REPO = Path(__file__).resolve().parents[1]
 COMPILER = REPO / 'VXRuntime/build/vxrt-aot'
@@ -144,16 +152,53 @@ def private_root():
     return Path(PRIVATE)
 
 
+def private_roots():
+    """Where private inputs, outputs and caches may live: the main checkout, and VXRT_PRIVATE_ROOT when it is set."""
+    roots = [private_root()]
+    if os.environ.get('VXRT_PRIVATE_ROOT'):
+        roots.append(vxrt_env.private_root())
+    return roots
+
+
+def in_private(path):
+    return any(Path(path).is_relative_to(r) for r in private_roots())
+
+
+def expand_config(obj):
+    """Replace ${NAME} in every string of the config (vxrt_env.variables); dll_roots entries with an unset variable go."""
+    if isinstance(obj, str):
+        return vxrt_env.expand(obj)
+    if isinstance(obj, list):
+        return [expand_config(x) for x in obj]
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if k.startswith('_'):
+                out[k] = v
+            elif k == 'dll_roots':
+                keep = []
+                for x in v:
+                    try:
+                        keep.append(expand_config(x))
+                    except vxrt_env.Unset as e:
+                        print('note: dll_roots entry %s left out (%s)' % (x, e.name), file=sys.stderr)
+                out[k] = keep
+            else:
+                out[k] = expand_config(v)
+        return out
+    return obj
+
+
 def pin(item, private=False):
     path = Path(item['path'])
     if not path.is_absolute():
         raise ValueError('input paths must be absolute')
     path = path.resolve(strict=True)
-    if not path.is_file() or (private and not path.is_relative_to(private_root())):
+    if not path.is_file() or (private and not in_private(path)):
         raise ValueError('input must be a regular file' + (' inside checkout' if private else ''))
     expected = item['sha256'].lower()
     if not re.fullmatch(r'[0-9a-f]{64}', expected) or digest(path) != expected:
-        raise ValueError('SHA-256 mismatch: ' + str(path))
+        raise ValueError('SHA-256 mismatch: %s is %s, the config pins %s' % (path, digest(path), expected))
     return {'path': str(path), 'sha256': expected}
 
 
@@ -260,6 +305,16 @@ def compiler_config(config):
     return dict(pin(item), source_commit=commit)
 
 
+def optional_pin(item):
+    """A pinned private file that may be absent (the split profile): absent is reported, a present file must match."""
+    if not item:
+        return None
+    if not Path(item['path']).is_file():
+        print('note: %s does not exist; building without it (docs/SETUP_SKYRIM.md, "The split profile")' % item['path'], file=sys.stderr)
+        return None
+    return pin(item, True)
+
+
 def pin_runtime(item, strict):
     """The runtime only runs in --probe, so only a probe needs it to match its pin. A build records what is there:
     the play script rebuilds its runtime on every change, so a stale pin must not refuse module generation."""
@@ -282,7 +337,9 @@ def prepare(config, xros=None, strict_runtime=True):
     exe = pin(config['prepared'], True)
     if original['path'] == exe['path']:
         raise ValueError('original and prepared must be separate files')
-    runtime = pin_runtime(config['runtime'], strict_runtime)
+    if strict_runtime and not config.get('runtime'):
+        raise ValueError('--probe needs a runtime block in the config')
+    runtime = pin_runtime(config['runtime'], strict_runtime) if config.get('runtime') else None
     if ('exe' in config) == ('exe_base' in config):
         raise ValueError('give exactly one of exe_base and exe')
     block = config.get('exe') or {'base': config['exe_base']}
@@ -290,7 +347,7 @@ def prepare(config, xros=None, strict_runtime=True):
     if unknown:
         raise ValueError('unknown exe keys: ' + ', '.join(sorted(unknown)))
     modules = [dict(exe, base=base(block['base']), part_mb=part_mb(block.get('part_mb')),
-                    splits=pin(block['splits'], True) if block.get('splits') else None,
+                    splits=optional_pin(block.get('splits')),
                     roots=pin(block['roots'], True) if block.get('roots') else None,
                     patches=pin(block['patches'], True) if block.get('patches') else None)]
     # (a DLL may name roots, and patches: the code a script extender writes into it, tools/skse_hooks_pe.py and
@@ -592,12 +649,13 @@ def run(config, out, build=False, probe=False, cache=None, target='macos-arm64',
     out = Path(out).resolve() if out else None
     if out is None and not dry_run:
         raise ValueError('--out is required')
-    if out is not None and (out == REPO or out == root or not out.is_relative_to(root) or out.exists()):
+    if out is not None and (out == REPO or out == root or not in_private(out) or out.exists()):
         raise ValueError('output must be a new checkout-local directory')
-    cache = Path(cache).resolve() if cache else (CACHE.with_name(CACHE.name + '-' + target) if xros else CACHE)
-    if not cache.is_relative_to(root):
+    default_cache = Path(os.environ['VXRT_PRIVATE_ROOT']).resolve() / CACHE.name if os.environ.get('VXRT_PRIVATE_ROOT') else CACHE
+    cache = Path(cache).resolve() if cache else (default_cache.with_name(default_cache.name + '-' + target) if xros else default_cache)
+    if not in_private(cache):
         raise ValueError('cache must be inside the checkout')
-    if xros and cache == CACHE:
+    if xros and cache in (CACHE, default_cache):
         raise ValueError('the visionOS modules need a cache of their own, not the Mac cache')
     cfg = prepare(config, xros, strict_runtime=probe)
     if xros and cfg['owned_gate']:
@@ -706,7 +764,7 @@ def main():
     parser.add_argument('--dry-run', action='store_true', help='print the plan (bases, arena fit, output dirs); compile and write nothing')
     args = parser.parse_args()
     try:
-        result = run(json.loads(Path(args.config).read_text()), args.out, args.build, args.probe, args.cache,
+        result = run(expand_config(json.loads(Path(args.config).read_text())), args.out, args.build, args.probe, args.cache,
                      args.target, args.arena, args.arena_mb, args.dry_run)
         print(dry_run_report(result, args.out) if args.dry_run else json.dumps(result, indent=2)); return 0
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as e:

@@ -1,4 +1,4 @@
-# vxrt: the VeRantyx Windows runtime. An x86-64 macOS binary; Rosetta 2 runs it and the Windows program together.
+# vxrt: the Windows runtime. An x86-64 macOS binary; Rosetta 2 runs it and the Windows program together.
 CC      = clang
 CFLAGS  = -arch x86_64 -O1 -g -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=14.0
 SRC     = src/loader.c src/codehooks.c src/pe.c src/dotnet_metadata.c src/dotnet_resources.c src/dotnet_baml.c src/dotnet_il.c src/dotnet_exec.c src/dotnet_runtime.c src/dotnet_host.c src/kernel32.c src/kernelx.c src/jobs.c src/ntstatus.c src/system.c src/desktop.c src/winsta.c src/scm.c src/services.c src/security.c src/client.c src/steambridge.c src/calltrace.c src/pipes.c src/ucrt.c src/sync.c src/seh.c src/profile.c src/opengl.c src/wininet.m src/winhttp.m src/winhttp_proxy.m src/iphlp.c src/winsock_nsp.c src/midi.c src/directinput.m src/msxml.c src/extras.c src/context.S src/text.c src/files.c src/registry.c \
@@ -54,6 +54,10 @@ XROS_SDK ?= xros
 # XROS_XRIZER_GAME=1 (simulator only): the fixture's build (the same link of libxrizer.a and libklepton.a, the same host
 # and compositor path, build/xrsimulator-xrizer-fixture) but with no fixture guest: the game (-game skyrimvr -xrizer,
 # xros/app/Sources/main.m) is the guest, its modules the frameworks of $(XROS_DIR)/game_fw. Default 0: nothing changes.
+# Everything derived from the player's game lives under one private root (docs/SETUP_SKYRIM.md): git-ignored, never committed.
+VXRT_PRIVATE_ROOT ?= $(abspath ../build/private)
+# XROS_GAME_FW: the pipeline's game_fw (tools/vxrt_build.py aot); embedded by the Skyrim app. Default: the aot stage's output.
+XROS_GAME_FW ?= $(wildcard $(VXRT_PRIVATE_ROOT)/game_fw-xros)
 XROS_XRIZER_GAME ?= 0
 ifeq ($(XROS_XRIZER_GAME),1)
 XROS_XRIZER_FIXTURE := 1
@@ -64,10 +68,11 @@ endif
 # XROS_SHADER_SET=<dir> on the command line overrides it with a set you built another way (e.g. from a Mac game boot's
 # pending/ with tools/shadercache_fill.sh <dir> xros); XROS_SHADER_SET= (empty) embeds nothing.
 # The manifest: the committed tools/shader_manifests/skyrimvr-611670.tsv.gz (hashes and parameters only), unless a private
-# build/private/skyrim-shader-manifest.tsv exists (a newer or larger one, for example one extended by a later game run).
-XROS_SHADER_MANIFEST ?= $(firstword $(wildcard $(abspath ../build/private/skyrim-shader-manifest.tsv)) $(abspath ../tools/shader_manifests/skyrimvr-611670.tsv.gz))
-XROS_SHADER_GAME ?= $(or $(SKYRIM_ASSET_ROOT),$(HOME)/Verantyx_VR_Drive/vxrt_steam/steamapps/common/SkyrimVR)
-XROS_SHADER_DIR ?= $(abspath ../build/private/shadercache-$(XROS_SDK)-manifest)
+# $(VXRT_PRIVATE_ROOT)/skyrim-shader-manifest.tsv exists (a newer or larger one, for example one extended by a later game run).
+XROS_SHADER_MANIFEST ?= $(firstword $(wildcard $(VXRT_PRIVATE_ROOT)/skyrim-shader-manifest.tsv) $(abspath ../tools/shader_manifests/skyrimvr-611670.tsv.gz))
+# The player's own Skyrim VR install (SKYRIM_ASSET_ROOT), read only; there is no default location.
+XROS_SHADER_GAME ?= $(SKYRIM_ASSET_ROOT)
+XROS_SHADER_DIR ?= $(VXRT_PRIVATE_ROOT)/shadercache-$(XROS_SDK)-manifest
 ifeq ($(origin XROS_SHADER_SET),undefined)
 ifeq ($(XROS_XRIZER_GAME),1)
 XROS_SHADER_SET := $(XROS_SHADER_DIR)
@@ -292,6 +297,12 @@ native-vr-check: build/vxrt build/vxrt-arm64 build/vxrt-aot build/native_vr_d3d1
 # (XROS_SDK=xrsimulator: the same for the visionOS simulator, into build/xrsimulator)
 XROS_SDK ?= xros
 XROS_CODE_SIGNING ?= YES
+# The Apple identity is not in the repository (docs/SETUP_SKYRIM.md; local.example.sh). XROS_TEAM_ID (the 10-character
+# Developer Team ID of a paid account) is required for a signed device build and is passed to xcodebuild as DEVELOPMENT_TEAM.
+# XROS_BUNDLE_PREFIX is the reverse-DNS prefix of the app's bundle ids (the Skyrim app is <prefix>.SkyrimVR); the default
+# is a placeholder that no account can sign, so a signed build with it fails at provisioning, not silently.
+XROS_TEAM_ID ?=
+XROS_BUNDLE_PREFIX ?= dev.example.vxrt
 XROS_ALLOW_PROVISIONING ?= 0
 XROS_TARGET = arm64-apple-xros26.0$(if $(filter xrsimulator,$(XROS_SDK)),-simulator)
 XROS_CC = xcrun -sdk $(XROS_SDK) clang -target $(XROS_TARGET)
@@ -397,8 +408,16 @@ xros-aot-tests: build/vxrt-aot $(XROS_TESTS) $(if $(filter-out 0,$(XROS_BIG_FUNC
 endif
 endif
 # The app (xros/app, xcodegen): signed for the headset with the team's automatic profile.
-# XROS_XRIZER_GAME=1 is the Skyrim VR app: its bundle id is final (gseddon.dev.vxrt.SkyrimVR; the game files live in its container).
-XROS_FIXTURE_BUNDLE_ID ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),gseddon.dev.vxrt.SkyrimVR,gseddon.dev.vxrt.VXRuntimeHost.XrizerOffscreen)
+# XROS_XRIZER_GAME=1 is the Skyrim VR app: its bundle id is <XROS_BUNDLE_PREFIX>.SkyrimVR (the game files live in its container).
+XROS_FIXTURE_BUNDLE_ID ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),$(XROS_BUNDLE_PREFIX).SkyrimVR,$(XROS_BUNDLE_PREFIX).VXRuntimeHost.XrizerOffscreen)
+XROS_APP_BUNDLE_ID ?= $(XROS_BUNDLE_PREFIX).VXRuntimeHost
+# A signed device build needs the team: a clear error here, before the long builds, instead of xcodebuild's.
+XROS_SIGN_FLAGS = $(if $(XROS_TEAM_ID),DEVELOPMENT_TEAM=$(XROS_TEAM_ID))
+.PHONY: xros-require-team
+xros-require-team:
+	@if [ "$(XROS_SDK)" = xros ] && [ "$(XROS_CODE_SIGNING)" != NO ] && [ -z "$(XROS_TEAM_ID)" ]; then \
+	  echo 'xros-app: a signed device build needs your Apple Developer Team ID: set XROS_TEAM_ID=<10 characters> (Xcode > Settings > Accounts, or developer.apple.com > Membership), and XROS_BUNDLE_PREFIX=<your reverse-DNS prefix>.' >&2; \
+	  echo '          Put them in local/env.sh (copy local.example.sh), or build unsigned with XROS_CODE_SIGNING=NO.' >&2; exit 2; fi
 # XROS_XRIZER_GAME=1: the app starts Skyrim VR by itself (Info.plist VXDefaultLaunch; a launch argument -game/-test overrides it).
 XROS_DEFAULT_LAUNCH ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),-game skyrimvr -xrizer -immersive)
 # XROS_SHADER_SET=<dir of <key>.metallib files>: embedded as bundle/shadercache (embed_aot_frameworks.sh).
@@ -408,7 +427,7 @@ XROS_START_WINDOW ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),1,0)
 XROS_DISPLAY_NAME ?= Skyrim VR
 XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) 'VXRT_START_WINDOW=$(XROS_START_WINDOW)' 'VXRT_DISPLAY_NAME=$(XROS_DISPLAY_NAME)' $(if $(XROS_SHADER_SET),'VXRT_SHADER_SET=$(abspath $(XROS_SHADER_SET))') 'VXRT_DEFAULT_LAUNCH=$(XROS_DEFAULT_LAUNCH)' SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
 .PHONY: xros-shader-set
-xros-app: $(XROS_SHADER_SET_PREREQ)
+xros-app: xros-require-team $(XROS_SHADER_SET_PREREQ)
 # xros-shader-set: the whole shader set for $(XROS_SDK) into $(XROS_SHADER_DIR), from XROS_SHADER_MANIFEST and the install
 # XROS_SHADER_GAME (read only). Private (derived from the game): never committed. Rebuilt when the manifest is newer.
 xros-shader-set: build/vxrt-shader-manifest
@@ -417,7 +436,7 @@ xros-shader-set: build/vxrt-shader-manifest
 	  'The committed one is tools/shader_manifests/skyrimvr-611670.tsv.gz. To make a new one, run the game on the Mac on an empty shader cache:  VXRT_SHADER_MANIFEST=$(XROS_SHADER_MANIFEST) tools/play_skyrim_dev.sh' \
 	  'or by replaying a capture with an empty cache:  VXRT_SHADER_CACHE=<empty dir> VXRT_SHADER_MANIFEST=$(XROS_SHADER_MANIFEST) build/vxrt-d3d11-replay <capture>   (VISIONOS_PORT.md, "Shaders from a manifest").' \
 	  'Or set XROS_SHADER_SET=<dir of .metallib files> to use a set built another way.' >&2; exit 2; }
-	@test -d "$(XROS_SHADER_GAME)/Data" || { echo 'xros-shader-set: no Skyrim VR install at $(XROS_SHADER_GAME) (set XROS_SHADER_GAME or SKYRIM_ASSET_ROOT)' >&2; exit 2; }
+	@test -d "$(XROS_SHADER_GAME)/Data" || { echo 'xros-shader-set: no Skyrim VR install at $(XROS_SHADER_GAME) (set SKYRIM_ASSET_ROOT=<your SkyrimVR folder>, or XROS_SHADER_GAME)' >&2; exit 2; }
 	@if [ "$(XROS_SHADER_DIR)/.complete" -nt "$(XROS_SHADER_MANIFEST)" ]; then echo "xros-shader-set: $(XROS_SHADER_DIR) is up to date"; else \
 	  ../tools/shader_manifest_build --game "$(XROS_SHADER_GAME)" --manifest "$(XROS_SHADER_MANIFEST)" --out "$(XROS_SHADER_DIR)" --sdk $(XROS_SDK) \
 	  && touch "$(XROS_SHADER_DIR)/.complete" \
@@ -431,13 +450,19 @@ ifeq ($(XROS_XRIZER_FIXTURE),1)
 	ln -sfn $(abspath xros/app/Icon) $(XROS_DIR)/project/Icon
 	python3 -c 'from pathlib import Path; import sys; s=Path(sys.argv[1]).read_text(); old="../../build/xros/bundle"; assert s.count(old)==1; Path(sys.argv[2]).write_text(s.replace(old,sys.argv[3]))' xros/app/project.yml $(XROS_DIR)/project/project.yml $(abspath $(XROS_DIR)/bundle)
 	cd $(XROS_DIR)/project && xcodegen generate --quiet
-	xcodebuild -project $(XROS_DIR)/project/VXRuntimeHost.xcodeproj -scheme VXRuntimeHost -destination 'generic/platform=$(if $(filter xrsimulator,$(XROS_SDK)),visionOS Simulator,visionOS)' -derivedDataPath $(XROS_DIR)/derived $(if $(filter 1,$(XROS_ALLOW_PROVISIONING)),-allowProvisioningUpdates) -quiet ARCHS=arm64 CODE_SIGNING_ALLOWED=$(if $(filter xrsimulator,$(XROS_SDK)),NO,$(XROS_CODE_SIGNING)) VXRT_LIBDIR=$(CURDIR)/$(XROS_DIR) 'HEADER_SEARCH_PATHS=$(CURDIR)/src $(CURDIR)/translator' $(XROS_FIXTURE_APP_FLAGS) build
+	xcodebuild -project $(XROS_DIR)/project/VXRuntimeHost.xcodeproj -scheme VXRuntimeHost -destination 'generic/platform=$(if $(filter xrsimulator,$(XROS_SDK)),visionOS Simulator,visionOS)' -derivedDataPath $(XROS_DIR)/derived $(if $(filter 1,$(XROS_ALLOW_PROVISIONING)),-allowProvisioningUpdates) -quiet ARCHS=arm64 CODE_SIGNING_ALLOWED=$(if $(filter xrsimulator,$(XROS_SDK)),NO,$(XROS_CODE_SIGNING)) $(XROS_SIGN_FLAGS) VXRT_LIBDIR=$(CURDIR)/$(XROS_DIR) 'HEADER_SEARCH_PATHS=$(CURDIR)/src $(CURDIR)/translator' $(XROS_FIXTURE_APP_FLAGS) build
 else
 	cd xros/app && xcodegen generate --quiet
-	xcodebuild -project xros/app/VXRuntimeHost.xcodeproj -scheme VXRuntimeHost -destination 'generic/platform=$(if $(filter xrsimulator,$(XROS_SDK)),visionOS Simulator,visionOS)' -derivedDataPath $(XROS_DIR)/derived $(if $(filter 1,$(XROS_ALLOW_PROVISIONING)),-allowProvisioningUpdates) -quiet ARCHS=arm64 CODE_SIGNING_ALLOWED=$(XROS_CODE_SIGNING) VXRT_LIBDIR=$(CURDIR)/$(XROS_DIR) build
+	xcodebuild -project xros/app/VXRuntimeHost.xcodeproj -scheme VXRuntimeHost -destination 'generic/platform=$(if $(filter xrsimulator,$(XROS_SDK)),visionOS Simulator,visionOS)' -derivedDataPath $(XROS_DIR)/derived $(if $(filter 1,$(XROS_ALLOW_PROVISIONING)),-allowProvisioningUpdates) -quiet ARCHS=arm64 CODE_SIGNING_ALLOWED=$(XROS_CODE_SIGNING) $(XROS_SIGN_FLAGS) PRODUCT_BUNDLE_IDENTIFIER=$(XROS_APP_BUNDLE_ID) VXRT_LIBDIR=$(CURDIR)/$(XROS_DIR) build
 endif
 	@ls -d $(XROS_DIR)/derived/Build/Products/Debug-$(XROS_SDK)/VXRuntimeHost.app
 .PHONY: xros-lib xros-aot-tests xros-app
+# Regression guards for the portable setup (docs/SETUP_SKYRIM.md): no personal identity in committed files; the default app links.
+portability-check:
+	../tests/portability_check.sh
+xros-default-app-check:
+	$(MAKE) xros-app XROS_CODE_SIGNING=NO XROS_XRIZER_GAME=0 XROS_XRIZER_FIXTURE=0 XROS_SDK=xros
+.PHONY: portability-check xros-default-app-check
 # Code that runs inside the vCPU guest (translator/guest.c): no calls, no globals, no stack protector.
 GUEST_CFLAGS = -arch arm64 -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-stack-check -mmacosx-version-min=14.0 -Itranslator
 build/guest.o: translator/guest.c translator/vcpu.h translator/xlat.h translator/xvheap.h
@@ -832,8 +857,10 @@ build/difftest: build/guest.o translator/vcpu.c translator/vcpu.h translator/dif
 build/coverage: translator/cpuid_table.h translator/coverage.c translator/xlat.c translator/xlat_sse.inc translator/xlat.h translator/a64.h translator/x86dec.c translator/x86dec.h translator/x87.c translator/x87.h
 	@mkdir -p build
 	$(HOSTCC) -Wno-missing-field-initializers -Itranslator translator/coverage.c translator/x86dec.c translator/xlat.c translator/x87.c -o $@
+# COVERAGE_ROOT=<a folder of installed games' steamapps/common>
 coverage: build/coverage
-	python3 translator/coverage.py build/coverage $(HOME)/Verantyx_VR_Drive/vxrt_steam/steamapps/common
+	@test -n "$(COVERAGE_ROOT)" || { echo 'coverage: set COVERAGE_ROOT=<folder holding the installed games>' >&2; exit 2; }
+	python3 translator/coverage.py build/coverage $(COVERAGE_ROOT)
 # the engine against Rosetta 2 and native ARM64 on the same kernels: `make xlat-bench`
 BENCH_X86 = -arch x86_64 -O2 -fno-stack-protector -ffreestanding -fno-builtin -fno-vectorize
 build/bench_kernels_x86.o: translator/bench/kernels.c
@@ -1880,6 +1907,7 @@ runtime-tests: $(VXRT) build/vxrt-npu tests build/wmadec_vectors build/vxrt-d3d1
 	VXRT_SKYRIM_PRESET=p2 $(VXRT) build/skyrim_preset.exe p2
 	VXRT_SKYRIM_PRESET=p2 VXRT_INI_SET='Display.iShadowMapResolution=1024;Display.bUseTAA=0' $(VXRT) build/skyrim_preset.exe p2 set
 	VXRT_SKYRIM_PRESET=off $(VXRT) build/skyrim_preset.exe off
+	VXRT_INI_SET='VRInput.bGamepadLookAngleSnapping=0;VRInput.bDirectMovementWithWands=1;VRInput.fGamepadLookAngleSnapAmount=45' $(VXRT) build/skyrim_preset.exe gameplay
 	$(VXRT) build/handle_xfer.exe
 	$(VXRT) build/open_thread.exe
 	$(VXRT) build/version_info.exe build/hello_crt.exe
