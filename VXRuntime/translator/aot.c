@@ -423,6 +423,7 @@ void xa_trace_null_target(const x86_ctx *c) {
             (unsigned long long)entry, image ? image : "unknown", info.dli_sname ? info.dli_sname : "unknown");
     }
 }
+static __thread uint64_t t_ring[16]; static __thread unsigned t_ring_n;   // (the last RIPs the runner was asked to run: shown with a strict stop)
 int xa_run(xe *e, x86_ctx *c, uint64_t stop, void (*(*native)(uint64_t))(x86_ctx *)) {
     if (g_strict < 0) g_strict = getenv("VXRT_AOT_STRICT") && atoi(getenv("VXRT_AOT_STRICT"));
     c->fpcr_always = (uint64_t)fpcr_always();
@@ -431,6 +432,7 @@ int xa_run(xe *e, x86_ctx *c, uint64_t stop, void (*(*native)(uint64_t))(x86_ctx
         if (c->fault) return (int)c->fault;
         uint64_t rip = c->rip;
         if (rip == stop) return 0;
+        t_ring[t_ring_n++ & 15] = rip;
         // NULL is a guest instruction-fetch fault, not a hit in the initially empty thunk cache.
         if (!rip) { if (getenv("VXRT_AOT_NULL_DIAGNOSTIC")) xa_trace_null_target(c); c->fault = X86_FAULT_PF; c->fault_info = 0; return X86_FAULT_PF; }
         // (a thread's cache of the last addresses: a module's block, or a native function's thunk; most exits are
@@ -485,6 +487,14 @@ int xa_run(xe *e, x86_ctx *c, uint64_t stop, void (*(*native)(uint64_t))(x86_ctx
         note_fallback(rip);
         if (g_strict) {
             vx_log("aot: VXRT_AOT_STRICT: %#llx has no recompiled code; stopping", (unsigned long long)rip);
+            vx_log("aot:   regs rax %#llx rcx %#llx rdx %#llx rbx %#llx rsp %#llx rbp %#llx rsi %#llx rdi %#llx", (unsigned long long)c->gpr[0], (unsigned long long)c->gpr[1],
+                   (unsigned long long)c->gpr[2], (unsigned long long)c->gpr[3], (unsigned long long)c->gpr[4], (unsigned long long)c->gpr[5], (unsigned long long)c->gpr[6], (unsigned long long)c->gpr[7]);
+            vx_log("aot:   r8 %#llx r9 %#llx r10 %#llx r11 %#llx r12 %#llx r13 %#llx r14 %#llx r15 %#llx", (unsigned long long)c->gpr[8], (unsigned long long)c->gpr[9],
+                   (unsigned long long)c->gpr[10], (unsigned long long)c->gpr[11], (unsigned long long)c->gpr[12], (unsigned long long)c->gpr[13], (unsigned long long)c->gpr[14], (unsigned long long)c->gpr[15]);
+            for (unsigned q = 16; q > 0; q--) {                         // oldest first
+                uint64_t a = t_ring[(t_ring_n - q) & 15]; const char *im = a ? vx_image_name_at(a) : NULL;
+                if (a) vx_log("aot:   recent[-%u] = %#llx (%s)", q - 1, (unsigned long long)a, im ? im : "no image");
+            }
             {   // (the guest's stack words that point into an image: who was running; a jump through a bad pointer shows its caller)
                 const uint64_t *sp = (const uint64_t *)(uintptr_t)c->gpr[4]; int shown = 0;
                 for (int i = 0; i < 48 && shown < 8; i++) {
