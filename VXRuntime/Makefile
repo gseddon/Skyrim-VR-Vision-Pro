@@ -1762,6 +1762,8 @@ check: all build/vkmsl build/x86dec_test build/x86dec_check build/ref_x86 build/
 	python3 ../tests/vxrt_run_profile_test.py
 	python3 ../tests/vxrt_doctor_pe_test.py
 	python3 ../tools/vxrt_agents.py check
+	python3 ../tests/mods_default_test.py
+	python3 ../tests/mods_override_test.py
 	python3 ../tools/vxrt_tune.py --selftest
 	python3 ../tools/vxrt_playtest.py --selftest
 	python3 tools/vk_dispatch.py --check
