@@ -117,6 +117,12 @@ def build(a):
             if m['kind'] == 'skse':
                 for e in skse_plugin_files(src / 'Data'):
                     e['mod'] = m['id']
+                    same = [x for x in skse_plugins if x['path'].lower() == e['path'].lower()]
+                    if same:                                  # (a higher priority replaces the file in the merged tree: the list says what is there)
+                        e['replaces_mod'] = same[0]['mod']
+                        if same[0]['dll']: e['module_base'] = same[0]['module_base']
+                        skse_plugins[skse_plugins.index(same[0])] = e
+                        continue
                     if e['dll']:
                         e['module_base'] = '0x%x' % (int(a.plugin_base, 16) + 0x1000000 * sum(1 for x in skse_plugins if x['dll']))
                     skse_plugins.append(e)
