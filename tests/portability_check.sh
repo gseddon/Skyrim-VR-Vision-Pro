@@ -22,7 +22,7 @@ have = re.findall(r"'([a-z-]+)':", m)
 if sorted(names) != sorted(have):
     print('portability-check: tools/vxrt_stages.json stages %s differ from tools/vxrt_build.py %s' % (names, have)); sys.exit(1)
 PY
-for t in tests/skyrim_aot_pipeline_test.py tests/skyrim_device_stage_test.py; do env -u VXRT_PRIVATE_ROOT -u VXRT_LOCAL_ENV python3 "$t" >/dev/null 2>&1 || { echo "portability-check: $t failed"; fail=1; }; done
+for t in tests/skyrim_aot_pipeline_test.py tests/skyrim_device_stage_test.py tests/shader_manifest_build_test.py; do env -u VXRT_PRIVATE_ROOT -u VXRT_LOCAL_ENV python3 "$t" >/dev/null 2>&1 || { echo "portability-check: $t failed"; fail=1; }; done
 sh -n tools/setup_rust.sh tools/play_skyrim_dev.sh || fail=1
 [ $fail = 0 ] && echo "portability-check: ok"
 exit $fail

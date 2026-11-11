@@ -3,7 +3,7 @@
 game boot (VXRuntime/VISIONOS_PORT.md, "Shaders from a manifest").
 
     tools/shader_manifest_build --game <install dir> --manifest <file> --out <dir> [--sdk macosx|xros|xrsimulator]
-                                [--no-fill] [--tool VXRuntime/build/vxrt-shader-manifest]
+                                [--no-fill] [--tool VXRuntime/build/vxrt-shader-manifest] [--jobs N] [--skip-if-complete]
 
 1. reads the manifest (VXRuntime/VISIONOS_PORT.md "Shaders from a manifest": per entry the SHA-256 of the DXBC, the stage, the variant kind and
    its parameters, the translator revision, optionally the cache key the runtime made of it),
@@ -13,12 +13,16 @@ game boot (VXRuntime/VISIONOS_PORT.md, "Shaders from a manifest").
    SHA-256 of exactly those bytes, the hash the runtime logs,
 3. writes the wanted DXBC to <out>/dxbc/<sha256>.dxbc (derived from the game: keep <out> private),
 4. runs the translator (build/vxrt-shader-manifest, linked with dxbc.c and shader_cache.m like the replayer) for each
-   entry, which queues <out>/pending/<key>.metal and .flags through the runtime's own vx_library_cache_store,
+   entry, which queues <out>/pending/<key>.metal and .flags through the runtime's own vx_library_cache_store. The
+   entries are split by DXBC hash over --jobs processes (default: one per CPU core); pending files are written
+   atomically under distinct names, so they share <out>/pending. report.tsv is the shards' reports in manifest order.
 5. runs tools/shadercache_fill.sh <out> <sdk>, which makes <out>/<key>.metallib.
-Nothing is written to the install. Exit status: 0 when every entry was found and translated (and matches its recorded
+A finished set gets <out>/.complete holding the manifest's SHA-256, the translator revision and the SDK. With
+--skip-if-complete a set whose marker matches is left alone (content, not file times, decides; a marker from before this
+one, empty, counts when report.tsv lists every manifest entry as ok and nothing is pending). Nothing is written to the install. Exit status: 0 when every entry was found and translated (and matches its recorded
 key), 1 otherwise; <out>/report.tsv lists each entry's outcome.
 """
-import argparse, glob, gzip, hashlib, mmap, os, re, struct, subprocess, sys, time
+import argparse, concurrent.futures, glob, gzip, hashlib, mmap, os, re, struct, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -96,14 +100,64 @@ def locate(game, wanted):
         m = mapped(exe); take(m, os.path.basename(exe)); m.close()
     return found, where, skipped
 
+def stamp_text(manifest, header, sdk):
+    with (gzip.open(manifest, "rb") if manifest.endswith(".gz") else open(manifest, "rb")) as f: digest = hashlib.sha256(f.read()).hexdigest()
+    return "manifest-sha256=%s\ntranslator=%s\nsdk=%s\n" % (digest, header.get("translator", "?"), sdk)
+
+def is_complete(out, want, entries):
+    """True when <out> holds the finished set for this manifest, judged by content."""
+    marker = os.path.join(out, ".complete")
+    try: have = open(marker).read()
+    except OSError: return False
+    if have: return have == want
+    try:    # the empty marker of the older Makefile rule: trust it only if the report says every entry is ok
+        rows = [l.rstrip("\n").split("\t") for l in open(os.path.join(out, "report.tsv"))]
+        pending = os.path.join(out, "pending")
+        left = os.path.isdir(pending) and any(n.endswith(".metal") for n in os.listdir(pending))
+        return len(rows) == len(entries) and all(len(r) == 4 and r[3].startswith("ok") for r in rows) and not left
+    except OSError: return False
+
+def run_shards(tool, manifest, header, entries, dx, out, jobs):
+    """Translate the entries in `jobs` processes (split by DXBC hash); report.tsv comes out in manifest order."""
+    jobs = max(1, min(jobs, len(entries) or 1))
+    shards = [[] for _ in range(jobs)]
+    for e in entries: shards[int(e[0][:8], 16) % jobs].append(e)
+    head = "".join("# %s=%s\n" % kv for kv in header.items())
+    procs = []
+    for i, sh in enumerate(shards):
+        mf = os.path.join(out, "manifest.%d.tsv" % i)
+        with open(mf, "w", encoding="utf-8") as f:
+            f.write(head + "".join("\t".join(e) + "\n" for e in sh))
+        procs.append((mf, os.path.join(out, "report.%d.tsv" % i)))
+    def one(p):
+        return subprocess.run([tool, "--manifest", p[0], "--dxbc", dx, "--out", out, "--report", p[1]]).returncode
+    with concurrent.futures.ThreadPoolExecutor(jobs) as ex: codes = list(ex.map(one, procs))
+    rows, bad = {}, False
+    for mf, rp in procs:
+        try:
+            for l in open(rp): rows.setdefault(l.split("\t")[0], []).append(l)
+        except OSError: bad = True
+        for q in (mf, rp):
+            try: os.unlink(q)
+            except OSError: pass
+    with open(os.path.join(out, "report.tsv"), "w") as f:
+        for e in entries:
+            if e[0] in rows: f.write(rows[e[0]].pop(0))
+    return 1 if (bad or any(codes)) else 0
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--game", required=True); ap.add_argument("--manifest", required=True, help="a manifest, plain or .gz"); ap.add_argument("--out", required=True)
     ap.add_argument("--sdk", default="macosx"); ap.add_argument("--no-fill", action="store_true")
+    ap.add_argument("--jobs", type=int, default=os.cpu_count() or 1, help="translator processes (default: one per CPU core)")
+    ap.add_argument("--skip-if-complete", action="store_true", help="do nothing when %s/.complete matches this manifest" % "<out>")
     ap.add_argument("--tool", default=os.path.join(ROOT, "VXRuntime", "build", "vxrt-shader-manifest"))
     a = ap.parse_args()
     t0 = time.time()
     header, entries = read_manifest(a.manifest)
+    want_stamp = stamp_text(a.manifest, header, a.sdk)
+    if a.skip_if_complete and is_complete(a.out, want_stamp, entries):
+        print("shader set %s is up to date (manifest and translator revision match)" % a.out); sys.exit(0)
     wanted = {e[0] for e in entries}
     print("manifest: %d entries, %d distinct DXBC (translator rev %s)" % (len(entries), len(wanted), header.get("translator", "?")))
     found, where, skipped = locate(a.game, wanted)
@@ -121,13 +175,21 @@ def main():
         with open(os.path.join(dx, sha + ".dxbc"), "wb") as f: f.write(code)
     for sub in ("pending",): os.makedirs(os.path.join(a.out, sub), exist_ok=True)
     if not os.path.exists(a.tool): sys.exit("%s not built (make -C VXRuntime build/vxrt-shader-manifest)" % a.tool)
-    r = subprocess.run([a.tool, "--manifest", a.manifest, "--dxbc", dx, "--out", a.out, "--report", os.path.join(a.out, "report.tsv")])
+    t1 = time.time()
+    rc = run_shards(a.tool, a.manifest, header, entries, dx, a.out, a.jobs)
+    print("translate: %d entries in %d processes, %.1f s" % (len(entries), min(a.jobs, len(entries)), time.time() - t1))
     missing = len(wanted) - len(found)
-    if r.returncode or missing:
-        print("not complete: tool exit %d, %d DXBC not in the install" % (r.returncode, missing))
+    if rc or missing:
+        print("not complete: tool exit %d, %d DXBC not in the install" % (rc, missing))
     if not a.no_fill:
+        t2 = time.time()
         subprocess.run([os.path.join(HERE, "shadercache_fill.sh"), a.out, a.sdk], check=False)
-    sys.exit(1 if (r.returncode or missing) else 0)
+        print("fill: %.1f s" % (time.time() - t2))
+    if not (rc or missing) and not a.no_fill:
+        left = [n for n in os.listdir(os.path.join(a.out, "pending")) if n.endswith(".metal")]
+        if not left:
+            with open(os.path.join(a.out, ".complete"), "w") as f: f.write(want_stamp)
+    sys.exit(1 if (rc or missing) else 0)
 
 if __name__ == "__main__":
     main()

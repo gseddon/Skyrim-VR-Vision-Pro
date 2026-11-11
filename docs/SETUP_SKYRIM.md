@@ -46,10 +46,10 @@ redoes it) and exits 2 with a message naming the missing input. `python3 tools/v
 
 | Stage | What it does | Downloads? |
 | --- | --- | --- |
-| `toolchain [--with-steamless]` | `tools/setup_rust.sh`: Rust 1.99.1, the three Apple targets, `cargo fetch --locked`. With `--with-steamless`: Steamless (commit `cd770bf`, CC BY-NC-ND 4.0) and a private .NET SDK 8.0.427 built under `$VXRT_PRIVATE_ROOT/skyrim-tools`, asking first | yes (rust-lang.org, crates.io, github.com, dot.net, NuGet) |
+| `toolchain [--with-steamless]` | `tools/setup_rust.sh`: Rust 1.99.1, the three Apple targets, `cargo fetch --locked`. With `--with-steamless`: Steamless (commit `cd770bf`, CC BY-NC-ND 4.0) and a private .NET SDK 8.0.427 built under `$VXRT_PRIVATE_ROOT/skyrim-tools`; prints the download list and goes ahead (`--confirm` asks first) | yes (rust-lang.org, crates.io, github.com, dot.net, NuGet) |
 | `prepare` | removes the SteamStub wrapper from a copy of your `SkyrimVR.exe` with Steamless, requires the result to be exactly the pinned `8daf0519...` (input `6961efb4...`), copies the DLL inputs and checks each against its pin | no |
 | `aot` | compiles the prepared exe and DLLs to ARM64 frameworks for the headset arena (`tools/skyrim_aot_pipeline.py --target xros`, config template `tools/skyrim_aot_skyrimvr.json`) | no |
-| `shaders` | builds the Metal shader set from the committed hash manifest and your own `Skyrim_VR - Main.bsa` (about 25 minutes serial) | no |
+| `shaders` | builds the Metal shader set from the committed hash manifest and your own `Skyrim_VR - Main.bsa` (about 5 to 25 minutes depending on load: the Metal compile of about 10,800 libraries, one process per core) | no |
 | `app` | `make XROS_XRIZER_GAME=1 XROS_SDK=xros xros-app`, signed with your team; `--install` installs it on the headset, `--unsigned` skips signing | no |
 | `stage-to-device` | copies the game tree (about 14 GB) into the app's container: dry run, then `--run` | no |
 | `mods` | builds a data-only mod pack from a mods list (`tools/mods.py`); `--deploy` copies it | no |
