@@ -18,7 +18,7 @@ if [ -z "${XRIZER_RUST_ROOT:-}" ]; then
     unset _xr_root _xr_common
 fi
 case "$XRIZER_RUST_ROOT" in /*) ;; *) echo 'XRIZER_RUST_ROOT must be absolute' >&2; exit 2;; esac
-[ -d "$XRIZER_RUST_ROOT/rustup" ] || { echo "no Rust toolchain at $XRIZER_RUST_ROOT (set XRIZER_RUST_ROOT; see third_party/xrizer/SOURCE.md)" >&2; exit 2; }
+[ -d "$XRIZER_RUST_ROOT/rustup" ] || { echo "no Rust toolchain at $XRIZER_RUST_ROOT (run tools/setup_rust.sh, or set XRIZER_RUST_ROOT; see third_party/xrizer/SOURCE.md)" >&2; exit 2; }
 export XRIZER_RUST_ROOT
 # Debug info: line tables only in dev builds (backtraces keep file:line), none in release (symbols stay, so panic
 # backtraces still name functions), no incremental cache for one-off builds. Each can be overridden by the caller.

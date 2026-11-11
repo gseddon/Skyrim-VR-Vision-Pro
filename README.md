@@ -14,6 +14,8 @@ This is a development checkpoint, not a working game release.
 
 The plans are the source of truth: [main plan](plans/2026-11-08-skyrim-vr-native-darwin-aot.md), [AOT feasibility](plans/2026-11-08-skyrim-vr-prepared-input-aot-feasibility.md), [xrizer/Klepton](plans/2026-11-08-xrizer-klepton-native-openxr.md).
 
+From a fresh clone to a build on your own headset: [docs/SETUP_SKYRIM.md](docs/SETUP_SKYRIM.md) (stages, settings, doctor).
+
 ## Source layout
 
 | Directory | Purpose |
@@ -24,7 +26,7 @@ The plans are the source of truth: [main plan](plans/2026-11-08-skyrim-vr-native
 | `tools/`, `tests/` | Static audits, reproducible AOT pipeline, native startup evidence and unit tests |
 | `plans/`, `research/` | Decisions, verified results, provenance and remaining risks |
 
-Other VeRantyx directories are retained as upstream reference and build context. The target here is standalone headset execution. See [UPSTREAM.md](UPSTREAM.md) for source provenance and [MIGRATION.md](MIGRATION.md) for the active workspaces.
+The target here is standalone headset execution. See [UPSTREAM.md](UPSTREAM.md) for source provenance and [MIGRATION.md](MIGRATION.md) for the active workspaces.
 
 ## Initial checks
 
@@ -47,4 +49,4 @@ This repository contains source and owned test inputs. Game executables/data, Mi
 
 ## Licensing
 
-VeRantyx's original MIT notice is retained in [LICENSE](LICENSE). xrizer is GPL-3.0-or-later; Klepton and Khronos/OpenVR headers retain their own licenses and notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and each component's source record. The original project README is retained under `docs/VERANTYX_UPSTREAM_README.md`.
+The original MIT notice of the upstream project this derives from is retained in [LICENSE](LICENSE). xrizer is GPL-3.0-or-later; Klepton and Khronos/OpenVR headers retain their own licenses and notices. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and each component's source record. The original project README is retained under `docs/VERANTYX_UPSTREAM_README.md`.

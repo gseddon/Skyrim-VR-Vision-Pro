@@ -5,18 +5,18 @@ d3dcompiler_43, ...), taken from the redistributable installers your own Steam i
 beside their executables, into one folder that VXRuntime loads them from (VXRT_DLL_PATH): no Windows, no Wine
 prefix. Nothing is downloaded and nothing leaves this Mac; the folder is yours, like the installs it comes from.
 
-    tools/vxrt_redist.py collect                  # from ~/Verantyx_VR_Drive/vxrt_steam, vxrt_library, and --from
+    tools/vxrt_redist.py collect                  # from $VXRT_DRIVE/vxrt_steam, vxrt_library, and --from
     tools/vxrt_redist.py collect --from "<a Steam library or app folder>" ...
     tools/vxrt_redist.py list                     # what the folder holds: name, version, where it came from
 
 An installer is opened without running it: a WiX bundle (VC_redist) is a Windows executable with cabinets inside
 it, and cabinets hold the files (bsdtar, which comes with macOS, reads cabinets). Only 64-bit (x86-64) DLLs whose
 names are on the list below are kept; when several copies of one DLL turn up, the highest file version wins.
-Output: ~/Verantyx_VR_Drive/vxrt_redist (VXRT_REDIST changes it), with manifest.json (name, version, sha256, source).
+Output: $VXRT_DRIVE/vxrt_redist (VXRT_REDIST changes it), with manifest.json (name, version, sha256, source).
 """
 import argparse, fnmatch, glob, hashlib, json, os, re, shutil, struct, subprocess, sys, tempfile
 
-DRIVE = os.path.expanduser(os.environ.get("VERANTYX_VR_DRIVE", "~/Verantyx_VR_Drive"))
+DRIVE = os.path.expanduser(os.environ.get("VXRT_DRIVE") or os.path.join(os.environ.get("VXRT_PRIVATE_ROOT") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "private"), "drive"))
 OUT = os.environ.get("VXRT_REDIST", os.path.join(DRIVE, "vxrt_redist"))
 SOURCES = [os.path.join(DRIVE, "vxrt_steam"), os.path.join(DRIVE, "vxrt_library")]
 WANTED = ["msvcp1*.dll", "msvcp140_*.dll", "msvcr1*.dll", "vcruntime140*.dll", "concrt140.dll", "vcomp1*.dll",

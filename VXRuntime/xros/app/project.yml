@@ -1,14 +1,14 @@
-# VX Runtime (gseddon.dev.vxrt.VXRuntimeHost): VXRuntime as it is, on the headset (../../VISIONOS_PORT.md). Not VX Proto
-# (marimokodai.VisionOSProto) or the VeRantyx client (marimokodai.VisionSpatialTools). Build the libraries first:
+# VX Runtime: VXRuntime as it is, on the headset (../../VISIONOS_PORT.md). The bundle id here is a placeholder and the
+# Apple team is not set: the Makefile passes PRODUCT_BUNDLE_IDENTIFIER and DEVELOPMENT_TEAM (XROS_BUNDLE_PREFIX,
+# XROS_TEAM_ID; docs/SETUP_SKYRIM.md). Build the libraries first:
 #   make xros-lib xros-aot-tests      (from VXRuntime/)
 name: VXRuntimeHost
 options:
-  bundleIdPrefix: gseddon.dev.vxrt
+  bundleIdPrefix: dev.example.vxrt
   deploymentTarget:
     visionOS: "26.0"
 settings:
   base:
-    DEVELOPMENT_TEAM: MA9VLPU826
     CODE_SIGN_STYLE: Automatic
     XROS_DEPLOYMENT_TARGET: "26.0"
     TARGETED_DEVICE_FAMILY: "7"
@@ -31,7 +31,7 @@ targets:
         buildPhase: resources
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: gseddon.dev.vxrt.VXRuntimeHost
+        PRODUCT_BUNDLE_IDENTIFIER: dev.example.vxrt.VXRuntimeHost
         PRODUCT_NAME: VXRuntimeHost
         INFOPLIST_FILE: Sources/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sources/VXRuntimeHost.entitlements
