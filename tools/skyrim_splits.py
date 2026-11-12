@@ -96,6 +96,9 @@ def record(a):
         return 2
     if not f.is_file() and tracked() is not None:
         install()                                     # (`record --force` adds to the shipped profile)
+    if E.ensure_mac_runtime():
+        print('splits: make -C VXRuntime build/vxrt-arm64 build/vxrt-aot failed', file=sys.stderr)
+        return 2
     rounds = a.rounds or (1 if f.is_file() else 2)
     for n in range(1, rounds + 1):
         # round 1 without any profile runs an unsplit exe, which is slow (the load alone takes minutes): it learns the load and the menus.

@@ -411,6 +411,34 @@ def _complete_archives(folder, sizes):
     return sorted(out, key=lambda t: -t[1].st_mtime)
 
 
+def cache_dirs():
+    """Where this build keeps archives it has already fetched or been given (all under the private root)."""
+    r = private_root()
+    return [r / 'downloads', r / 'downloads' / 'nexus', r / 'skse']
+
+
+def cache_lookup(md5, folders=None):
+    """The archive in the build's own download cache whose md5 is `md5` (any file name), or None. The md5 is the only acceptance rule."""
+    want = (md5 or '').lower()
+    if not want:
+        return None
+    for f in (folders if folders is not None else cache_dirs()):
+        try:
+            entries = sorted(Path(f).iterdir())
+        except OSError:
+            continue
+        for p in entries:
+            n = p.name.lower()
+            if n.startswith('.') or not n.endswith(ARCHIVE_EXT) or n.endswith(PARTIAL_EXT):
+                continue
+            try:
+                if p.is_file() and _cached_md5(p, p.stat()) == want:
+                    return p
+            except OSError:
+                continue
+    return None
+
+
 def manual_fetch(game, mod_id, file_id, name=None, md5=None, wait=0, progress=None, accept_name=False, folder=None):
     """No API key: ask the user to download the file in the browser ("Manual download", then "Slow download") and take the archive from the
     Downloads folder (new, or already there). Matched by the pinned md5, else by the mod id in the file name (Nexus names are
@@ -426,6 +454,10 @@ def manual_fetch(game, mod_id, file_id, name=None, md5=None, wait=0, progress=No
     pos = ('%d of %d done' % progress) if isinstance(progress, tuple) else progress
     pat = re.compile(r'-%s-' % re.escape(mod_id))
     sizes = {}; refused = set(); said = set(); started = False
+    hit = cache_lookup(want_md5)
+    if hit:
+        e('Using %s from the build\'s download cache (md5 %s).' % (hit, want_md5))
+        return dict(path=str(hit), md5=want_md5, size=hit.stat().st_size, verified_by='pinned md5')
 
     def finish(src, st):
         dest = downloads_dir() / ('%s-%s-%s-%s' % (game, mod_id, file_id or 'md5', _safe_name(src.name)))
@@ -505,7 +537,7 @@ def external_fetch(name, url, file_name, md5, wait=0, folders=None):
     in the private downloads folder or the browser's Downloads folder; if it is not there yet, say where to get it and watch the folder for up
     to `wait` seconds (the same watcher as manual_fetch). Returns the path in place (nothing is copied)."""
     want = md5.lower()
-    folders = [Path(f) for f in (folders or [private_root() / 'downloads', browser_downloads_dir()])]
+    folders = [Path(f) for f in (folders or cache_dirs() + [browser_downloads_dir()])]
     sizes = {}
     e = lambda m='': print(m, file=sys.stderr, flush=True)
 

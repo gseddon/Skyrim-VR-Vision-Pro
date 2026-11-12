@@ -348,6 +348,8 @@ def stage(a):
         say('done already for this plugin set (%s); --force to redo' % ps[:12])
         finalize(pack, doc, w)
         return st
+    if E.ensure_mac_runtime(run):
+        raise NeedInput('make -C VXRuntime build/vxrt-arm64 build/vxrt-aot failed (toolchain? see above)')
     for exe in ('vxrt-arm64', 'vxrt-aot'):
         if not (REPO / 'VXRuntime' / 'build' / exe).is_file():
             raise NeedInput('%s is not built (made by: make -C VXRuntime build/vxrt-aot build/vxrt-arm64)' % exe)

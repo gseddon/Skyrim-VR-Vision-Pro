@@ -117,29 +117,55 @@ def ensure_splits(a):
         raise NeedInput('the module-splits profile is missing and recording it failed; run python3 tools/skyrim_splits.py record and read its output')
 
 
+def aot_identity():
+    """What the aot output depends on besides the exe: the splits profile and the compiler (both by sha256)."""
+    import skyrim_splits
+    comp = REPO / 'VXRuntime' / 'build' / 'vxrt-aot'
+    sp = skyrim_splits.splits_path()
+    return {'splits_sha256': E.sha256_file(sp) if sp.is_file() else None, 'compiler_sha256': E.sha256_file(comp) if comp.is_file() else None}
+
+
+def aot_stamp_path():
+    return priv() / 'game_fw-xros.stamp.json'
+
+
+def aot_stamp_current(ident):
+    try:
+        return json.loads(aot_stamp_path().read_text()) == ident
+    except (OSError, ValueError):
+        return False        # missing (an output from before stamps) or unreadable: not known to match
+
+
 def stage_aot(a):
     need_env('SKYRIM_ASSET_ROOT')
     need_path(v()['VXRT_PREPARED_EXE'], 'prepare', 'the prepared SkyrimVR.exe')
-    link0 = priv() / 'game_fw-xros'
-    if a.force or not link0.exists():
-        ensure_splits(a)
     link = priv() / 'game_fw-xros'
-    if link.exists() and not a.force:
-        say('aot: %s already exists (--force to compile again)' % link)
-        return OK, [str(link)]
-    if link.exists() and not link.is_symlink():
-        raise NeedInput('%s is a real directory; move it away before --force replaces it' % link)
-    rc = run(['make', '-C', REPO / 'VXRuntime', 'build/vxrt-aot'])
+    rc = E.ensure_mac_runtime(run)                    # (the compiler; incremental, so cheap when current)
     if rc:
         return rc, []
+    ensure_splits(a)
+    ident = aot_identity()
+    if link.exists() and not a.force:
+        if aot_stamp_current(ident):
+            say('aot: %s already exists and was built with this splits profile and compiler (--force to compile again)' % link)
+            return OK, [str(link)]
+        say('aot: %s was built with a different (or unrecorded) splits profile or compiler; rebuilding. The old output is kept until the new one succeeds.' % link)
+    moved = None
+    if link.exists() and not link.is_symlink():
+        moved = link.with_name('game_fw-xros.pre-' + time.strftime('%Y%m%d-%H%M%S'))
+        link.rename(moved)                           # (a real directory: set aside, put back if the build fails)
     out = priv() / 'skyrimvr' / E.ORIGINAL_EXE_SHA256 / ('aot-xros-' + time.strftime('%Y%m%d-%H%M%S'))
     rc = run([sys.executable, REPO / 'tools' / 'skyrim_aot_pipeline.py', '--config', REPO / 'tools' / 'skyrim_aot_skyrimvr.json',
               '--target', 'xros', '--build', '--out', out])
     if rc or not (out / 'game_fw').is_dir():
+        if moved is not None and not link.exists():
+            moved.rename(link)
         return rc or FAIL, []
-    if link.is_symlink():
-        link.unlink()
-    link.symlink_to(out / 'game_fw')
+    tmp = link.with_name(link.name + '.new')         # (the old output, or its symlink target, stays; the symlink is replaced atomically)
+    tmp.unlink(missing_ok=True)
+    tmp.symlink_to(out / 'game_fw')
+    os.replace(tmp, link)
+    aot_stamp_path().write_text(json.dumps(ident, indent=1) + '\n')
     return OK, [str(link)]
 
 

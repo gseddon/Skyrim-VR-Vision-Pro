@@ -95,3 +95,16 @@ def sha256_file(path):
         for b in iter(lambda: f.read(1 << 20), b''):
             h.update(b)
     return h.hexdigest()
+
+
+MAC_RUNTIME_TARGETS = ('build/vxrt-arm64', 'build/vxrt-aot')
+
+
+def ensure_mac_runtime(run=None):
+    """Bring the Mac runtime and the AOT compiler up to date with the source (make is incremental: cheap when current). Returns make's exit code.
+    A stale vxrt-arm64 has crashed a capture run, so every stage that runs either starts with this."""
+    cmd = ['make', '-C', str(REPO / 'VXRuntime'), *MAC_RUNTIME_TARGETS]
+    if run is not None:
+        return run(cmd)
+    print('+ ' + ' '.join(cmd), file=__import__('sys').stderr, flush=True)
+    return subprocess.run(cmd, stdout=__import__('sys').stderr).returncode
