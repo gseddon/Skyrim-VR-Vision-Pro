@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
+#include "vx_prune.h"
 
 int vx_loader_main(int argc, char **argv, char **envp);   // (src/loader.c, its main)
 int xa_reserve(void);                                       // (translator/aot.c: the modules' image arena)
@@ -410,6 +411,29 @@ static void log_overlay_summary(const char *root) {
     fprintf(stderr, "[vxrt] overlay: %d files under %s/overlay_skyrimvr/Data, Plugins.txt lines %d%s\n", files, root, lines < 0 ? 0 : lines, lines < 0 ? " (file absent)" : "");
     jlog("overlay", "\"data_files\":%d,\"plugins_txt_lines\":%d", files, lines);
 }
+// Before the game starts: delete *.dll in <root>/overlay_skyrimvr/Data/SKSE/Plugins that mods.json's skse_plugins does not list (tools/mods.py
+// deploy only copies; see vx_prune.h). No-op when mods.json is missing, unreadable or not version 1 with an skse_plugins array.
+static void prune_logged(const char *p) {
+    fprintf(stderr, "[vxrt] pruned stale SKSE plugin DLL (not in mods.json): %s\n", p);
+    jlog("skse_prune", "\"removed\":\"%s\"", p);
+}
+static void prune_skse_plugins(const char *root) {
+    char path[1500]; snprintf(path, sizeof path, "%s/mods.json", root);
+    NSData *d = [NSData dataWithContentsOfFile:@(path)];
+    if (!d) return;
+    id j = [NSJSONSerialization JSONObjectWithData:d options:0 error:NULL];
+    NSArray *pl = [j isKindOfClass:NSDictionary.class] && [j[@"version"] isEqual:@1] ? j[@"skse_plugins"] : nil;
+    if (![pl isKindOfClass:NSArray.class]) return;
+    const char *keep[256]; int n = 0;
+    for (id e in pl) {
+        NSString *p = [e isKindOfClass:NSDictionary.class] ? e[@"path"] : nil;
+        if (![p isKindOfClass:NSString.class] || n >= 256) { if ([p isKindOfClass:NSString.class]) return; continue; }
+        if ([p.pathExtension caseInsensitiveCompare:@"dll"]) continue;
+        keep[n++] = strdup(p.lastPathComponent.UTF8String);   // freed never: a few names, once per launch
+    }
+    char dir[1600]; snprintf(dir, sizeof dir, "%s/overlay_skyrimvr/Data/SKSE/Plugins", root);
+    vx_prune_skse_dlls(dir, keep, n, prune_logged);
+}
 static void log_mods(const char *root) {
     char path[1500]; snprintf(path, sizeof path, "%s/mods.json", root);
     NSData *d = [NSData dataWithContentsOfFile:@(path)];
@@ -485,6 +509,7 @@ static int skyrimvr_start(const char *root, char **exe_out, char ***argv_out, in
             if (!stat(cap, &sk)) setenv("VXRT_CODE_VERIFY", cap, 0);
         }
     }
+    prune_skse_plugins(root);
     log_mods(root);
     log_overlay_summary(root);
     snprintf(dir, sizeof dir, "%s/bundle/redist", NSBundle.mainBundle.resourcePath.fileSystemRepresentation);

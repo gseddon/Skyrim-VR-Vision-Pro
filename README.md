@@ -122,6 +122,8 @@ All of these have been played with on the headset.
 
 Mods that add code (SKSE plugins) are recompiled ahead of time along with the game. Changing the set of code mods means rerunning that step. SkyUI contains a small scripting engine (LuaJIT) that normally generates code while it runs. The tools add a tiny patch that switches that off.
 
+`mods.py deploy` only copies files to the headset (devicectl cannot delete), so at launch the app removes any SKSE plugin DLL in `Data/SKSE/Plugins` that the deployed pack's `mods.json` no longer lists. It touches nothing else, and does nothing if `mods.json` is missing.
+
 ### Getting the mod files
 
 The mod files themselves aren't included. You download them from [Nexus Mods](https://www.nexusmods.com) under its terms, for your own use. **A free Nexus account is enough: no Premium and no API key needed.**
