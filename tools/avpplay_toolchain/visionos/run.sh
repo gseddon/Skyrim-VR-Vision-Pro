@@ -53,6 +53,11 @@ for d in "${KL_LX_SYSROOT:-}" "${KL_LX_SYSROOT:-}/vrwebhelper/win64" "${KL_LX_SY
   [ -f "$d/msvcp140.dll" ] && { STEAMVR=$d; break; }
 done
 [ -n "$STEAMVR" ] || die "KL_LX_SYSROOT does not hold SteamVR's bin/vrwebhelper/win64 folder (no msvcp140.dll under '${KL_LX_SYSROOT:-}')"
+# AVP Play's library may lie in a folder with a blank in its name ("AVP Play Downloads"), which make does not survive:
+# the stages get both folders through links under the private root.
+LINKS="$VXRT_PRIVATE_ROOT/avpplay"
+mkdir -p "$LINKS" && ln -sfn "$GAME" "$LINKS/game" && ln -sfn "$STEAMVR" "$LINKS/steamvr-win64" || die "cannot create links in $LINKS"
+GAME="$LINKS/game"; STEAMVR="$LINKS/steamvr-win64"
 # Free teams: Apple does not grant them extended virtual addressing, which the recompiled game's address space needs.
 [ "${KLEPTON_EVA:-1}" != 0 ] || die "Skyrim VR needs a paid Apple Developer team (the extended-virtual-addressing entitlement); a free team cannot sign it"
 
