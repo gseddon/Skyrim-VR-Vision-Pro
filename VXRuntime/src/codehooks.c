@@ -19,6 +19,15 @@
 //  VXRT_CODE_VERIFY=<file>       the same lines are compared with memory after the preload list has run; any difference
 //                                stops the run (exit 3): the capture the modules were made from does not describe this run.
 //
+//  VXRT_PEEK=<item>;<item>...    (diagnostic) a thread reads places in the program's memory every VXRT_PEEK_MS (default 20)
+//                                and logs each one when its bytes change: what state a plugin without a log of its own is in.
+//                                An item is  name=ADDR:N          N bytes (at most 64) at ADDR,
+//                                            name=ADDR>OFF:N      N bytes at OFF past the pointer stored at ADDR,
+//                                            name=strmap@ADDR     the keys of an MSVC std::unordered_map<std::string,bool>
+//                                                                 at ADDR whose value is true.
+//                                Addresses are the program's own (image base + RVA, e.g. from a plugin's PDB). Reads go
+//                                through the kernel, so a place that is not mapped (yet) reads as "unreadable", no fault.
+//
 // Nothing here generates code. The region's pages hold whatever the DLL writes; they are never executed as ARM64.
 #include <stdio.h>
 #include <stdlib.h>
@@ -325,6 +334,93 @@ static void watch_start(void) {
     vx_log("codehooks: watching %d executable sections and the region every %d ms for code writes outside the capture", g_nwatch, g_watch_ms);
 }
 
+// --- VXRT_PEEK ---------------------------------------------------------------------------------------------------------
+#include <mach/mach.h>
+typedef struct { char name[24]; int kind; uint64_t addr, off; int follow; unsigned size; char last[1024]; } peek_item;   // kind 0 bytes, 1 strmap
+static peek_item g_peek[16];
+static int g_npeek, g_peek_ms = 20;
+
+static int peek_read(uint64_t addr, void *out, size_t n) {
+    vm_size_t got = 0;
+    return addr && vm_read_overwrite(mach_task_self(), (vm_address_t)addr, n, (vm_address_t)out, &got) == KERN_SUCCESS && got == n;
+}
+// std::unordered_map<std::string,bool> of MSVC's library: the list's head pointer at +8 and its size at +16; a node is next, prev,
+// then the pair: the string (16 bytes of its own or a pointer, then length and capacity) and the bool at +48.
+static void peek_strmap(uint64_t map, char *out, size_t cap) {
+    uint64_t hs[2];
+    out[0] = 0;
+    if (!peek_read(map + 8, hs, sizeof hs) || hs[1] > 512) { snprintf(out, cap, "unreadable"); return; }
+    uint64_t node = 0;
+    if (!peek_read(hs[0], &node, 8)) { snprintf(out, cap, "unreadable"); return; }
+    size_t used = (size_t)snprintf(out, cap, "%llu keys, true:", (unsigned long long)hs[1]);
+    for (uint64_t i = 0; i < hs[1] && node && node != hs[0]; i++) {
+        unsigned char n[56];
+        if (!peek_read(node, n, sizeof n)) { snprintf(out + used, cap - used, " (broken at %llu)", (unsigned long long)i); return; }
+        uint64_t len, capacity; memcpy(&len, n + 32, 8); memcpy(&capacity, n + 40, 8);
+        char key[40] = "";
+        if (len < sizeof key) {
+            if (capacity < 16) memcpy(key, n + 16, len < 16 ? len : 15);
+            else { uint64_t ptr; memcpy(&ptr, n + 16, 8); if (!peek_read(ptr, key, len)) strcpy(key, "?"); }
+            key[len] = 0;
+        }
+        if (n[48] && used + strlen(key) + 4 < cap) used += (size_t)snprintf(out + used, cap - used, " [%s]", key);
+        memcpy(&node, n, 8);
+    }
+}
+static void *peek_thread(void *arg) {
+    (void)arg;
+    struct timespec t0; clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (int lines = 0; lines < 20000;) {
+        usleep((useconds_t)g_peek_ms * 1000);
+        for (int i = 0; i < g_npeek; i++) {
+            peek_item *p = &g_peek[i];
+            char now[sizeof p->last];
+            if (p->kind == 1) peek_strmap(p->addr, now, sizeof now);
+            else {
+                uint64_t a = p->addr; unsigned char b[64];
+                if (p->follow && (!peek_read(a, &a, 8) || !a)) snprintf(now, sizeof now, "unreadable");
+                else if (!peek_read(a + p->off, b, p->size)) snprintf(now, sizeof now, "unreadable");
+                else { size_t u = 0; for (unsigned k = 0; k < p->size; k++) u += (size_t)snprintf(now + u, sizeof now - u, "%s%02x", k ? " " : "", b[k]); }
+            }
+            if (!strcmp(now, p->last)) continue;
+            memcpy(p->last, now, sizeof now);
+            struct timespec t, w; clock_gettime(CLOCK_MONOTONIC, &t); clock_gettime(CLOCK_REALTIME, &w);
+            vx_log("peek %.3f (unix %lld.%03ld) %s = %s", (double)(t.tv_sec - t0.tv_sec) + (double)(t.tv_nsec - t0.tv_nsec) / 1e9,
+                   (long long)w.tv_sec, w.tv_nsec / 1000000, p->name, now);
+            lines++;
+        }
+    }
+    vx_log("peek: 20000 lines written; stopping");
+    return NULL;
+}
+static void peek_start(void) {
+    const char *spec = getenv("VXRT_PEEK");
+    if (!spec || !*spec || g_npeek) return;
+    if (getenv("VXRT_PEEK_MS") && atoi(getenv("VXRT_PEEK_MS")) > 0) g_peek_ms = atoi(getenv("VXRT_PEEK_MS"));
+    char *copy = strdup(spec), *save = NULL;
+    for (char *tok = strtok_r(copy, ";", &save); tok && g_npeek < (int)(sizeof g_peek / sizeof *g_peek); tok = strtok_r(NULL, ";", &save)) {
+        peek_item p; memset(&p, 0, sizeof p);
+        char *eq = strchr(tok, '=');
+        if (!eq || eq == tok || (size_t)(eq - tok) >= sizeof p.name) { vx_log("peek: item \"%s\" not understood", tok); continue; }
+        memcpy(p.name, tok, (size_t)(eq - tok));
+        const char *v = eq + 1; char *end = NULL;
+        if (!strncmp(v, "strmap@", 7)) { p.kind = 1; p.addr = strtoull(v + 7, &end, 0); }
+        else {
+            p.addr = strtoull(v, &end, 0);
+            if (*end == '>') { p.follow = 1; p.off = strtoull(end + 1, &end, 0); }
+            if (*end != ':') { vx_log("peek: item \"%s\" has no size", tok); continue; }
+            p.size = (unsigned)strtoul(end + 1, &end, 0);
+            if (!p.size || p.size > 64) { vx_log("peek: item \"%s\": size must be 1 to 64", tok); continue; }
+        }
+        if (!p.addr || *end) { vx_log("peek: item \"%s\" not understood", tok); continue; }
+        g_peek[g_npeek++] = p;
+    }
+    free(copy);
+    if (!g_npeek) return;
+    vx_log("peek: watching %d places every %d ms (VXRT_PEEK)", g_npeek, g_peek_ms);
+    pthread_t t; pthread_create(&t, NULL, peek_thread, NULL); pthread_detach(t);
+}
+
 static int g_preload_done;
 static void preload_now(void);
 // Called by the loader once the program's image is mapped and its imports are bound: the place the injected thread's LoadLibrary ran.
@@ -332,6 +428,7 @@ static void preload_now(void);
 // VCRUNTIME140!__telemetry_main_invoke_trigger (after its static constructors, right before main): where sksevr_steam_loader.dll
 // loads SKSE for the Steam build, and what plugins that read game objects (SkyrimVRTools) need.
 void vx_codehooks_preload(void) {
+    peek_start();
     const char *at = getenv("VXRT_PRELOAD_AT");
     if (at && !strcmp(at, "telemetry")) return;
     preload_now();

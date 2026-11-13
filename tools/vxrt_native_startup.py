@@ -18,6 +18,9 @@ import sys
 import vxrt_ledger as ledger
 import vxrt_runtime_sessions as sessions
 
+# Further diagnostics --diag-env passes on: the memory watch (VXRuntime/src/codehooks.c).
+DIAG_ENV |= {'VXRT_PEEK', 'VXRT_PEEK_MS'}
+
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'VXRuntime/tools'))
 from native_vr_run import cpu_types
