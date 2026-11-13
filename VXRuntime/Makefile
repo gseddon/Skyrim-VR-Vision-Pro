@@ -461,7 +461,10 @@ XROS_DEFAULT_LAUNCH ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),-game skyrimvr -xriz
 # with another default launch (the simulator smoke test uses the owned guest). The app's name on the Home View.
 XROS_START_WINDOW ?= $(if $(filter 1,$(XROS_XRIZER_GAME)),1,0)
 XROS_DISPLAY_NAME ?= Skyrim VR
-XROS_FIXTURE_APP_FLAGS = PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) 'VXRT_START_WINDOW=$(XROS_START_WINDOW)' 'VXRT_DISPLAY_NAME=$(XROS_DISPLAY_NAME)' $(if $(XROS_SHADER_SET),'VXRT_SHADER_SET=$(abspath $(XROS_SHADER_SET))') 'VXRT_DEFAULT_LAUNCH=$(XROS_DEFAULT_LAUNCH)' SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
+# XROS_EXTRA_APP_FLAGS: further xcodebuild settings for the game app, for an installer that stamps its own version
+# (tools/avpplay_toolchain passes MARKETING_VERSION and CURRENT_PROJECT_VERSION). Empty by default.
+XROS_EXTRA_APP_FLAGS ?=
+XROS_FIXTURE_APP_FLAGS = $(XROS_EXTRA_APP_FLAGS) PRODUCT_BUNDLE_IDENTIFIER=$(XROS_FIXTURE_BUNDLE_ID) 'VXRT_START_WINDOW=$(XROS_START_WINDOW)' 'VXRT_DISPLAY_NAME=$(XROS_DISPLAY_NAME)' $(if $(XROS_SHADER_SET),'VXRT_SHADER_SET=$(abspath $(XROS_SHADER_SET))') 'VXRT_DEFAULT_LAUNCH=$(XROS_DEFAULT_LAUNCH)' SWIFT_ACTIVE_COMPILATION_CONDITIONS=XRIZER_XROS_FIXTURE 'OTHER_LDFLAGS=-Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libvxrt.a -Wl,-force_load,$(CURDIR)/$(XROS_DIR)/libaot.a $(XROS_XRIZER_STATIC)/libklepton.a $(XROS_XRIZER_STATIC)/libxrizer.a -licucore -lz$(if $(filter xros,$(XROS_SDK)), -framework MetalFX)'
 .PHONY: xros-shader-set
 xros-app: xros-require-team $(XROS_SHADER_SET_PREREQ)
 # xros-shader-set: the whole shader set for $(XROS_SDK) into $(XROS_SHADER_DIR), from XROS_SHADER_MANIFEST and the install

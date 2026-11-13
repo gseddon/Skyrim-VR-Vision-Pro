@@ -37,3 +37,8 @@ VXRuntime/tests/shaders12/*.h
 
 # Personal settings (team, bundle prefix, device id, private paths): copy local.example.sh to local/env.sh
 /local/
+
+# The AVP Play toolchain adapter: its description is written per state (make_manifest.py), and AVP Play puts the
+# icon and start picture it chose for the game beside the scripts.
+/tools/avpplay_toolchain/toolchain.json
+/tools/avpplay_toolchain/visionos/Assets.xcassets/
