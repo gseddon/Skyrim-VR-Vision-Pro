@@ -18,8 +18,9 @@ import sys
 import vxrt_ledger as ledger
 import vxrt_runtime_sessions as sessions
 
-# Further diagnostics --diag-env passes on: the memory watch (VXRuntime/src/codehooks.c).
-DIAG_ENV |= {'VXRT_PEEK', 'VXRT_PEEK_MS'}
+# Further diagnostics --diag-env passes on: the memory watch (VXRuntime/src/codehooks.c) and the null-call diagnostic
+# (VXRuntime/translator/aot.c).
+DIAG_ENV |= {'VXRT_PEEK', 'VXRT_PEEK_MS', 'VXRT_AOT_NULL_DIAGNOSTIC'}
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / 'VXRuntime/tools'))

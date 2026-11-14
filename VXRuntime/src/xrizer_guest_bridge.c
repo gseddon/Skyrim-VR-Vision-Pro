@@ -1154,9 +1154,54 @@ static WINAPI int one_pose(guest_object *self, uint32_t index, void *render, voi
     require(self == &compositor); native_one_pose_fn fn = (native_one_pose_fn)native_table(self)[4];
     return fn(self->native, index, render, game);
 }
+// Who asks: the images on the program's stack above a call into this bridge, nearest first, each once in a row
+// ("skyrimvrtools.dll < higgs_vr.dll < skyrimvrtools.dll < VRIK.dll < SkyrimVR.exe"), counted per distinct chain and logged now
+// and then. With script-extender plugins the game's OpenVR calls pass through their wrappers and hooks; this shows whether a
+// plugin's callback is in the chain at all (2026-11-14: HIGGS never saw a button the bridge had returned).
+#if defined(__aarch64__)
+#include "arm64.h"
+static void note_callers(int which, const char *what) {
+    enum { CHAINS = 12 };
+    static struct { char chain[192]; unsigned n; } tab[2][CHAINS];
+    static unsigned total[2];
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    uint8_t *teb = vx_teb(); x86_ctx *c = vx_x86_ctx();
+    if (!teb || !c) return;
+    const uint64_t *sp = (const uint64_t *)(uintptr_t)c->gpr[4];
+    uint64_t top = *(uint64_t *)(teb + TEB_STACK_BASE);
+    if (!sp || (uint64_t)(uintptr_t)sp >= top || top - (uint64_t)(uintptr_t)sp > (256ull << 20)) return;
+    char chain[192] = ""; size_t used = 0; int shown = 0; const vx_image *prev = NULL;
+    for (int i = 0; i < 2048 && shown < 7 && (uint64_t)(uintptr_t)(sp + i) < top; i++) {
+        const vx_image *f = vx_image_at(sp[i]);
+        if (!f || sp[i] - 6 <= (uint64_t)(uintptr_t)f->base) continue;
+        const uint8_t *r = (const uint8_t *)(uintptr_t)sp[i];          // (a return address: just after a call instruction)
+        if (!(r[-5] == 0xe8 || (r[-6] == 0xff && (r[-5] & 0x38) == 0x10) || (r[-2] == 0xff && (r[-1] & 0x38) == 0x10) || (r[-3] == 0xff && (r[-2] & 0x38) == 0x10))) continue;
+        if (f == prev) continue;
+        prev = f;
+        int w = snprintf(chain + used, sizeof chain - used, "%s%s", shown ? " < " : "", f->name);
+        if (w < 0 || (size_t)w >= sizeof chain - used) break;
+        used += (size_t)w; shown++;
+    }
+    pthread_mutex_lock(&lock);
+    int at = -1;
+    for (int i = 0; i < CHAINS; i++) {
+        if (tab[which][i].n && !strcmp(tab[which][i].chain, chain)) { at = i; break; }
+        if (!tab[which][i].n && at < 0) at = i;
+    }
+    if (at >= 0) { if (!tab[which][at].n) snprintf(tab[which][at].chain, sizeof tab[which][at].chain, "%s", chain); tab[which][at].n++; }
+    unsigned t = ++total[which];
+    if (t == 200 || t == 2000 || !(t % 20000))
+        for (int i = 0; i < CHAINS; i++)
+            if (tab[which][i].n) vx_log("xrizer_guest_bridge: callers of %s after %u calls: %u from %s", what, t, tab[which][i].n, tab[which][i].chain[0] ? tab[which][i].chain : "(none found)");
+    pthread_mutex_unlock(&lock);
+}
+#else
+static void note_callers(int which, const char *what) { (void)which; (void)what; }
+#endif
 static WINAPI uint32_t controller_index(guest_object *self, int role) {
     require(self == &system_object); native_role_fn fn = (native_role_fn)native_table(self)[18];
     uint32_t r = fn(self->native, role);
+    note_callers(0, "slot18 (controller index for a role)");
     static unsigned calls; calls++;
     if (calls <= 8 || !(calls % 1000)) vx_log("xrizer_guest_bridge: System019 slot18 role %d -> device %u (call %u)", role, r, calls);
     return r;
@@ -1300,6 +1345,7 @@ static WINAPI uint8_t controller_state(guest_object *self, uint32_t device, void
     native_controller_state n; memset(&n, 0, sizeof n);
     uint8_t r = fn(self->native, device, &n, sizeof n);
     copy_controller_state(state, &n); note_controller_state(34, device, size, r, &n);
+    note_callers(1, "slot34 (controller state)");
     return r;
 }
 static WINAPI uint8_t controller_state_pose(guest_object *self, int origin, uint32_t device, void *state, uint32_t size, void *pose) {
