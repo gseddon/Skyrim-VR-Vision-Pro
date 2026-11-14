@@ -55,6 +55,13 @@ static KlNativeInputHand3 convert(const vx_xros_controller_hand *in) {
         .stick_pressed = in->stick_pressed ? XR_TRUE : XR_FALSE};
     out.profile = KL_NATIVE_INPUT_PROFILE_OCULUS_TOUCH;
     out.local_from_grip = pose_of(in->grip); out.local_from_aim = pose_of(in->aim);
+    int moving = in->velocity_valid != 0;
+    for (int i = 0; i < 3; i++) if (!isfinite(in->linear_velocity[i]) || !isfinite(in->angular_velocity[i])) moving = 0;
+    if (moving) {   /* a velocity with a value that is not a number is no velocity */
+        out.linear_velocity = (XrVector3f){in->linear_velocity[0], in->linear_velocity[1], in->linear_velocity[2]};
+        out.angular_velocity = (XrVector3f){in->angular_velocity[0], in->angular_velocity[1], in->angular_velocity[2]};
+        out.velocity_valid = XR_TRUE;
+    }
     return out;
 }
 static void log_hand(const KlNativeInputSample3 *s, int i) {

@@ -86,6 +86,9 @@ struct VXSenseTune {
     static var isIdentity: Bool { pitchDegrees == 0 && yawDegrees == 0 && rollDegrees == 0 && position == .zero }
 
     // The prediction target: the frame's presentation time, no further than `predictMaxSeconds` ahead of now.
+    // The frame ARKit's accessory velocity is read in: the accessory's own (default, as Klepton and ALVR read it) or, with
+    // VXRT_SENSE_VEL_FRAME=world, the tracking origin's. See VXNativeXRTracking.snapshot.
+    static let velocityIsLocal = ProcessInfo.processInfo.environment["VXRT_SENSE_VEL_FRAME"] != "world"
     static func predictionTarget(presentation: TimeInterval, now: TimeInterval) -> TimeInterval {
         min(presentation, now + predictMaxSeconds)
     }

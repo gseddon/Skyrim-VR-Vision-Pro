@@ -578,8 +578,21 @@ int main(void) {
                loc.pose.position.x == 0.2f && fabsf(loc.pose.position.z + 0.45f) < 1e-6f);
         input_sample3.sample_id = 2; input_sample3.sample_time = 40; input_sample3.hand[0].controls.trigger = 0.75f;
         input_sample3.hand[0].controls.grip_position_tracked = XR_TRUE;
+        /* the host measured the right hand's motion: 2 m/s toward -Z while turning 1 rad/s about Y */
+        input_sample3.hand[1].linear_velocity = (XrVector3f){0, 0, -2}; input_sample3.hand[1].angular_velocity = (XrVector3f){0, 1, 0};
+        input_sample3.hand[1].velocity_valid = XR_TRUE;
         assert(sync_actions(session, &sync3) == XR_SUCCESS);
         assert(poll_event(instance, (eb.type = XR_TYPE_EVENT_DATA_BUFFER, &eb)) == XR_EVENT_UNAVAILABLE);   /* same profiles, no event */
+        {   /* grip_right sits 0.1 m ahead (-Z) of the grip, so the turning adds w x r = (-0.1, 0, 0) to its linear velocity; the left hand
+             * came without a velocity and keeps flags 0 */
+            const XrSpaceVelocityFlags both = XR_SPACE_VELOCITY_LINEAR_VALID_BIT | XR_SPACE_VELOCITY_ANGULAR_VALID_BIT;
+            vel = (XrSpaceVelocity){ .type = XR_TYPE_SPACE_VELOCITY }; loc.next = &vel;
+            assert(locate_space(grip_right, local3, 35, &loc) == XR_SUCCESS && loc.locationFlags == valid && vel.velocityFlags == both);
+            assert(fabsf(vel.linearVelocity.x + 0.1f) < 1e-6f && vel.linearVelocity.y == 0 && vel.linearVelocity.z == -2 &&
+                   vel.angularVelocity.x == 0 && vel.angularVelocity.y == 1 && vel.angularVelocity.z == 0);
+            vel = (XrSpaceVelocity){ .type = XR_TYPE_SPACE_VELOCITY, .velocityFlags = both, .linearVelocity = {9, 9, 9} };
+            assert(locate_space(grip_left, local3, 35, &loc) == XR_SUCCESS && !vel.velocityFlags && vel.linearVelocity.x == 0);
+        }
         {   /* haptics at sample 2: both hands connected with the Touch profile, vibration bound on both */
             XrHapticActionInfo hi = { .type = XR_TYPE_HAPTIC_ACTION_INFO, .action = hap, .subactionPath = hands[0] };
             XrHapticVibration vib = { .type = XR_TYPE_HAPTIC_VIBRATION, .duration = 50000000, .frequency = 160.f, .amplitude = 0.5f };
@@ -640,6 +653,17 @@ int main(void) {
         input_sample3.sample_id = 4; input_sample3.sample_time = 60;
         input_sample3.hand[1] = (KlNativeInputHand3){ .controls = absent_hand(), .local_from_grip.orientation.w = 1 };
         assert(sync_actions(session, &sync3) == XR_ERROR_VALIDATION_FAILURE);   /* a disconnected hand carries no pose */
+        input_sample3.hand[1] = (KlNativeInputHand3){ .controls = absent_hand(), .velocity_valid = XR_TRUE };
+        assert(sync_actions(session, &sync3) == XR_ERROR_VALIDATION_FAILURE);   /* nor a velocity */
+        {   /* a connected hand: a velocity that is not a number, or values without the flag, fail the sync too */
+            KlNativeInputHand3 left = input_sample3.hand[0];
+            input_sample3.hand[1] = (KlNativeInputHand3){ .controls = absent_hand() };
+            input_sample3.hand[0].velocity_valid = XR_TRUE; input_sample3.hand[0].linear_velocity.y = NAN;
+            assert(sync_actions(session, &sync3) == XR_ERROR_VALIDATION_FAILURE);
+            input_sample3.hand[0] = left; input_sample3.hand[0].angular_velocity.x = 1;
+            assert(sync_actions(session, &sync3) == XR_ERROR_VALIDATION_FAILURE);
+            input_sample3.hand[0] = left;
+        }
         assert(locate_space(grip_left, local3, 35, &loc) == XR_SUCCESS && loc.locationFlags == 0);   /* failed sync: nothing located */
         input_sample3.hand[1] = (KlNativeInputHand3){ .controls = absent_hand() };
         assert(sync_actions(session, &sync3) == XR_SUCCESS);

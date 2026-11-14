@@ -72,6 +72,12 @@ typedef struct KlNativeInputHand3 {
     uint32_t profile;                /* KL_NATIVE_INPUT_PROFILE_*; NONE exactly when disconnected */
     XrPosef local_from_grip;         /* valid poses when connected, all zero when disconnected */
     XrPosef local_from_aim;
+    /* Motion of the grip pose in LOCAL space (metres and radians a second) as the tracker itself measured it, when
+     * velocity_valid; all zero otherwise. Never a difference of two poses. With it, xrLocateSpace fills a chained
+     * XrSpaceVelocity for this hand's action spaces against LOCAL or STAGE (the aim pose and a space's own offset
+     * get the lever arm's share of the turning); without it the velocity flags stay 0 as before. */
+    XrVector3f linear_velocity, angular_velocity;
+    XrBool32 velocity_valid;
 } KlNativeInputHand3;
 typedef struct KlNativeInputSample3 {
     uint64_t sample_id;
