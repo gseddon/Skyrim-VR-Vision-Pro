@@ -491,6 +491,11 @@ static int skyrimvr_start(const char *root, char **exe_out, char ***argv_out, in
     setenv("VXRT_SKYRIM_PRESET", "p2", 0);   // the "P2 balanced" settings preset (client.c; research/2026-11-10-skyrim-vr-performance-settings.md); VXRT_SKYRIM_PRESET=off for an A/B
     snprintf(ov, sizeof ov, "%s:%s/overlay_skyrimvr", dir_game, root);
     setenv("VXRT_OVERLAY", ov, 0);
+    {   // A mod pack an installer replaced by a smaller one, or by none (vx_prune.h, vx_prune_pack_files): its left-over files go
+        // before anything looks at the overlay, the SKSE files below among them.
+        int gone = vx_prune_pack_files(root, NULL);
+        if (gone) { fprintf(stderr, "[vxrt] removed %d files of an earlier mod pack that the current one does not have\n", gone); jlog("pack_prune", "\"removed\":%d", gone); }
+    }
     {   // SKSE VR (research/2026-11-11-skse-vr-on-aot.md): the core DLL, the stub module and the capture the modules were made from sit in
         // the overlay root (copied there from the user's own downloads; private). SKSE finds its plugins in <game dir>/Data/SKSE/Plugins,
         // which the overlay serves. Loaded where the Steam loader loads it (after the exe's static constructors); no JIT: the stubs
