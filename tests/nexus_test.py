@@ -23,7 +23,7 @@ ZIP = make_zip()
 
 
 class Fake(http.server.BaseHTTPRequestHandler):
-    premium = False; limit429 = 0; md5 = hashlib.md5(ZIP).hexdigest(); payload = ZIP; hits = []
+    premium = False; limit429 = 0; md5 = hashlib.md5(ZIP).hexdigest(); payload = ZIP; hits = []; list_md5 = True
 
     def log_message(self, *a): pass
 
@@ -47,7 +47,7 @@ class Fake(http.server.BaseHTTPRequestHandler):
         if path == '/v1/users/validate.json':
             return self.j(200, {'name': 'Tester', 'is_premium': S.premium, 'is_supporter': False, 'email': 'x@example.com'})
         if path == '/v1/games/skyrimspecialedition/mods/7/files.json':
-            return self.j(200, {'files': [{'file_id': 9, 'name': 'Main', 'file_name': 'Main-7-9.zip', 'version': '1.0', 'category_name': 'MAIN', 'size_in_bytes': len(ZIP), 'md5': S.md5}]})
+            return self.j(200, {'files': [dict({'file_id': 9, 'name': 'Main', 'file_name': 'Main-7-9.zip', 'version': '1.0', 'category_name': 'MAIN', 'size_in_bytes': len(ZIP)}, **({'md5': S.md5} if S.list_md5 else {}))]})
         if path == '/v1/games/skyrimspecialedition/mods/7/files/9.json':
             return self.j(200, {'file_id': 9, 'file_name': 'Main-7-9.zip', 'size_in_bytes': len(ZIP), 'md5': S.md5})
         if path == '/v1/games/skyrimspecialedition/mods/7/files/9/download_link.json':
@@ -66,7 +66,7 @@ class Base(unittest.TestCase):
             if cmd and cmd[0] == 'open': raise AssertionError('a test tried to open a page: %r' % (cmd,))
             return real(cmd, *a, **k)
         g = mock.patch.object(nexus.subprocess, 'run', guard); g.start(); self.addCleanup(g.stop)
-        Fake.premium = False; Fake.limit429 = 0; Fake.md5 = hashlib.md5(ZIP).hexdigest(); Fake.payload = ZIP; Fake.hits = []
+        Fake.premium = False; Fake.limit429 = 0; Fake.md5 = hashlib.md5(ZIP).hexdigest(); Fake.payload = ZIP; Fake.hits = []; Fake.list_md5 = True
         self.srv = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Fake)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
         self.tmp = tempfile.TemporaryDirectory(); self.root = Path(self.tmp.name)
@@ -113,6 +113,17 @@ class Client(Base):
         nexus.download('skyrimspecialedition', '7', '9')                  # a verified file is not fetched again
         cdn = [h for h in Fake.hits if '/cdn/' in h[0]]
         self.assertEqual(len(cdn), 1); self.assertNotIn('apikey', cdn[0][1])      # the key never goes to the CDN
+
+    def test_download_with_the_key_says_how_far_it_is(self):
+        Fake.premium = True
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {'VXRT_NEXUS_EVENTS': '1'}), mock.patch('sys.stderr', err):
+            nexus.download('skyrimspecialedition', '7', '9', name='Main mod')
+            nexus.download('skyrimspecialedition', '7', '9', name='Main mod')
+        lines = [l for l in err.getvalue().splitlines() if l.startswith('@@nexus ')]
+        self.assertEqual(lines[0], '@@nexus progress|Main mod|0 %d' % len(ZIP))          # a line before the first byte, with the size
+        self.assertIn('@@nexus have|Main mod|downloaded with the Nexus key', lines)
+        self.assertEqual(lines[-1], '@@nexus have|Main mod|kept from before')            # the second call finds it there
 
     def test_non_premium_403_then_nxm(self):
         with self.assertRaises(nexus.NeedInput) as c: nexus.download('skyrimspecialedition', '7', '9')
@@ -322,6 +333,70 @@ class KeyFree(Base):
         (self.dl / 'Main-7-1-0-1700000000.zip').unlink()
         r = run('--wait', '0'); self.assertEqual(r.returncode, 0, r.stderr); self.assertEqual(Fake.hits, [])        # done: needs nothing
         self.assertNotIn('nxm', (r.stderr + r.stdout))
+
+
+class Installer(Base):
+    """What an installer app without a terminal needs (VXRT_NEXUS_OPEN=1): each download page is opened as its turn comes and the
+    Downloads folder watched, with no key, with a key that is not Premium, and for an md5 Nexus does not list."""
+    def setUp(self):
+        super().setUp()
+        self.dl = self.root / 'Downloads'
+        for name, v in (('POLL', 0.02), ('STABLE', 0.1)):
+            m = mock.patch.object(nexus, name, v); m.start(); self.addCleanup(m.stop)
+        self.err = io.StringIO(); m = mock.patch('sys.stderr', self.err); m.start(); self.addCleanup(m.stop)
+        self.opened = []
+        real = subprocess.run
+        def record(cmd, *a, **k):
+            if cmd and cmd[0] == 'open': self.opened.append(cmd[1]); return subprocess.CompletedProcess(cmd, 0)
+            return real(cmd, *a, **k)
+        g = mock.patch.object(nexus.subprocess, 'run', record); g.start(); self.addCleanup(g.stop)
+        Fake.hits = []
+    def arrive(self, name='Main-7-1-0-1700000000.zip', after=0.3):
+        def go():
+            time.sleep(after); (self.dl / name).write_bytes(ZIP)
+        threading.Thread(target=go).start()
+
+    def test_unknown_md5_with_a_key_goes_through_the_browser(self):
+        Fake.premium = True; Fake.list_md5 = False
+        self.arrive()
+        with mock.patch.dict(os.environ, {'VXRT_NEXUS_OPEN': '1'}), mock.patch('sys.stdin') as si:
+            si.isatty.return_value = False
+            r = nexus.fetch_file('skyrimspecialedition', '7', None, md5=Fake.md5, wait=10, name='Texture Mod')
+        self.assertEqual(Path(r['path']).read_bytes(), ZIP)
+        self.assertEqual(self.opened, ['https://www.nexusmods.com/skyrimspecialedition/mods/7?tab=files'])
+
+    def test_key_without_premium_goes_on_through_the_browser(self):
+        self.arrive()
+        with mock.patch.dict(os.environ, {'VXRT_NEXUS_OPEN': '1'}), mock.patch('sys.stdin') as si:
+            si.isatty.return_value = False
+            r = nexus.fetch_file('skyrimspecialedition', '7', None, md5=Fake.md5, wait=10, name='Texture Mod')
+        self.assertEqual(Path(r['path']).read_bytes(), ZIP)
+        self.assertEqual(self.opened, ['https://www.nexusmods.com/skyrimspecialedition/mods/7?tab=files&file_id=9'])
+        self.assertIn('free account', self.err.getvalue()); self.assertNotIn(KEY, self.err.getvalue())
+
+    def test_no_key_opens_each_page_once_and_takes_the_download(self):
+        os.environ.pop('NEXUS_API_KEY', None)
+        self.arrive()
+        with mock.patch.dict(os.environ, {'VXRT_NEXUS_OPEN': '1'}), mock.patch('sys.stdin') as si:
+            si.isatty.return_value = False
+            r = nexus.fetch_file('skyrimspecialedition', '7', None, md5=Fake.md5, wait=10, name='Texture Mod')
+        self.assertEqual(Path(r['path']).read_bytes(), ZIP); self.assertEqual(len(self.opened), 1); self.assertEqual(Fake.hits, [])
+
+    def test_no_page_is_opened_unless_asked(self):
+        os.environ.pop('NEXUS_API_KEY', None)
+        with mock.patch('sys.stdin') as si:
+            si.isatty.return_value = False
+            with self.assertRaises(nexus.Skipped): nexus.fetch_file('skyrimspecialedition', '7', None, md5=Fake.md5, wait=0.2)
+        self.assertEqual(self.opened, [])
+
+    def test_external_archive_page_is_opened_too(self):
+        def go():
+            time.sleep(0.3); (self.dl / 'sksevr (1).7z').write_bytes(ZIP)
+        threading.Thread(target=go).start()
+        with mock.patch.object(nexus, 'ARCHIVE_EXT', ('.zip', '.7z')), mock.patch.dict(os.environ, {'VXRT_NEXUS_OPEN': '1'}), mock.patch('sys.stdin') as si:
+            si.isatty.return_value = False
+            p = nexus.external_fetch('SKSE VR', 'https://example.invalid/sksevr.7z', 'sksevr.7z', hashlib.md5(ZIP).hexdigest(), wait=10)
+        self.assertEqual(p.read_bytes(), ZIP); self.assertEqual(self.opened, ['https://example.invalid/sksevr.7z'])
 
 
 class HandlerApp(Base):
