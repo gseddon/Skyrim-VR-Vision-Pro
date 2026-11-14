@@ -41,14 +41,14 @@ Milestone 1 below starts only after the first three are true.
 
 ### 2. Contract-compatible VXRuntime toolchain directory
 
-- [ ] Add `tools/avpplay_toolchain/`: `visionos/run.sh`, `visionos/stage_sync.py`, `visionos/targets.py` (`skyrimvr`, `kind: vxruntime`), a `gen_xcodeproj.py` naming only the features we honour, and `toolchain.json`.
-- [ ] `run.sh device`:
+- [x] (2026-11-13/14, Mac M4 and Vision Pro M5, the actual game through AVP Play's CLI; `tools/avpplay_toolchain/README.md`) Add `tools/avpplay_toolchain/`: `visionos/run.sh`, `visionos/stage_sync.py`, `visionos/targets.py` (`skyrimvr`, `kind: vxruntime`), a `gen_xcodeproj.py` naming only the features we honour, and `toolchain.json`.
+- [x] (2026-11-13/14, same runs: the whole build in about five minutes on a first run, install and data sync of 150 files / 15.1 GB, the game played by a person; step 2 and 3 run the project's own stages through `tools/vxrt_build.py` (toolchain, prepare, aot, shaders, app) instead of calling the pipeline directly) `run.sh device`:
   1. Validate the env (`KLEPTON_TEAM`, `KLEPTON_TARGET`, `KLEPTON_DEVICE`, `KLEPTON_BUNDLE_ID`, `KL_LX_GAME`).
   2. Copy the game's code inputs into `build/private/skyrimvr/<exe sha>/`, prepare them with pinned Steamless, and run `tools/skyrim_aot_pipeline.py` for the xros target and arena.
   3. Run `make -C VXRuntime xros-app` signed for the team, install with devicectl, and copy the `.app` to `visionos/build/dd-device-skyrimvr/…`.
   4. Print `BUILD SUCCEEDED` only after a real install. Failures print `!! install FAILED: <why>` and `!! signing: <why>` as AVP Play expects.
-- [ ] `stage_sync.py --phase all [--dry-run]`: hard-link mirror into `KL_LX_MIRROR` of what the runtime reads (Data, .ini files, media). Leave out the code already compiled into the app. Copy it to the device root the runtime is configured with.
-- [ ] Owned fixture tests: the script's env handling and failure strings, and the mirror selection against a fake tree. No device.
+- [x] (same runs; `devicectl device copy to` skips unchanged files, so an interrupted copy resumes) `stage_sync.py --phase all [--dry-run]`: hard-link mirror into `KL_LX_MIRROR` of what the runtime reads (Data, .ini files, media). Leave out the code already compiled into the app. Copy it to the device root the runtime is configured with.
+- [x] (2026-11-14, Mac, fake trees: `python3 tests/avpplay_toolchain_test.py`, 8 tests, with Xcode's Python 3.9 and with 3.14) Owned fixture tests: the script's env handling and failure strings, and the mirror selection against a fake tree. No device.
 
 ### 2a. Pre-compiled shaders, so the headset doesn't compile them
 
