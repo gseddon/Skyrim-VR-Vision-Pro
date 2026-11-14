@@ -233,9 +233,30 @@ def wait_free(own, wait):
         time.sleep(15)
 
 
+def device_redist():
+    """A folder with exactly the DirectX DLLs the headset gets (skyrim_device_stage.STAGED_DLLS), for the game runs of this stage.
+
+    The redist folder holds every DLL of the DirectX cabinets, XAudio2_7.dll among them. The game calls LoadLibrary("XAudio2_7.dll")
+    before it creates XAudio2 through COM: with the whole folder on the path the Mac run loads the real DLL and runs its entry point,
+    code no module was made for, so the strict verify run stops there (seen 2026-11-13: "XAudio2_7.dll+0x70650 has no recompiled
+    code"). On the headset the file does not exist and the runtime's own XAudio2 answers. The runs here must see what the headset sees."""
+    import skyrim_device_stage as S
+    red = Path(E.variables()['VXRT_REDIST_DIR'])
+    view = work_dir() / 'redist-device'
+    if view.exists():
+        shutil.rmtree(view)
+    view.mkdir(parents=True)
+    for n in S.STAGED_DLLS:
+        if (red / n).is_file():
+            shutil.copy(red / n, view / n)
+    return view
+
+
 def dll_path(cfg):
     inp = Path(cfg['dlls'][0]['path']).parent
-    return ':'.join([str(inp)] + [str(x) for x in cfg.get('dll_roots', [])])
+    red = Path(E.variables()['VXRT_REDIST_DIR']).resolve()
+    roots = [device_redist() if Path(x).resolve() == red else x for x in cfg.get('dll_roots', [])]
+    return ':'.join([str(inp)] + [str(x) for x in roots])
 
 
 def early_run(cfg, modules, pack, w, out_capture, wait):
@@ -282,7 +303,7 @@ def harness_run(modules, pack, cfg, hooks_hint, seconds, hooks, wait, code_hooks
             '--mods-config', pack / 'mods.json']
     for h in code_hooks:
         args += ['--code-hook', h]
-    env = dict(os.environ, SKYRIM_AOT_DIR=str(modules))
+    env = dict(os.environ, SKYRIM_AOT_DIR=str(modules), SKYRIM_REDIST_DIR=str(device_redist()))
     log = work_dir() / ('run-%s.log' % label)
     say('%s run: the game runs for %d s on the Mac' % (label, seconds))
     r = subprocess.run([str(REPO / 'tools' / 'play_skyrim_dev.sh')] + [str(a) for a in args], env=env, stdout=open(log, 'wb'), stderr=subprocess.STDOUT)

@@ -29,6 +29,8 @@
 # Private inputs (override with the environment variables): SKYRIM_AOT_BASE = directory holding prepared/SkyrimVR.exe,
 # aot-splits4a/ and redist/ (read-only); SKYRIM_AOT_DIR = a module directory (default aot-fpcr-d5b2320/modules, built 2026-11-10 by
 # tools/skyrim_aot_pipeline.py with the lazy-FPCR stubs; the previous set is $B/aot-splits4a); SKYRIM_ASSET_ROOT; STEAMVR_WIN64_DLLS; XRIZER_RUST_ROOT.
+# SKYRIM_REDIST_DIR = the folder the game's DirectX DLLs are looked up in instead of $B/redist (tools/skse_capture.py: only the DLLs the
+# headset gets, so that a LoadLibrary finds on the Mac what it finds there).
 set -eu
 R=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 [ -f "${VXRT_LOCAL_ENV:-$R/local/env.sh}" ] && . "${VXRT_LOCAL_ENV:-$R/local/env.sh}"   # the player's own settings (local.example.sh)
@@ -128,6 +130,6 @@ EXTRA="--trace-calls $TRACE_CALLS"
 echo "output and evidence: $OUT"
 # shellcheck disable=SC2086
 exec python3 "$R/tools/vxrt_native_startup.py" --exe "$B/prepared/SkyrimVR.exe" --runtime "$RUNTIME" \
-  --aot-dir "$AOT" --asset-root "$ASSETS" --dll-dir "$B/redist" --dll-dir "$VRWEB" --appid 611670 \
+  --aot-dir "$AOT" --asset-root "$ASSETS" --dll-dir "${SKYRIM_REDIST_DIR:-$B/redist}" --dll-dir "$VRWEB" --appid 611670 \
   --out "$OUT" --seconds "$SECONDS_LIMIT" --experimental-xrizer --dev-synthetic-stage --xrizer-dylib "$DYLIB" \
   --dev-keyboard 1 --stay-active --saves-dir "${SKYRIM_SAVES_DIR:-$R/build/private/saves/611670}" $EXTRA "$@"
