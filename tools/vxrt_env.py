@@ -17,6 +17,7 @@ ORIGINAL_EXE_SHA256 = '6961efb4f4775a307b0fc9a3d637542c1e090be207d3b09467eab216b
 PREPARED_EXE_SHA256 = '8daf05196ecad57963be61614ce4a4cd5c4dc27d222db14e01c262b36b3d46d4'
 STEAMLESS_COMMIT = 'cd770bf9749d3e4f438d23ac643917ad1a804257'
 SPLITS_NAME = 'splits-1022-at-0x140000000.txt'
+MSVCP140_KNOWN_SHA256 = '0252b3f087712b7fe1ddb3aeb4c391747446cd1a421ffd03ba460fe643e1c48b'    # the msvcp140.dll the build was developed with (SteamVR's vrwebhelper/win64); any genuine x86-64 one works, its own hash is recorded (tools/skyrim_aot_skyrimvr.json "pin": "recorded")
 SPLITS_SHA256 = '46e8ff7d13cd2968763b14acea1ebbf0a297519911063a890fad20d8838766c9'    # the profile committed in tools/profiles (the 1022-address profile of the earlier builds plus a 600 s recording); yours is pinned in <file>.sha256 by tools/skyrim_splits.py
 
 
@@ -86,6 +87,12 @@ def load_local_env(path=None, env=None):
     got = dict(item.split('=', 1) for item in r.stdout.decode(errors='replace').split('\0') if '=' in item)
     skip = {'_', 'SHLVL', 'PWD', 'OLDPWD'}
     return {k: v for k, v in got.items() if k not in skip and env.get(k) != v}
+
+
+def msvcp140_identity(env=None):
+    """The sha256 of the msvcp140.dll in the AOT inputs (None when it is not there yet): the build's outputs depend on its actual bytes."""
+    p = Path(variables(env)['VXRT_AOT_INPUTS']) / 'msvcp140.dll'
+    return sha256_file(p) if p.is_file() else None
 
 
 def sha256_file(path):

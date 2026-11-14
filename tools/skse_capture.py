@@ -100,6 +100,12 @@ def plugin_set(doc, core):
     return mods.skse_plugin_set(doc['skse_plugins'], sha(core))
 
 
+def msvcp_changed(st):
+    """The capture's modules were compiled from one msvcp140.dll (state: its hash; older states: the known one). Another one in the inputs now = stale."""
+    now = E.msvcp140_identity()
+    return now is not None and st.get('msvcp140_sha256', E.MSVCP140_KNOWN_SHA256) != now
+
+
 def work_dir():
     return E.private_root() / 'skse-capture'
 
@@ -121,7 +127,7 @@ def status(pack):
     if not st.get('complete'):
         return 'missing'
     w = work_dir()
-    if st.get('plugin_set') != plugin_set(doc, core):
+    if st.get('plugin_set') != plugin_set(doc, core) or msvcp_changed(st):
         return 'stale'
     return 'done' if all((w / n).is_file() for n in (HOOKS_NAME, CAPTURE_NAME)) and Path(st.get('game_fw', '/nonexistent')).is_dir() else 'missing'
 
@@ -360,13 +366,15 @@ def stage(a):
         say('building the dev-host runtime for the Mac runs (tools/play_skyrim_dev.sh --build-only; needs the Rust toolchain: vxrt_build.py toolchain)')
         if run([REPO / 'tools' / 'play_skyrim_dev.sh', '--build-only'], env=dict(os.environ, SKYRIM_AOT_DIR=str(E.private_root()))):   # (the script wants a module dir to exist even to build)
             raise NeedInput('tools/play_skyrim_dev.sh --build-only failed (toolchain, SKYRIM_ASSET_ROOT, STEAMVR_WIN64_DLLS?)')
-    if a.force and w.is_dir():
+    if msvcp_changed(st) and not a.force:
+        say('msvcp140.dll in the inputs is not the one the earlier capture was built with: redoing the steps that compile modules')
+    if (a.force or msvcp_changed(st)) and w.is_dir():
         for p in w.glob('*.done'):
             p.unlink()
     w.mkdir(parents=True, exist_ok=True)
     tmp = w / 'work'
     tmp.mkdir(exist_ok=True)
-    st_run = {'plugin_set': ps, 'complete': False, 'started': time.strftime('%Y-%m-%dT%H:%M:%S'), 'plugins': [e['path'] for e in dlls]}
+    st_run = {'plugin_set': ps, 'complete': False, 'msvcp140_sha256': E.msvcp140_identity(), 'started': time.strftime('%Y-%m-%dT%H:%M:%S'), 'plugins': [e['path'] for e in dlls]}
     (w / 'state.json').write_text(json.dumps(st_run, indent=1))
 
     # 1. configs: the empty-capture module set at the device bases

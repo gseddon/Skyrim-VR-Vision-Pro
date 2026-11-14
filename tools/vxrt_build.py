@@ -122,7 +122,8 @@ def aot_identity():
     import skyrim_splits
     comp = REPO / 'VXRuntime' / 'build' / 'vxrt-aot'
     sp = skyrim_splits.splits_path()
-    return {'splits_sha256': E.sha256_file(sp) if sp.is_file() else None, 'compiler_sha256': E.sha256_file(comp) if comp.is_file() else None}
+    return {'splits_sha256': E.sha256_file(sp) if sp.is_file() else None, 'compiler_sha256': E.sha256_file(comp) if comp.is_file() else None,
+            'msvcp140_sha256': E.msvcp140_identity()}
 
 
 def aot_stamp_path():
@@ -131,7 +132,10 @@ def aot_stamp_path():
 
 def aot_stamp_current(ident):
     try:
-        return json.loads(aot_stamp_path().read_text()) == ident
+        st = json.loads(aot_stamp_path().read_text())
+        if 'msvcp140_sha256' in ident and 'msvcp140_sha256' not in st:
+            st['msvcp140_sha256'] = E.MSVCP140_KNOWN_SHA256      # (a stamp from before this key: made with the known one)
+        return st == ident
     except (OSError, ValueError):
         return False        # missing (an output from before stamps) or unreadable: not known to match
 
@@ -147,9 +151,9 @@ def stage_aot(a):
     ident = aot_identity()
     if link.exists() and not a.force:
         if aot_stamp_current(ident):
-            say('aot: %s already exists and was built with this splits profile and compiler (--force to compile again)' % link)
+            say('aot: %s already exists and was built with this splits profile, compiler and msvcp140.dll (--force to compile again)' % link)
             return OK, [str(link)]
-        say('aot: %s was built with a different (or unrecorded) splits profile or compiler; rebuilding. The old output is kept until the new one succeeds.' % link)
+        say('aot: %s was built with a different (or unrecorded) splits profile, compiler or msvcp140.dll; rebuilding. The old output is kept until the new one succeeds.' % link)
     moved = None
     if link.exists() and not link.is_symlink():
         moved = link.with_name('game_fw-xros.pre-' + time.strftime('%Y%m%d-%H%M%S'))

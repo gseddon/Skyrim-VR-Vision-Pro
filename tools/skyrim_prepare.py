@@ -188,12 +188,23 @@ def pins():
     return {Path(d['path']).name: d['sha256'] for d in cfg['dlls']}
 
 
-def place(src, dst, want):
+def place(src, dst, want, recorded=False):
+    """Copy src to dst after checking its hash. recorded: any genuine x86-64 PE is taken (a different hash than `want` is noted, not refused)."""
     src, dst = Path(src), Path(dst)
     if not src.is_file():
         raise Refuse('missing %s' % src)
     got = sha(src)
-    if got != want:
+    if recorded:
+        import skyrim_aot_pipeline as P
+        try:
+            P.pe_layout(src)
+        except ValueError as e:
+            raise Refuse('%s is not a usable x86-64 DLL (%s); use the one from SteamVR\'s bin/vrwebhelper/win64 folder' % (src, e))
+        if got != want:
+            print('note: %s is %s, not the %s this build was made with. That is fine (SteamVR updates this DLL): the AOT compiles the one you '
+                  'have and records its hash.' % (src, got, want))
+        want = got
+    elif got != want:
         raise Refuse('%s is %s, the config pins %s (another build of the game or SteamVR?)' % (src, got, want))
     dst.parent.mkdir(parents=True, exist_ok=True)
     if not dst.is_file() or sha(dst) != want:
@@ -210,7 +221,7 @@ def inputs():
     vr = os.environ.get('STEAMVR_WIN64_DLLS')
     if not vr:
         raise Refuse('STEAMVR_WIN64_DLLS is not set: point it at SteamVR\'s bin/vrwebhelper/win64 folder (msvcp140.dll)')
-    place(Path(vr) / 'msvcp140.dll', inp / 'msvcp140.dll', pin['msvcp140.dll'])
+    place(Path(vr) / 'msvcp140.dll', inp / 'msvcp140.dll', pin['msvcp140.dll'], recorded=True)
     missing = [n for n in ('d3dx9_42.dll', 'X3DAudio1_7.dll') if not (red / n).is_file()]
     if missing:    # opened from the DirectX redistributable cabinets inside the game's _CommonRedist, nothing run
         env = dict(os.environ, VXRT_REDIST=str(red))

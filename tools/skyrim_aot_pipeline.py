@@ -200,6 +200,14 @@ def pin(item, private=False):
     if not path.is_file() or (private and not in_private(path)):
         raise ValueError('input must be a regular file' + (' inside checkout' if private else ''))
     expected = item['sha256'].lower()
+    if item.get('pin') == 'recorded':
+        # a Microsoft runtime DLL that updates with the player's SteamVR: any genuine x86-64 PE is built as it is; the config's hash is the
+        # version it was developed with, and the module identity (module_key) uses the actual one
+        pe_layout(path)
+        actual = digest(path)
+        if actual != expected:
+            print('note: %s is %s, not the %s the config was made with; building the one you have (its hash is recorded)' % (path, actual, expected), file=sys.stderr)
+        return {'path': str(path), 'sha256': actual, 'known_sha256': expected, 'pin_matches': actual == expected}
     if not re.fullmatch(r'[0-9a-f]{64}', expected) or digest(path) != expected:
         raise ValueError('SHA-256 mismatch: %s is %s, the config pins %s' % (path, digest(path), expected))
     return {'path': str(path), 'sha256': expected}

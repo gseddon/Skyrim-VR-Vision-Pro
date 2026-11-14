@@ -104,7 +104,7 @@ def checks(a):
             'download Skyrim VR (Steam app 611670, Windows build) with tools/vxrt_steam.py fetch, set SKYRIM_ASSET_ROOT in local/env.sh')
     vr = os.environ.get('STEAMVR_WIN64_DLLS', '')
     add('ok' if vr and (Path(vr) / 'msvcp140.dll').is_file() else ('warn' if prepared_ok and Path(v['VXRT_AOT_INPUTS'], 'msvcp140.dll').is_file() else 'FAIL'),
-        'SteamVR bin/vrwebhelper/win64 (msvcp140.dll)', vr or 'not set', 'fetch SteamVR (app 250820) with tools/vxrt_steam.py and set STEAMVR_WIN64_DLLS')
+        'SteamVR bin/vrwebhelper/win64 (msvcp140.dll)', vr or 'not set', 'set STEAMVR_WIN64_DLLS (in local/env.sh) to the folder bin/vrwebhelper/win64 inside your own SteamVR install (Steam app 250820; tools/vxrt_steam.py fetches it if it is not installed). Any current msvcp140.dll there works')
     # --- private artifacts (the stages' outputs)
     add('ok' if prepared_ok else 'warn', 'prepared SkyrimVR.exe (pinned hash)', str(prepared), 'tools/vxrt_build.py prepare')
     inputs = all(Path(v['VXRT_AOT_INPUTS'], n).is_file() for n in ('binkw64.dll', 'openvr_api.dll', 'steam_api64.dll', 'msvcp140.dll')) \
