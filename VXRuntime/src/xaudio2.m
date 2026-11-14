@@ -8,11 +8,8 @@
 // xWMA voices (WMA v2, format tag 0x161: Skyrim's music and voice lines) are decoded packet by packet, as they
 // play, by the FFmpeg-derived decoder in wmadec/ (LGPL-2.1-or-later; see wmadec/SOURCE.md).
 #import <AudioToolbox/AudioToolbox.h>
-#include <math.h>
 #include "d3d_common.h"
-#if VX_XROS
-#import <AVFAudio/AVFAudio.h>
-#endif
+#include <math.h>
 #include "wmadec/wmadec.h"
 #include "xaudio2_reverb.h"
 #pragma clang diagnostic push
@@ -98,6 +95,7 @@ struct engine {
     AudioUnit unit;
     float *ring; uint32_t ring_frames; volatile uint64_t written, read;
     uint32_t quantum, out_channels;               // frames per pass, the device's channels
+    float output_matrix[MAX_CHANNELS * MAX_CHANNELS]; // input-major master-to-device map
     pthread_t thread; int thread_running, stop, engine_started;
     int v27;                                      // created through COM as XAudio2 2.7 (xaudio2_7.dll): its own method tables
 };
@@ -141,23 +139,68 @@ static volatile float g_xa_peak;
 
 // ---- output -----------------------------------------------------------------------------------------------------------
 volatile int vx_pause_audio __attribute__((weak));   // (see audio.m)
-// XAudio2 5.1 order is FL, FR, FC, LFE, BL, BR. Fold the logical master
-// layout to the Vision Pro's stereo device at the ring boundary.
-static inline float clamp_output_sample(float x) {
-    if (!isfinite(x)) return 0.0f;
-    return x < -1.0f ? -1.0f : x > 1.0f ? 1.0f : x;
+static DWORD default_channel_mask(uint32_t channels) {
+    static const DWORD masks[MAX_CHANNELS + 1] = {
+        0, 0x4, 0x3, 0xB, 0x33, 0x607, 0x60F, 0x70F, 0x63F
+    };
+    return channels <= MAX_CHANNELS ? masks[channels] : 0;
 }
-static inline void fold_5_1_to_stereo(float out[2], const float in[6]) {
-    const float minus_3_db = 0.7071067811865476f;
-    out[0] = clamp_output_sample(in[0] + minus_3_db * in[2] + 0.5f * in[3] + minus_3_db * in[4]);
-    out[1] = clamp_output_sample(in[1] + minus_3_db * in[2] + 0.5f * in[3] + minus_3_db * in[5]);
+
+static AudioChannelLayout channel_layout(uint32_t channels) {
+    AudioChannelLayout layout = {0};
+    static const AudioChannelLayoutTag tags[MAX_CHANNELS + 1] = {
+        0, kAudioChannelLayoutTag_Mono, kAudioChannelLayoutTag_Stereo, kAudioChannelLayoutTag_WAVE_2_1,
+        kAudioChannelLayoutTag_WAVE_4_0_A, kAudioChannelLayoutTag_WAVE_5_0_A,
+        kAudioChannelLayoutTag_AudioUnit_5_1, kAudioChannelLayoutTag_AudioUnit_6_1,
+        kAudioChannelLayoutTag_WAVE_7_1
+    };
+    if (channels <= MAX_CHANNELS) layout.mChannelLayoutTag = tags[channels];
+    return layout;
 }
-static inline void master_frame_to_device(float *out, const float *in, uint32_t master_channels, uint32_t device_channels) {
-    if (master_channels == 6 && device_channels == 2) {
-        fold_5_1_to_stereo(out, in);
-        return;
+
+static OSStatus make_output_matrix(uint32_t in_channels, uint32_t out_channels,
+                                   float matrix[MAX_CHANNELS * MAX_CHANNELS]) {
+    memset(matrix, 0, MAX_CHANNELS * MAX_CHANNELS * sizeof(*matrix));
+    if (!in_channels || !out_channels || in_channels > MAX_CHANNELS || out_channels > MAX_CHANNELS)
+        return kAudio_ParamError;
+    if (in_channels == out_channels) {
+        for (uint32_t i = 0; i < in_channels; ++i) matrix[i * MAX_CHANNELS + i] = 1.0f;
+        return noErr;
     }
-    for (uint32_t c = 0; c < device_channels; c++) out[c] = in[c];
+    AudioChannelLayout in_layout = channel_layout(in_channels), out_layout = channel_layout(out_channels);
+    if (!in_layout.mChannelLayoutTag || !out_layout.mChannelLayoutTag) return kAudio_ParamError;
+    const AudioChannelLayout *layouts[] = { &in_layout, &out_layout };
+    float converter_matrix[MAX_CHANNELS * MAX_CHANNELS] = {0};
+    UInt32 bytes = in_channels * out_channels * sizeof(float);
+    OSStatus status = AudioFormatGetProperty(kAudioFormatProperty_MatrixMixMap, sizeof layouts, layouts,
+                                             &bytes, converter_matrix);
+    if (status != noErr) return status;
+    if (bytes != in_channels * out_channels * sizeof(float)) return kAudio_ParamError;
+    float max_column_sum = 1.0f;
+    for (uint32_t o = 0; o < out_channels; ++o) {
+        float sum = 0;
+        for (uint32_t i = 0; i < in_channels; ++i) {
+            float gain = converter_matrix[i * out_channels + o];
+            matrix[i * MAX_CHANNELS + o] = gain;
+            sum += fabsf(gain);
+        }
+        if (sum > max_column_sum) max_column_sum = sum;
+    }
+    if (max_column_sum > 1.0f) {
+        float scale = 1.0f / max_column_sum;
+        for (uint32_t i = 0; i < in_channels; ++i)
+            for (uint32_t o = 0; o < out_channels; ++o) matrix[i * MAX_CHANNELS + o] *= scale;
+    }
+    return noErr;
+}
+
+static inline void master_frame_to_device(float *out, const float *in, const float *matrix,
+                                          uint32_t master_channels, uint32_t device_channels) {
+    for (uint32_t o = 0; o < device_channels; ++o) {
+        float sample = 0;
+        for (uint32_t i = 0; i < master_channels; ++i) sample += in[i] * matrix[i * MAX_CHANNELS + o];
+        out[o] = sample;
+    }
 }
 static OSStatus output_callback(void *ctx, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus, UInt32 n, AudioBufferList *io) {
     (void)flags; (void)ts; (void)bus;
@@ -370,7 +413,7 @@ static void one_pass(engine *e) {
     for (uint32_t i = 0; i < n; i++) {
         for (uint32_t c = 0; c < m->channels; c++) master_frame[c] = m->mix[(size_t)i * m->channels + c] * m->volume * m->channel_volume[c];
         float *dst = e->ring + (size_t)((e->written + i) % e->ring_frames) * e->out_channels;
-        master_frame_to_device(dst, master_frame, m->channels, e->out_channels);
+        master_frame_to_device(dst, master_frame, e->output_matrix, m->channels, e->out_channels);
     }
     if (capture_file()) {
         pthread_mutex_lock(&g_capture_lock);
@@ -675,7 +718,7 @@ static WINAPI void source_get_state27(void *this, uint8_t *st) { source_get_stat
 static WINAPI HRESULT source_set_ratio(void *this, float r, uint32_t op) { (void)op; voice *v = vself(this); v->ratio = r < 1.0f / 1024 ? 1.0f / 1024 : r > v->max_ratio ? v->max_ratio : r; return S_OK; }
 static WINAPI void source_get_ratio(void *this, float *r) { *r = vself(this)->ratio; }
 static WINAPI HRESULT source_set_rate(void *this, uint32_t rate) { voice *v = vself(this); if (v->queue) return XAUDIO2_E_INVALID_CALL; v->rate = rate; v->fmt.rate = rate; return S_OK; }
-static WINAPI HRESULT master_channel_mask(void *this, DWORD *mask) { voice *v = vself(this); *mask = v->channels == 1 ? 0x4 : v->channels == 2 ? 0x3 : (1u << v->channels) - 1; return S_OK; }
+static WINAPI HRESULT master_channel_mask(void *this, DWORD *mask) { voice *v = vself(this); *mask = default_channel_mask(v->channels); return S_OK; }
 
 // ---- the engine ---------------------------------------------------------------------------------------------------------------
 static engine *eself(void *this) { return this; }
@@ -745,18 +788,6 @@ static WINAPI HRESULT engine_create_submix(void *this, voice **out, uint32_t cha
     *out = v;
     return S_OK;
 }
-static void configure_audio_spatial_experience(void) {
-#if VX_XROS
-    const char *immersive = getenv("VXRT_XRIZER_XROS_IMMERSIVE");
-    if (!immersive || strcmp(immersive, "1")) return;
-    // The VR game already pans with the listener; leave flat-window audio anchoring unchanged.
-    NSError *error = nil;
-    if (![[AVAudioSession sharedInstance] setIntendedSpatialExperience:AVAudioSessionSpatialExperienceBypassed
-                                                               options:nil error:&error])
-        vx_log("XAudio2: could not bypass system spatialization: %s", error.localizedDescription.UTF8String ?: "unknown error");
-#endif
-}
-
 static WINAPI HRESULT engine_create_master(void *this, voice **out, uint32_t channels, uint32_t rate, uint32_t flags, const WCHAR *device, const void *effects, uint32_t category) {
     (void)device; (void)category;
     engine *e = eself(this);
@@ -770,30 +801,44 @@ static WINAPI HRESULT engine_create_master(void *this, voice **out, uint32_t cha
     m->flags = flags;
     if (effects) voice_set_effects(m, effects);
     e->ring_frames = e->quantum * 6;
-#if VX_XROS
-    e->out_channels = channels == 6 ? 2 : channels;
-#else
-    e->out_channels = channels;
-#endif
-    e->written = e->read = 0;
-    e->ring = calloc((size_t)e->ring_frames * e->out_channels, sizeof(float));
     AudioComponentDescription d = { kAudioUnitType_Output, kAudioUnitSubType_DefaultOutput, kAudioUnitManufacturer_Apple, 0, 0 };
     AudioComponent comp = AudioComponentFindNext(NULL, &d);
+    AudioStreamBasicDescription hardware = {0};
+    UInt32 hardware_size = sizeof hardware;
+    OSStatus setup_status = comp ? AudioComponentInstanceNew(comp, &e->unit) : kAudio_ParamError;
+    if (setup_status == noErr)
+        setup_status = AudioUnitGetProperty(e->unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0,
+                                            &hardware, &hardware_size);
+    if (setup_status == noErr && (!hardware.mChannelsPerFrame || hardware.mChannelsPerFrame > MAX_CHANNELS))
+        setup_status = kAudio_ParamError;
+    e->out_channels = hardware.mChannelsPerFrame;
+    if (setup_status == noErr) setup_status = make_output_matrix(channels, e->out_channels, e->output_matrix);
+    e->written = e->read = 0;
+    e->ring = calloc((size_t)e->ring_frames * e->out_channels, sizeof(float));
+    if (!e->ring && setup_status == noErr) setup_status = kAudio_ParamError;
+    AudioChannelLayout device_layout = channel_layout(e->out_channels);
     AudioStreamBasicDescription asbd = { rate, kAudioFormatLinearPCM, kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, e->out_channels * 4, 1, e->out_channels * 4, e->out_channels, 32, 0 };
     AURenderCallbackStruct cb = { output_callback, e };
-    configure_audio_spatial_experience();
-    if (!comp || AudioComponentInstanceNew(comp, &e->unit) ||
-        AudioUnitSetProperty(e->unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &asbd, sizeof asbd) ||
-        AudioUnitSetProperty(e->unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb) ||
-        AudioUnitInitialize(e->unit) || AudioOutputUnitStart(e->unit)) {
-        vx_log("XAudio2: the output device did not start");
+    if (setup_status == noErr)
+        setup_status = AudioUnitSetProperty(e->unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &asbd, sizeof asbd);
+    if (setup_status == noErr && e->out_channels > 2)
+        setup_status = AudioUnitSetProperty(e->unit, kAudioUnitProperty_AudioChannelLayout,
+                                            kAudioUnitScope_Input, 0, &device_layout, sizeof device_layout);
+    if (setup_status == noErr)
+        setup_status = AudioUnitSetProperty(e->unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb);
+    if (setup_status == noErr) setup_status = AudioUnitInitialize(e->unit);
+    if (setup_status == noErr) setup_status = AudioOutputUnitStart(e->unit);
+    if (setup_status != noErr) {
+        vx_log("XAudio2: output setup failed (%d; master channels=%u, device channels=%u)",
+               (int)setup_status, channels, e->out_channels);
         stop_output(e);
         free(m->mix); free(m);
         return (HRESULT)0x88960002;                              // XAUDIO2_E_DEVICE_INVALIDATED
     }
     capture_begin(channels, rate);
     lock(e); m->next = e->voices; e->voices = m; e->master = m; unlock(e);
-    if (xa_trace()) vx_log("XAudio2: mastering voice %u ch %u Hz started", channels, rate);
+    if (xa_trace()) vx_log("XAudio2: mastering voice %u ch %u Hz started; Core Audio device %u ch, channel map ready",
+                           channels, rate, e->out_channels);
     if (!e->thread_running) {
         pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 1 << 20);
         e->thread_running = pthread_create(&e->thread, &a, engine_thread, e) == 0;
