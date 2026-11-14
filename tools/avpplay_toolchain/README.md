@@ -37,10 +37,27 @@ run by hand are not repeated.
 
 - Mods (`mods-fetch`, `mods`, `skse-capture`): the app is built from plain Skyrim VR. A pack made by hand with
   `tools/vxrt_build.py mods` is picked up by the `app` stage as before.
-- The icon and start picture AVP Play writes to `visionos/Assets.xcassets` are not used; the app keeps its own icon.
+- The icon AVP Play writes to `visionos/Assets.xcassets` is not used; the app keeps its own. (The start picture is:
+  `run.sh` copies `StartHero-skyrimvr.imageset/hero.png` into the app's resources as `bundle/StartHero.png`, and the
+  start window shows it behind the title. It is the player's own picture and never part of this repository.)
 - Saved games: AVP Play backs up `Documents/android-files` only. The game writes under
   `Documents/root/overlay_skyrimvr` (`targets.py` names it as `saves` for a later change in AVP Play).
 - Free Apple teams cannot sign the app (extended virtual addressing); `run.sh` says so.
+
+## Language
+
+The game has no language menu; Steam installs a language by replacing `Skyrim.ini` and adding one voice archive. Here one
+set of game files serves every language:
+
+- The app has "Game language" under its game options (English, Deutsch, Français, Italiano, Español, Polski, Русский, or
+  automatic). It overrides `sLanguage` and the voice archive in `sResourceArchiveList2` when the game starts
+  (`VXGameLanguage` in `VXRuntime/xros/app/Sources/VXSettings.swift`); the texts of these languages are in the game's data.
+- `KLEPTON_GAME_LANGUAGE` (AVP Play's game language: `device`, `en`, `de_DE`, ...) is what "automatic" means while
+  nothing else decides; `run.sh` passes it into the app's Info.plist (`VXGameLanguageDefault`).
+- The voices of a language other than English are `Data/Skyrim - Voices_<code>0.bsa` from that language's Steam depot
+  (German: depot 611676, 2.0 GB). The installer copies the file to `Documents/root/SkyrimVR/Data` (AVP Play: a recipe
+  file with a locale); the adapter has no part in it. One installed voice archive makes that language the automatic
+  choice; without the file a language's texts go with the English voices. An empty file counts as absent.
 
 ## Mods
 
