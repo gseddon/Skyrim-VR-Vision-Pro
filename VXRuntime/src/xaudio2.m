@@ -139,23 +139,41 @@ static volatile float g_xa_peak;
 
 // ---- output -----------------------------------------------------------------------------------------------------------
 volatile int vx_pause_audio __attribute__((weak));   // (see audio.m)
+typedef struct { DWORD mask; AudioChannelLayoutTag tag; } channel_layout_spec;
+// XAudio2 orders channels by ascending speaker-mask bit. Each WAVE tag here uses that same order.
+static const channel_layout_spec channel_layouts[MAX_CHANNELS + 1] = {
+    { 0, 0 },
+    { 0x4, kAudioChannelLayoutTag_Mono },
+    { 0x3, kAudioChannelLayoutTag_Stereo },
+    { 0xB, kAudioChannelLayoutTag_WAVE_2_1 },
+    { 0x33, kAudioChannelLayoutTag_WAVE_4_0_B },
+    { 0x607, kAudioChannelLayoutTag_WAVE_5_0_A },
+    { 0x60F, kAudioChannelLayoutTag_WAVE_5_1_A },
+    { 0x70F, kAudioChannelLayoutTag_WAVE_6_1 },
+    { 0x63F, kAudioChannelLayoutTag_WAVE_7_1 }
+};
 static DWORD default_channel_mask(uint32_t channels) {
-    static const DWORD masks[MAX_CHANNELS + 1] = {
-        0, 0x4, 0x3, 0xB, 0x33, 0x607, 0x60F, 0x70F, 0x63F
-    };
-    return channels <= MAX_CHANNELS ? masks[channels] : 0;
+    return channels <= MAX_CHANNELS ? channel_layouts[channels].mask : 0;
 }
-
 static AudioChannelLayout channel_layout(uint32_t channels) {
     AudioChannelLayout layout = {0};
-    static const AudioChannelLayoutTag tags[MAX_CHANNELS + 1] = {
-        0, kAudioChannelLayoutTag_Mono, kAudioChannelLayoutTag_Stereo, kAudioChannelLayoutTag_WAVE_2_1,
-        kAudioChannelLayoutTag_WAVE_4_0_A, kAudioChannelLayoutTag_WAVE_5_0_A,
-        kAudioChannelLayoutTag_AudioUnit_5_1, kAudioChannelLayoutTag_AudioUnit_6_1,
-        kAudioChannelLayoutTag_WAVE_7_1
-    };
-    if (channels <= MAX_CHANNELS) layout.mChannelLayoutTag = tags[channels];
+    if (channels <= MAX_CHANNELS) layout.mChannelLayoutTag = channel_layouts[channels].tag;
     return layout;
+}
+
+static void normalize_output_matrix(uint32_t in_channels, uint32_t out_channels,
+                                    float matrix[MAX_CHANNELS * MAX_CHANNELS]) {
+    float max_column_sum = 1.0f;
+    for (uint32_t o = 0; o < out_channels; ++o) {
+        float sum = 0;
+        for (uint32_t i = 0; i < in_channels; ++i) sum += fabsf(matrix[i * MAX_CHANNELS + o]);
+        if (sum > max_column_sum) max_column_sum = sum;
+    }
+    if (max_column_sum > 1.0f) {
+        float scale = 1.0f / max_column_sum;
+        for (uint32_t i = 0; i < in_channels; ++i)
+            for (uint32_t o = 0; o < out_channels; ++o) matrix[i * MAX_CHANNELS + o] *= scale;
+    }
 }
 
 static OSStatus make_output_matrix(uint32_t in_channels, uint32_t out_channels,
@@ -176,22 +194,59 @@ static OSStatus make_output_matrix(uint32_t in_channels, uint32_t out_channels,
                                              &bytes, converter_matrix);
     if (status != noErr) return status;
     if (bytes != in_channels * out_channels * sizeof(float)) return kAudio_ParamError;
-    float max_column_sum = 1.0f;
     for (uint32_t o = 0; o < out_channels; ++o) {
-        float sum = 0;
         for (uint32_t i = 0; i < in_channels; ++i) {
             float gain = converter_matrix[i * out_channels + o];
             matrix[i * MAX_CHANNELS + o] = gain;
-            sum += fabsf(gain);
         }
-        if (sum > max_column_sum) max_column_sum = sum;
     }
-    if (max_column_sum > 1.0f) {
-        float scale = 1.0f / max_column_sum;
-        for (uint32_t i = 0; i < in_channels; ++i)
-            for (uint32_t o = 0; o < out_channels; ++o) matrix[i * MAX_CHANNELS + o] *= scale;
-    }
+    normalize_output_matrix(in_channels, out_channels, matrix);
     return noErr;
+}
+
+static OSStatus make_stereo_fallback_matrix(uint32_t in_channels, float matrix[MAX_CHANNELS * MAX_CHANNELS]) {
+    if (!in_channels || in_channels > MAX_CHANNELS) return kAudio_ParamError;
+    memset(matrix, 0, MAX_CHANNELS * MAX_CHANNELS * sizeof(*matrix));
+    DWORD mask = channel_layouts[in_channels].mask;
+    uint32_t channel = 0;
+    for (uint32_t bit = 0; bit <= 10; ++bit) {
+        if (!(mask & (1u << bit))) continue;
+        float left = 0, right = 0;
+        switch (bit) {
+            case 0: left = 1.0f; break;                                  // front left
+            case 1: right = 1.0f; break;                                 // front right
+            case 2: left = right = in_channels == 1 ? 1.0f : 0.70710678f; break; // centre
+            case 3: break;                                               // LFE
+            case 4: case 9: left = 0.70710678f; break;                   // back/side left
+            case 5: case 10: right = 0.70710678f; break;                 // back/side right
+            case 8: left = right = 0.70710678f; break;                   // back centre
+            default: return kAudio_ParamError;
+        }
+        matrix[channel * MAX_CHANNELS] = left;
+        matrix[channel * MAX_CHANNELS + 1] = right;
+        ++channel;
+    }
+    if (channel != in_channels) return kAudio_ParamError;
+    normalize_output_matrix(in_channels, 2, matrix);
+    return noErr;
+}
+
+// Use Core Audio's map when available; keep a usable stereo route if the device or map is outside our supported range.
+static OSStatus prepare_output_matrix(uint32_t in_channels, uint32_t hardware_channels,
+                                      uint32_t *out_channels, float matrix[MAX_CHANNELS * MAX_CHANNELS],
+                                      int *fell_back) {
+    *fell_back = 0;
+    if (!hardware_channels || hardware_channels > MAX_CHANNELS) {
+        *out_channels = 2;
+        *fell_back = 1;
+        return make_stereo_fallback_matrix(in_channels, matrix);
+    }
+    *out_channels = hardware_channels;
+    OSStatus status = make_output_matrix(in_channels, hardware_channels, matrix);
+    if (status == noErr) return noErr;
+    *out_channels = 2;
+    *fell_back = 1;
+    return make_stereo_fallback_matrix(in_channels, matrix);
 }
 
 static inline void master_frame_to_device(float *out, const float *in, const float *matrix,
@@ -809,10 +864,17 @@ static WINAPI HRESULT engine_create_master(void *this, voice **out, uint32_t cha
     if (setup_status == noErr)
         setup_status = AudioUnitGetProperty(e->unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 0,
                                             &hardware, &hardware_size);
-    if (setup_status == noErr && (!hardware.mChannelsPerFrame || hardware.mChannelsPerFrame > MAX_CHANNELS))
-        setup_status = kAudio_ParamError;
-    e->out_channels = hardware.mChannelsPerFrame;
-    if (setup_status == noErr) setup_status = make_output_matrix(channels, e->out_channels, e->output_matrix);
+    int matrix_fallback = 0;
+    if (setup_status == noErr) {
+        setup_status = prepare_output_matrix(channels, hardware.mChannelsPerFrame, &e->out_channels,
+                                             e->output_matrix, &matrix_fallback);
+        if (matrix_fallback) {
+            static int fallback_logged;
+            if (!__sync_lock_test_and_set(&fallback_logged, 1))
+                vx_log("XAudio2: channel map unavailable for %u master / %u device channels; using stereo fallback",
+                       channels, hardware.mChannelsPerFrame);
+        }
+    }
     e->written = e->read = 0;
     e->ring = calloc((size_t)e->ring_frames * e->out_channels, sizeof(float));
     if (!e->ring && setup_status == noErr) setup_status = kAudio_ParamError;
