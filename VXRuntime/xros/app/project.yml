@@ -18,6 +18,7 @@ settings:
     VXRT_LIBDIR: "$(SRCROOT)/../../build/xros"
     VXRT_DEFAULT_LAUNCH: ""
     VXRT_START_WINDOW: "0"
+    VXRT_GAME_LANGUAGE: ""
     VXRT_DISPLAY_NAME: "Skyrim VR"
 targets:
   VXRuntimeHost:

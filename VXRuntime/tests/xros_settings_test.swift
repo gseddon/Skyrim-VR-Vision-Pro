@@ -121,6 +121,48 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         check(getenv("VXRT_RENDER_SCALE").map { String(cString: $0) } == "0.75" && String(cString: getenv("VXRT_GATE")) == "one", "applyEnvironment keeps launch env")
         check(r.kept == ["VXRT_GATE"], "kept list \(r.kept)")
 
+        // the game's language: nothing chosen and nothing installed leaves the game's files alone
+        let voices = { (set: Set<VXGameLanguage>) in { (l: VXGameLanguage) in set.contains(l) } }
+        check(VXGameLanguage.resolve(choice: .auto, preset: nil, deviceLanguages: ["de-DE"], hasVoices: voices([])) == nil, "language: nothing chosen")
+        check(VXGameLanguage.resolve(choice: .auto, preset: "", deviceLanguages: [], hasVoices: voices([.en])) == nil, "language: English voices are no choice")
+        // one installed voice pack is the choice; two are none, then the installer's preset counts; a picked language beats both
+        check(VXGameLanguage.resolve(choice: .auto, preset: "en", deviceLanguages: [], hasVoices: voices([.en, .de])) == .de, "language: the installed voices")
+        check(VXGameLanguage.resolve(choice: .auto, preset: "fr_FR", deviceLanguages: [], hasVoices: voices([.de, .fr])) == .fr, "language: preset among two packs")
+        check(VXGameLanguage.resolve(choice: .auto, preset: "de_DE", deviceLanguages: [], hasVoices: voices([])) == .de, "language: preset de_DE")
+        check(VXGameLanguage.resolve(choice: .auto, preset: "device", deviceLanguages: ["ja-JP", "pl-PL", "de-DE"], hasVoices: voices([])) == .pl, "language: the headset's first known one")
+        check(VXGameLanguage.resolve(choice: .auto, preset: "ko_KR", deviceLanguages: ["de-DE"], hasVoices: voices([])) == nil, "language: a preset the game has not")
+        check(VXGameLanguage.resolve(choice: .it, preset: "de_DE", deviceLanguages: [], hasVoices: voices([.de])) == .it, "language: picked")
+        // the overrides: the texts always, the voices only when their archive is there, swapped into the game's own list
+        let shipped = VXGameLanguage.shippedArchiveList
+        check(VXGameLanguage.iniSet(.de, hasVoices: false, archiveList: shipped).map { "\($0.key)=\($0.value)" } == ["General.sLanguage=GERMAN"], "language: texts only")
+        let de = VXGameLanguage.iniSet(.de, hasVoices: true, archiveList: nil)
+        check(de.count == 2 && de[1].key == "Archive.sResourceArchiveList2" && de[1].value == shipped.replacingOccurrences(of: "Voices_en0", with: "Voices_de0"), "language: German voices in the shipped list")
+        let own = VXGameLanguage.iniSet(.en, hasVoices: true, archiveList: "Skyrim - Voices_de0.bsa, Mine.bsa")
+        check(own.map(\.value) == ["ENGLISH", "Skyrim - Voices_en0.bsa, Mine.bsa"], "language: back to English in a German game folder")
+        check(VXGameLanguage.iniSet(.fr, hasVoices: true, archiveList: "Mine.bsa")[1].value == "Skyrim - Voices_fr0.bsa, Mine.bsa", "language: a list without a voice archive")
+        check(VXGameLanguage.archiveList(ofIni: "[General]\r\nsLanguage=ENGLISH\r\n[Archive]\r\nsResourceArchiveList=A.bsa\r\n sResourceArchiveList2 = B.bsa, C.bsa \r\n[Other]\r\nsResourceArchiveList2=no\r\n") == "B.bsa, C.bsa", "language: the list of an ini")
+        // the store: a game folder with German voices exports both keys; the launch's own VXRT_INI_SET entries stay first
+        let root = NSTemporaryDirectory() + "vxrt-lang-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: root + "/SkyrimVR/Data", withIntermediateDirectories: true)
+        try? "[Archive]\r\nsResourceArchiveList2=\(shipped)\r\n".write(toFile: root + "/SkyrimVR/Skyrim.ini", atomically: true, encoding: .isoLatin1)
+        let l0 = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_GAME_ROOT": root])
+        check(l0.gameLanguage == .auto && l0.effectiveGameLanguage == nil && map(l0)["VXRT_INI_SET"] == nil, "language: default exports nothing")
+        let l1 = VXSettings(defaults: fresh(), info: ["VXGameLanguageDefault": "de_DE"], environment: ["VXRT_GAME_ROOT": root])
+        check(l1.effectiveGameLanguage == .de && map(l1)["VXRT_INI_SET"] == "General.sLanguage=GERMAN", "language: preset, texts only")
+        check(l0.gameLanguageNote.hasPrefix("Nothing is chosen") && l1.gameLanguageNote.hasPrefix("Automatic: Deutsch texts with the English voices") && l1.gameLanguageNote.contains("Skyrim - Voices_de0.bsa"), "language: the note without voices")
+        FileManager.default.createFile(atPath: root + "/SkyrimVR/Data/Skyrim - Voices_de0.bsa", contents: Data())
+        check(VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_GAME_ROOT": root]).effectiveGameLanguage == nil, "language: an emptied voice archive is none")
+        FileManager.default.createFile(atPath: root + "/SkyrimVR/Data/Skyrim - Voices_de0.bsa", contents: Data([1]))
+        let ld = fresh()
+        let l2 = VXSettings(defaults: ld, info: [:], environment: ["VXRT_GAME_ROOT": root, "VXRT_INI_SET": "VR.x=1"])
+        check(l2.effectiveGameLanguage == .de && map(l2)["VXRT_INI_SET"] == "VR.x=1;General.sLanguage=GERMAN;Archive.sResourceArchiveList2=" + shipped.replacingOccurrences(of: "Voices_en0", with: "Voices_de0"), "language: installed voices")
+        check(l2.gameLanguageNote == "Automatic: Deutsch, texts and voices.", "language: the note with voices")
+        l2.gameLanguage = .en
+        let l3 = VXSettings(defaults: ld, info: [:], environment: ["VXRT_GAME_ROOT": root])
+        check(l3.gameLanguage == .en && map(l3)["VXRT_INI_SET"] == "General.sLanguage=ENGLISH", "language: a picked English persists (no English archive in this folder: the list stays)")
+        check(VXSettings(defaults: ld, info: [:], environment: ["VXRT_GAME_ROOT": root, "VXRT_GAME_LANGUAGE": "ru"]).gameLanguage == .ru, "language: environment wins")
+        try? FileManager.default.removeItem(atPath: root)
+
         // the launch gate
         check(VXLaunchGate.enabled(info: ["VXStartWindow": "1"], environment: [:], defaultLaunch: true), "gate on")
         check(!VXLaunchGate.enabled(info: ["VXStartWindow": "1"], environment: [:], defaultLaunch: false), "explicit -test/-game: no gate")
