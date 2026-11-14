@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import skyui_nojit
+(ROOT / 'build').mkdir(exist_ok=True)
 with tempfile.TemporaryDirectory(dir=ROOT / 'build') as t:
     t = Path(t)
     sk = t / 'skyui/Data/SKSE/Plugins/SkyUI-VR'; sk.mkdir(parents=True)
