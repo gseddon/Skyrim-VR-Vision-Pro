@@ -204,49 +204,19 @@ static OSStatus make_output_matrix(uint32_t in_channels, uint32_t out_channels,
     return noErr;
 }
 
-static OSStatus make_stereo_fallback_matrix(uint32_t in_channels, float matrix[MAX_CHANNELS * MAX_CHANNELS]) {
-    if (!in_channels || in_channels > MAX_CHANNELS) return kAudio_ParamError;
-    memset(matrix, 0, MAX_CHANNELS * MAX_CHANNELS * sizeof(*matrix));
-    DWORD mask = channel_layouts[in_channels].mask;
-    uint32_t channel = 0;
-    for (uint32_t bit = 0; bit <= 10; ++bit) {
-        if (!(mask & (1u << bit))) continue;
-        float left = 0, right = 0;
-        switch (bit) {
-            case 0: left = 1.0f; break;                                  // front left
-            case 1: right = 1.0f; break;                                 // front right
-            case 2: left = right = in_channels == 1 ? 1.0f : 0.70710678f; break; // centre
-            case 3: break;                                               // LFE
-            case 4: case 9: left = 0.70710678f; break;                   // back/side left
-            case 5: case 10: right = 0.70710678f; break;                 // back/side right
-            case 8: left = right = 0.70710678f; break;                   // back centre
-            default: return kAudio_ParamError;
-        }
-        matrix[channel * MAX_CHANNELS] = left;
-        matrix[channel * MAX_CHANNELS + 1] = right;
-        ++channel;
-    }
-    if (channel != in_channels) return kAudio_ParamError;
-    normalize_output_matrix(in_channels, 2, matrix);
-    return noErr;
-}
-
-// Use Core Audio's map when available; keep a usable stereo route if the device or map is outside our supported range.
+// Retry with Core Audio's stereo map when the device layout is unsupported.
 static OSStatus prepare_output_matrix(uint32_t in_channels, uint32_t hardware_channels,
                                       uint32_t *out_channels, float matrix[MAX_CHANNELS * MAX_CHANNELS],
                                       int *fell_back) {
     *fell_back = 0;
-    if (!hardware_channels || hardware_channels > MAX_CHANNELS) {
-        *out_channels = 2;
-        *fell_back = 1;
-        return make_stereo_fallback_matrix(in_channels, matrix);
+    if (hardware_channels && hardware_channels <= MAX_CHANNELS) {
+        *out_channels = hardware_channels;
+        OSStatus status = make_output_matrix(in_channels, hardware_channels, matrix);
+        if (status == noErr) return noErr;
     }
-    *out_channels = hardware_channels;
-    OSStatus status = make_output_matrix(in_channels, hardware_channels, matrix);
-    if (status == noErr) return noErr;
     *out_channels = 2;
     *fell_back = 1;
-    return make_stereo_fallback_matrix(in_channels, matrix);
+    return make_output_matrix(in_channels, 2, matrix);
 }
 
 static inline void master_frame_to_device(float *out, const float *in, const float *matrix,
@@ -871,7 +841,7 @@ static WINAPI HRESULT engine_create_master(void *this, voice **out, uint32_t cha
         if (matrix_fallback) {
             static int fallback_logged;
             if (!__sync_lock_test_and_set(&fallback_logged, 1))
-                vx_log("XAudio2: channel map unavailable for %u master / %u device channels; using stereo fallback",
+                vx_log("XAudio2: channel map unavailable for %u master / %u device channels; trying stereo output",
                        channels, hardware.mChannelsPerFrame);
         }
     }
