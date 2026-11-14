@@ -124,15 +124,20 @@ struct VXIniSetting: Identifiable {
 }
 
 // The game's language. Skyrim VR has no menu for it: it reads sLanguage and the list of its archives from Skyrim.ini, and Steam installs a
-// language by replacing that file. Here the two keys are overridden instead (VXRT_INI_SET, as the settings above), so one set of game files
-// serves every language. The texts of seven languages are part of the game's data; the voices of a language other than English are one file of
-// their own, "Skyrim - Voices_<code>0.bsa" (Steam's language depot; German seen 2026-11-14: that file and a Skyrim.ini that differs in exactly
-// these two keys). Without that file the language's texts go with the English voices.
+// language by replacing that file and adding the language's files. Here the keys are overridden instead (VXRT_INI_SET, as the settings above),
+// so one set of game files serves every language. What each of Steam's language depots holds (all nine seen 2026-11-14):
+//   de fr it es   "Skyrim - Voices_<code>0.bsa", and a Skyrim.ini that differs in sLanguage and in the voice archive of sResourceArchiveList2
+//   pl ru         the same, plus [Fonts] sFontConfigFile=Interface\FontConfig_<code>.txt (pl: also one strings file that differs from the game's)
+//   ja            its voices, plus three archives that carry the names of the game's own (Interface, Patch, Skyrim_VR - Main): its texts and fonts
+//   zh            those three archives only (traditional Chinese texts; the voices stay English)
+// The texts of en, de, fr, it, es, pl and ru are part of the game's data: without its voice archive such a language goes with the English
+// voices. ja and zh exist only with their pack. An installer puts a voice archive into the game's Data folder and the files that carry a
+// game file's name under <root>/lang/<code>/Data; `activate` puts those of the language in use into the game's overlay and takes them out again.
 enum VXGameLanguage: String, CaseIterable, Identifiable {
-    case auto, en, de, fr, it, es, pl, ru
+    case auto, en, de, fr, it, es, pl, ru, ja, zh
     var id: String { rawValue }
     /// The languages a player can pick (auto aside).
-    static let named: [VXGameLanguage] = [.en, .de, .fr, .it, .es, .pl, .ru]
+    static let named: [VXGameLanguage] = [.en, .de, .fr, .it, .es, .pl, .ru, .ja, .zh]
     /// sLanguage as the game's string files are named (Data/Strings/Skyrim_GERMAN.STRINGS).
     var skyrimName: String? {
         switch self {
@@ -144,6 +149,8 @@ enum VXGameLanguage: String, CaseIterable, Identifiable {
         case .es: return "SPANISH"
         case .pl: return "POLISH"
         case .ru: return "RUSSIAN"
+        case .ja: return "JAPANESE"
+        case .zh: return "CHINESE"
         }
     }
     /// The language's own name, for the picker.
@@ -157,41 +164,103 @@ enum VXGameLanguage: String, CaseIterable, Identifiable {
         case .es: return "Español"
         case .pl: return "Polski"
         case .ru: return "Русский"
+        case .ja: return "日本語"
+        case .zh: return "繁體中文"
         }
     }
-    /// The voice archive in the game's Data folder. Verified for English and German; the others follow the same pattern and are only
-    /// used when the file is really there.
-    var voiceArchive: String? { self == .auto ? nil : "Skyrim - Voices_\(rawValue)0.bsa" }
+    /// The voice archive in the game's Data folder; Chinese has none.
+    var voiceArchive: String? { self == .auto || self == .zh ? nil : "Skyrim - Voices_\(rawValue)0.bsa" }
+    /// The files of the language's depot that carry the name of one of the game's own files, relative to Data.
+    var replacedFiles: [String] {
+        switch self {
+        case .ja, .zh: return ["Skyrim - Interface.bsa", "Skyrim - Patch.bsa", "Skyrim_VR - Main.bsa"]
+        case .pl: return ["Strings/Dawnguard_Polish.DLSTRINGS"]
+        default: return []
+        }
+    }
+    /// Its texts are not in the game's own data: without the pack the language cannot be used.
+    var needsPack: Bool { self == .ja || self == .zh }
+    /// What its Skyrim.ini sets beside the language and the voices.
+    var extraIni: [(key: String, value: String)] {
+        switch self {
+        case .pl, .ru: return [("Fonts.sFontConfigFile", "Interface\\FontConfig_\(rawValue).txt")]
+        default: return []
+        }
+    }
     /// From what an installer presets ("device", "en", or a language with region like "de_DE", as AVP Play names a game's language) or a
     /// system language identifier ("de-DE"): the language, when it is one of the game's.
     static func from(code: String) -> VXGameLanguage? {
         let head = code.lowercased().split(whereSeparator: { $0 == "_" || $0 == "-" }).first.map(String.init) ?? ""
         return named.first { $0.rawValue == head }
     }
-    /// What the game is started with. A picked language is that language. Automatic: the one language other than English whose voices are
-    /// installed (installing them is the player's choice of language); else what the installer preset ("device": the first of the
-    /// headset's languages the game has); else nothing, and the game's own files decide (English, as shipped).
-    static func resolve(choice: VXGameLanguage, preset: String?, deviceLanguages: [String], hasVoices: (VXGameLanguage) -> Bool) -> VXGameLanguage? {
-        if choice != .auto { return choice }
-        let installed = named.filter { $0 != .en && hasVoices($0) }
-        if installed.count == 1 { return installed[0] }
+    /// What the game is started with. A picked language is that language. Automatic: the one language other than English whose pack is
+    /// installed (installing it is the player's choice of language); else what the installer preset ("device": the first of the
+    /// headset's languages the game has); else nothing, and the game's own files decide (English, as shipped). A language that exists
+    /// only with its pack (`needsPack`) and has none is no language to start in.
+    static func resolve(choice: VXGameLanguage, preset: String?, deviceLanguages: [String],
+                        installed: (VXGameLanguage) -> Bool, usable: (VXGameLanguage) -> Bool) -> VXGameLanguage? {
+        if choice != .auto { return usable(choice) ? choice : nil }
+        let packs = named.filter { $0 != .en && installed($0) && usable($0) }
+        if packs.count == 1 { return packs[0] }
         guard let preset, !preset.isEmpty else { return nil }
-        if preset == "device" { return deviceLanguages.lazy.compactMap(from(code:)).first }
-        return from(code: preset)
+        let wished = preset == "device" ? deviceLanguages.lazy.compactMap(from(code:)).first(where: usable) : from(code: preset)
+        return wished.flatMap { usable($0) ? $0 : nil }
     }
     /// The archive list the game ships (Skyrim.ini, [Archive] sResourceArchiveList2), for a game folder whose file cannot be read.
     static let shippedArchiveList = "Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa, Skyrim - Patch.bsa"
     /// The overrides for a language: its texts always; its voices only when their archive is installed, by naming it in the game's own
     /// archive list in place of whichever voice archive stands there (`archiveList`: the list from the game's Skyrim.ini, nil when unread).
     static func iniSet(_ language: VXGameLanguage, hasVoices: Bool, archiveList: String?) -> [(key: String, value: String)] {
-        guard let name = language.skyrimName, let archive = language.voiceArchive else { return [] }
-        var out = [("General.sLanguage", name)]
-        if hasVoices {
+        guard let name = language.skyrimName else { return [] }
+        var out = [("General.sLanguage", name)] + language.extraIni
+        if hasVoices, let archive = language.voiceArchive {
             let list = (archiveList?.isEmpty == false ? archiveList! : shippedArchiveList)
             let swapped = list.replacingOccurrences(of: "Skyrim - Voices_[A-Za-z]{2}0\\.bsa", with: archive, options: [.regularExpression, .caseInsensitive])
             out.append(("Archive.sResourceArchiveList2", swapped.contains(archive) ? swapped : archive + ", " + swapped))
         }
         return out
+    }
+    /// Where an installer puts the files of a language that carry a game file's name.
+    static func packFolder(_ language: VXGameLanguage, root: String) -> String { root + "/lang/" + language.rawValue + "/Data" }
+    /// Before the game starts: the replaced files of the language in use are put into the game's overlay (a hard link: no space, no
+    /// copying; a copy where linking fails), and those an earlier start put there for another language are taken out. What this placed
+    /// is remembered in <root>/lang/active.txt, so a file of the same name that something else put into the overlay (a mod's) is never
+    /// touched. A pack file an installer emptied (its way of taking a file back) is removed. Returns what it did, for the log.
+    @discardableResult
+    static func activate(_ language: VXGameLanguage?, root: String) -> [String] {
+        let fm = FileManager.default
+        let overlay = root + "/overlay_skyrimvr/Data", state = root + "/lang/active.txt"
+        func size(_ p: String) -> Int64 { ((try? fm.attributesOfItem(atPath: p))?[.size] as? NSNumber)?.int64Value ?? -1 }
+        func node(_ p: String) -> UInt64? { ((try? fm.attributesOfItem(atPath: p))?[.systemFileNumber] as? NSNumber)?.uint64Value }
+        var notes: [String] = []
+        for l in named { for f in l.replacedFiles where size(packFolder(l, root: root) + "/" + f) == 0 { try? fm.removeItem(atPath: packFolder(l, root: root) + "/" + f) } }
+        let before = Set(((try? String(contentsOfFile: state, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init))
+        var wanted: [String: String] = [:]
+        if let language, !language.replacedFiles.isEmpty {
+            let files = language.replacedFiles.map { ($0, packFolder(language, root: root) + "/" + $0) }
+            if files.allSatisfy({ size($0.1) > 0 }) { for (f, src) in files { wanted[f] = src } }
+        }
+        var now: [String] = []
+        for f in before.sorted() where wanted[f] == nil {
+            try? fm.removeItem(atPath: overlay + "/" + f)
+            notes.append("language: \(f) taken out of the overlay")
+        }
+        for (f, src) in wanted.sorted(by: { $0.key < $1.key }) {
+            let dst = overlay + "/" + f
+            if fm.fileExists(atPath: dst) {
+                if let a = node(src), a == node(dst) { now.append(f); continue }
+                guard before.contains(f) else { notes.append("language: \(f) not placed, the overlay has another file of that name"); continue }
+                try? fm.removeItem(atPath: dst)
+            }
+            try? fm.createDirectory(atPath: (dst as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            do { try fm.linkItem(atPath: src, toPath: dst) } catch {
+                do { try fm.copyItem(atPath: src, toPath: dst) } catch { notes.append("language: \(f) could not be placed (\(error.localizedDescription))"); continue }
+            }
+            now.append(f); notes.append("language: \(f) placed in the overlay")
+        }
+        if now.isEmpty { if !before.isEmpty { try? fm.removeItem(atPath: state) } }
+        else { try? fm.createDirectory(atPath: root + "/lang", withIntermediateDirectories: true); try? now.joined(separator: "\n").write(toFile: state, atomically: true, encoding: .utf8) }
+        return notes
     }
     /// [Archive] sResourceArchiveList2 of a Skyrim.ini's text.
     static func archiveList(ofIni text: String) -> String? {
@@ -399,33 +468,55 @@ final class VXSettings: ObservableObject {
         let root = environment["VXRT_GAME_ROOT"].flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory() + "/Documents/root"
         return root + "/SkyrimVR"
     }
+    /// The runtime's root on this device (main.m): the game's folder, its overlay and the language packs' folder are in it.
+    var gameRoot: String { (gameFolder as NSString).deletingLastPathComponent }
+    private static func size(_ path: String) -> Int64 {
+        ((try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber)?.int64Value ?? -1
+    }
     /// Whether a language's voice archive is installed. An empty file counts as absent: an installer that cannot delete in the app's
     /// data empties a file the player no longer wants.
     func hasVoices(_ language: VXGameLanguage) -> Bool {
-        guard let archive = language.voiceArchive,
-              let size = (try? FileManager.default.attributesOfItem(atPath: gameFolder + "/Data/" + archive))?[.size] as? NSNumber else { return false }
-        return size.int64Value > 0
+        language.voiceArchive.map { Self.size(gameFolder + "/Data/" + $0) > 0 } ?? false
     }
+    /// Whether the files of a language that replace the game's own are all here (true for a language that has none).
+    func hasReplacedFiles(_ language: VXGameLanguage) -> Bool {
+        language.replacedFiles.allSatisfy { Self.size(VXGameLanguage.packFolder(language, root: gameRoot) + "/" + $0) > 0 }
+    }
+    /// A language's pack is installed: its voices, or for a language without voices its files.
+    func hasPack(_ language: VXGameLanguage) -> Bool {
+        language.voiceArchive != nil ? hasVoices(language) : (!language.replacedFiles.isEmpty && hasReplacedFiles(language))
+    }
+    /// The game can be started in this language: its texts are in the game's data, or its pack brings them.
+    func canUse(_ language: VXGameLanguage) -> Bool { !language.needsPack || hasReplacedFiles(language) }
     /// The language the game starts in with the current choice; nil: the game's own files decide.
     var effectiveGameLanguage: VXGameLanguage? {
-        VXGameLanguage.resolve(choice: gameLanguage, preset: gameLanguagePreset, deviceLanguages: Locale.preferredLanguages, hasVoices: hasVoices)
+        VXGameLanguage.resolve(choice: gameLanguage, preset: gameLanguagePreset, deviceLanguages: Locale.preferredLanguages, installed: hasPack, usable: canUse)
     }
     func gameLanguageIniSet() -> [(key: String, value: String)] {
         guard let language = effectiveGameLanguage else { return [] }
         let list = (try? String(contentsOfFile: gameFolder + "/Skyrim.ini", encoding: .isoLatin1)).flatMap(VXGameLanguage.archiveList(ofIni:))
         return VXGameLanguage.iniSet(language, hasVoices: hasVoices(language), archiveList: list)
     }
-    /// The settings page's note under the picker: what the next start will be in, and whether that language's voices are installed.
+    /// The settings page's note under the picker: what the next start will be in, and whether that language's voices or pack are installed.
     var gameLanguageNote: String {
-        guard let language = effectiveGameLanguage else {
-            return "Nothing is chosen: the game's own files decide (English, as shipped). Texts exist for every language in this list. The voices of another language are that language's Steam depot file “Skyrim - Voices_<code>0.bsa” (German: “Skyrim - Voices_de0.bsa”) in the game's Data folder; with exactly one such file there, Automatic starts the game in that language."
+        let picked = gameLanguage
+        if picked != .auto, !canUse(picked) {
+            return "\(picked.ownName) exists only with its language pack, which is not installed: the game's own files decide (English, as shipped). The pack is the three archives of that language's Steam depot that carry the names of the game's own (\(picked.replacedFiles.joined(separator: ", "))), in lang/\(picked.rawValue)/Data beside the game's folder."
         }
-        let chosen = gameLanguage == .auto ? "Automatic: " : ""
+        guard let language = effectiveGameLanguage else {
+            return "Nothing is chosen: the game's own files decide (English, as shipped). The voices of another language are that language's Steam depot file “Skyrim - Voices_<code>0.bsa” (German: “Skyrim - Voices_de0.bsa”) in the game's Data folder; with exactly one such file there, Automatic starts the game in that language. \(VXGameLanguage.ja.ownName) and \(VXGameLanguage.zh.ownName) need a language pack of their own."
+        }
+        let chosen = picked == .auto ? "Automatic: " : ""
+        if language == .zh {
+            return chosen + "\(language.ownName) texts with the English voices (the game has no Chinese voices)."
+        }
         if language == .en || hasVoices(language) {
             return chosen + "\(language.ownName), texts and voices."
         }
         return chosen + "\(language.ownName) texts with the English voices: this language's voices are not installed. They are the language's Steam depot file “\(language.voiceArchive ?? "")” in the game's Data folder."
     }
+    /// A value as it may stand inside a JSON string of the host log (the font key's value has a backslash).
+    static func logText(_ s: String) -> String { s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") }
     static func num(_ v: Double, _ r: ClosedRange<Double>) -> String {
         let c = min(max(v, r.lowerBound), r.upperBound)
         return c == c.rounded() ? String(Int(c)) : String(format: "%.2f", c)
@@ -464,6 +555,7 @@ final class VXSettings: ObservableObject {
     @discardableResult
     func applyEnvironment() -> (set: [String], kept: [String]) {
         var set: [String] = [], kept: [String] = []
+        set += VXGameLanguage.activate(effectiveGameLanguage, root: gameRoot)      // the language's own files, before the game looks for them
         for (k, v) in exports() {
             // VXRT_INI_SET already carries the launch's own entries first (iniOverrides), so it is the one variable that is replaced.
             if getenv(k) != nil && k != "VXRT_INI_SET" { kept.append(k); continue }

@@ -122,16 +122,24 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         check(r.kept == ["VXRT_GATE"], "kept list \(r.kept)")
 
         // the game's language: nothing chosen and nothing installed leaves the game's files alone
-        let voices = { (set: Set<VXGameLanguage>) in { (l: VXGameLanguage) in set.contains(l) } }
-        check(VXGameLanguage.resolve(choice: .auto, preset: nil, deviceLanguages: ["de-DE"], hasVoices: voices([])) == nil, "language: nothing chosen")
-        check(VXGameLanguage.resolve(choice: .auto, preset: "", deviceLanguages: [], hasVoices: voices([.en])) == nil, "language: English voices are no choice")
-        // one installed voice pack is the choice; two are none, then the installer's preset counts; a picked language beats both
-        check(VXGameLanguage.resolve(choice: .auto, preset: "en", deviceLanguages: [], hasVoices: voices([.en, .de])) == .de, "language: the installed voices")
-        check(VXGameLanguage.resolve(choice: .auto, preset: "fr_FR", deviceLanguages: [], hasVoices: voices([.de, .fr])) == .fr, "language: preset among two packs")
-        check(VXGameLanguage.resolve(choice: .auto, preset: "de_DE", deviceLanguages: [], hasVoices: voices([])) == .de, "language: preset de_DE")
-        check(VXGameLanguage.resolve(choice: .auto, preset: "device", deviceLanguages: ["ja-JP", "pl-PL", "de-DE"], hasVoices: voices([])) == .pl, "language: the headset's first known one")
-        check(VXGameLanguage.resolve(choice: .auto, preset: "ko_KR", deviceLanguages: ["de-DE"], hasVoices: voices([])) == nil, "language: a preset the game has not")
-        check(VXGameLanguage.resolve(choice: .it, preset: "de_DE", deviceLanguages: [], hasVoices: voices([.de])) == .it, "language: picked")
+        let packs = { (set: Set<VXGameLanguage>) in { (l: VXGameLanguage) in set.contains(l) } }
+        let texts = { (l: VXGameLanguage) in !l.needsPack }       // no pack of ja/zh here: only the languages of the game's own data can be used
+        func res(_ c: VXGameLanguage, _ preset: String?, _ dev: [String], _ inst: Set<VXGameLanguage>, usable: ((VXGameLanguage) -> Bool)? = nil) -> VXGameLanguage? {
+            VXGameLanguage.resolve(choice: c, preset: preset, deviceLanguages: dev, installed: packs(inst), usable: usable ?? texts)
+        }
+        check(res(.auto, nil, ["de-DE"], []) == nil, "language: nothing chosen")
+        check(res(.auto, "", [], [.en]) == nil, "language: English voices are no choice")
+        // one installed pack is the choice; two are none, then the installer's preset counts; a picked language beats both
+        check(res(.auto, "en", [], [.en, .de]) == .de, "language: the installed voices")
+        check(res(.auto, "fr_FR", [], [.de, .fr]) == .fr, "language: preset among two packs")
+        check(res(.auto, "de_DE", [], []) == .de, "language: preset de_DE")
+        check(res(.auto, "device", ["ko-KR", "pl-PL", "de-DE"], []) == .pl, "language: the headset's first known one")
+        check(res(.auto, "ko_KR", ["de-DE"], []) == nil, "language: a preset the game has not")
+        check(res(.it, "de_DE", [], [.de]) == .it, "language: picked")
+        // Japanese and Chinese exist only with their pack: picked or preset without it is no language; the headset's list moves on
+        check(res(.ja, nil, [], []) == nil && res(.auto, "zh_TW", [], []) == nil, "language: ja/zh without their pack")
+        check(res(.auto, "device", ["ja-JP", "de-DE"], []) == .de, "language: the headset's first usable one")
+        check(res(.auto, nil, [], [.zh], usable: { _ in true }) == .zh && res(.ja, nil, [], [.ja], usable: { _ in true }) == .ja, "language: ja/zh with their pack")
         // the overrides: the texts always, the voices only when their archive is there, swapped into the game's own list
         let shipped = VXGameLanguage.shippedArchiveList
         check(VXGameLanguage.iniSet(.de, hasVoices: false, archiveList: shipped).map { "\($0.key)=\($0.value)" } == ["General.sLanguage=GERMAN"], "language: texts only")
@@ -141,6 +149,45 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         check(own.map(\.value) == ["ENGLISH", "Skyrim - Voices_en0.bsa, Mine.bsa"], "language: back to English in a German game folder")
         check(VXGameLanguage.iniSet(.fr, hasVoices: true, archiveList: "Mine.bsa")[1].value == "Skyrim - Voices_fr0.bsa, Mine.bsa", "language: a list without a voice archive")
         check(VXGameLanguage.archiveList(ofIni: "[General]\r\nsLanguage=ENGLISH\r\n[Archive]\r\nsResourceArchiveList=A.bsa\r\n sResourceArchiveList2 = B.bsa, C.bsa \r\n[Other]\r\nsResourceArchiveList2=no\r\n") == "B.bsa, C.bsa", "language: the list of an ini")
+        // what else a language's Skyrim.ini sets: the font table for Polish and Russian; Chinese has no voices of its own
+        check(VXGameLanguage.iniSet(.ru, hasVoices: false, archiveList: nil).map { "\($0.key)=\($0.value)" } == ["General.sLanguage=RUSSIAN", "Fonts.sFontConfigFile=Interface\\FontConfig_ru.txt"], "language: Russian fonts")
+        check(VXGameLanguage.iniSet(.pl, hasVoices: true, archiveList: nil).map(\.key) == ["General.sLanguage", "Fonts.sFontConfigFile", "Archive.sResourceArchiveList2"], "language: Polish keys")
+        check(VXGameLanguage.iniSet(.zh, hasVoices: true, archiveList: nil).map { "\($0.key)=\($0.value)" } == ["General.sLanguage=CHINESE"] && VXGameLanguage.zh.voiceArchive == nil, "language: Chinese keeps the English voices")
+        check(VXGameLanguage.iniSet(.ja, hasVoices: true, archiveList: nil)[1].value.hasPrefix("Skyrim - Voices_ja0.bsa, "), "language: Japanese voices")
+        // the font key's backslash (and a quote) inside the host log's JSON text
+        check(VXSettings.logText("Fonts.sFontConfigFile=Interface\\FontConfig_ru.txt \"x\"") == "Fonts.sFontConfigFile=Interface\\\\FontConfig_ru.txt \\\"x\\\"", "language: log text escaped")
+        // the files of a pack that carry a game file's name: placed in the overlay for the language in use, taken out for another,
+        // a mod's file of the same name left alone, an emptied pack file removed
+        let lr = NSTemporaryDirectory() + "vxrt-langpack-\(UUID().uuidString)"
+        let fm = FileManager.default
+        func put(_ path: String, _ text: String) { try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true); fm.createFile(atPath: path, contents: Data(text.utf8)) }
+        func read(_ path: String) -> String? { fm.contents(atPath: path).map { String(decoding: $0, as: UTF8.self) } }
+        for f in VXGameLanguage.ja.replacedFiles { put(lr + "/lang/ja/Data/" + f, "ja " + f); put(lr + "/lang/zh/Data/" + f, "zh " + f) }
+        put(lr + "/lang/pl/Data/Strings/Dawnguard_Polish.DLSTRINGS", "pl")
+        let ov = lr + "/overlay_skyrimvr/Data/"
+        check(VXGameLanguage.activate(.de, root: lr).isEmpty && !fm.fileExists(atPath: ov), "pack: a language without such files places nothing")
+        check(VXGameLanguage.activate(.ja, root: lr).count == 3 && read(ov + "Skyrim - Patch.bsa") == "ja Skyrim - Patch.bsa", "pack: Japanese placed")
+        check(VXGameLanguage.activate(.ja, root: lr).isEmpty, "pack: a second start changes nothing")
+        check(VXGameLanguage.activate(.zh, root: lr).count == 3 && read(ov + "Skyrim_VR - Main.bsa") == "zh Skyrim_VR - Main.bsa", "pack: Chinese replaces Japanese")
+        let toPl = VXGameLanguage.activate(.pl, root: lr)
+        check(toPl.count == 4 && !fm.fileExists(atPath: ov + "Skyrim - Interface.bsa") && read(ov + "Strings/Dawnguard_Polish.DLSTRINGS") == "pl", "pack: Polish takes the archives out and places its strings (\(toPl))")
+        check(VXGameLanguage.activate(nil, root: lr).count == 1 && !fm.fileExists(atPath: ov + "Strings/Dawnguard_Polish.DLSTRINGS") && !fm.fileExists(atPath: lr + "/lang/active.txt"), "pack: no language, nothing in the overlay")
+        put(ov + "Skyrim - Patch.bsa", "a mod's")
+        let withMod = VXGameLanguage.activate(.ja, root: lr)
+        check(read(ov + "Skyrim - Patch.bsa") == "a mod's" && withMod.contains { $0.contains("not placed") } && read(ov + "Skyrim - Interface.bsa") != nil, "pack: a mod's file of the same name stays")
+        _ = VXGameLanguage.activate(nil, root: lr)
+        check(read(ov + "Skyrim - Patch.bsa") == "a mod's", "pack: and is not taken out either")
+        put(lr + "/lang/ja/Data/Skyrim - Interface.bsa", "")
+        check(VXGameLanguage.activate(.ja, root: lr).isEmpty && !fm.fileExists(atPath: lr + "/lang/ja/Data/Skyrim - Interface.bsa") && !fm.fileExists(atPath: ov + "Skyrim - Interface.bsa"), "pack: an emptied pack file is removed and the incomplete pack not used")
+        // the store sees a pack: Chinese by its files, and the game's language follows
+        for f in VXGameLanguage.zh.replacedFiles { put(lr + "/SkyrimVR/Data/" + f, "base"); }
+        let z = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_GAME_ROOT": lr])
+        check(z.hasPack(.zh) && z.canUse(.zh) && !z.canUse(.ja) && z.effectiveGameLanguage == .zh && map(z)["VXRT_INI_SET"] == "General.sLanguage=CHINESE", "pack: the store finds the Chinese pack")
+        check(z.gameLanguageNote.hasPrefix("Automatic: 繁體中文 texts with the English voices"), "pack: the note for Chinese")
+        let j = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_GAME_ROOT": lr, "VXRT_GAME_LANGUAGE": "ja"])
+        check(j.effectiveGameLanguage == nil && j.gameLanguageNote.hasPrefix("日本語 exists only with its language pack") && j.gameLanguageNote.contains("lang/ja/Data"), "pack: the note for a picked language without its pack")
+        try? fm.removeItem(atPath: lr)
+
         // the store: a game folder with German voices exports both keys; the launch's own VXRT_INI_SET entries stay first
         let root = NSTemporaryDirectory() + "vxrt-lang-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: root + "/SkyrimVR/Data", withIntermediateDirectories: true)
