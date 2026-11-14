@@ -111,5 +111,45 @@ class Adapter(unittest.TestCase):
         self.assertEqual(r.returncode, 1); self.assertIn('!! no prepared SkyrimVR.exe', r.stderr)
 
 
+class Mods(unittest.TestCase):
+    """KLEPTON_GAME_MODS: the sets of visionos/mods.json and the list the stages get (vx_mods.py). No downloads."""
+    def setUp(self):
+        self.t = Path(tempfile.mkdtemp())
+
+    def vx(self, cmd, mods=None):
+        e = {k: v for k, v in os.environ.items() if not k.startswith(('KLEPTON_', 'VXRT_'))}
+        e['VXRT_PRIVATE_ROOT'] = str(self.t)
+        if mods is not None:
+            e['KLEPTON_GAME_MODS'] = mods
+        return subprocess.run([PY, str(TC / 'visionos' / 'vx_mods.py'), cmd], env=e, capture_output=True, text=True)
+
+    def test_sets(self):
+        self.assertEqual(self.vx('sets').stdout.split(), [])                     # unset: the plain game
+        self.assertEqual(self.vx('sets', '').stdout.split(), [])
+        self.assertEqual(self.vx('sets', 'core').stdout.split(), ['core'])
+        self.assertEqual(self.vx('sets', 'skyland, core').stdout.split(), ['core', 'skyland'])   # the file's order, blanks allowed
+        r = self.vx('sets', 'bogus')
+        self.assertNotEqual(r.returncode, 0); self.assertIn('!! mods: this toolchain has no mod set bogus', r.stdout + r.stderr)
+
+    def test_sets_name_entries_of_the_projects_list(self):
+        import json
+        desc = json.loads((TC / 'visionos' / 'mods.json').read_text())
+        ids = {m['id'] for m in json.loads((ROOT / 'mods' / 'default.json').read_text())['mods']}
+        named = [i for s in desc['sets'] for i in s['entries']]
+        self.assertTrue(named); self.assertEqual([i for i in named if i not in ids], [])
+        self.assertEqual({s['id'] for s in desc['sets']}, {'core', 'skyland'})
+        self.assertTrue(all(s.get('default') is False for s in desc['sets']))   # nothing is on unless the player chooses it
+
+    def test_list_enables_exactly_the_chosen_sets(self):
+        import json
+        desc = json.loads((TC / 'visionos' / 'mods.json').read_text())
+        core = set(next(s['entries'] for s in desc['sets'] if s['id'] == 'core'))
+        r = self.vx('list', 'core')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        path = Path(r.stdout.strip()); self.assertTrue(str(path).startswith(str(self.t)))
+        got = {m['id'] for m in json.loads(path.read_text())['mods'] if m.get('enabled')}
+        self.assertEqual(got, core)
+
+
 if __name__ == '__main__':
     unittest.main()
