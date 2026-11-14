@@ -616,7 +616,8 @@ static WINAPI HRESULT source_submit(void *this, const XA_BUFFER *b, const void *
 static WINAPI HRESULT source_flush(void *this) {
     voice *v = vself(this);
     lock(v->eng);
-    // The buffer playing (if started) stays; the rest are dropped with their end callbacks, as XAudio2 does.
+    // While the voice is started, the buffer playing stays; otherwise every buffer goes. Dropped buffers get their end
+    // callbacks, as XAudio2 does.
     queued *keep = (v->started && v->buffer_started) ? v->queue : NULL;
     queued *q = keep ? keep->next : v->queue;
     if (keep) keep->next = NULL;
