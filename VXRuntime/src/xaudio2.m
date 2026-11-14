@@ -8,7 +8,11 @@
 // xWMA voices (WMA v2, format tag 0x161: Skyrim's music and voice lines) are decoded packet by packet, as they
 // play, by the FFmpeg-derived decoder in wmadec/ (LGPL-2.1-or-later; see wmadec/SOURCE.md).
 #import <AudioToolbox/AudioToolbox.h>
+#include <math.h>
 #include "d3d_common.h"
+#if VX_XROS
+#import <AVFAudio/AVFAudio.h>
+#endif
 #include "wmadec/wmadec.h"
 #include "xaudio2_reverb.h"
 #pragma clang diagnostic push
@@ -137,6 +141,24 @@ static volatile float g_xa_peak;
 
 // ---- output -----------------------------------------------------------------------------------------------------------
 volatile int vx_pause_audio __attribute__((weak));   // (see audio.m)
+// XAudio2 5.1 order is FL, FR, FC, LFE, BL, BR. Fold the logical master
+// layout to the Vision Pro's stereo device at the ring boundary.
+static inline float clamp_output_sample(float x) {
+    if (!isfinite(x)) return 0.0f;
+    return x < -1.0f ? -1.0f : x > 1.0f ? 1.0f : x;
+}
+static inline void fold_5_1_to_stereo(float out[2], const float in[6]) {
+    const float minus_3_db = 0.7071067811865476f;
+    out[0] = clamp_output_sample(in[0] + minus_3_db * in[2] + 0.5f * in[3] + minus_3_db * in[4]);
+    out[1] = clamp_output_sample(in[1] + minus_3_db * in[2] + 0.5f * in[3] + minus_3_db * in[5]);
+}
+static inline void master_frame_to_device(float *out, const float *in, uint32_t master_channels, uint32_t device_channels) {
+    if (master_channels == 6 && device_channels == 2) {
+        fold_5_1_to_stereo(out, in);
+        return;
+    }
+    for (uint32_t c = 0; c < device_channels; c++) out[c] = in[c];
+}
 static OSStatus output_callback(void *ctx, AudioUnitRenderActionFlags *flags, const AudioTimeStamp *ts, UInt32 bus, UInt32 n, AudioBufferList *io) {
     (void)flags; (void)ts; (void)bus;
     engine *e = ctx;
@@ -344,13 +366,18 @@ static void one_pass(engine *e) {
             if (v->type == V_SUBMIX && v->stage == stage) { fx_process(v, v->mix, n); mix_into(v, v->mix, n); }
     voice *m = e->master;
     fx_process(m, m->mix, n);
+    float master_frame[MAX_CHANNELS];
     for (uint32_t i = 0; i < n; i++) {
-        float *dst = e->ring + (size_t)((e->written + i) % e->ring_frames) * m->channels;
-        for (uint32_t c = 0; c < m->channels; c++) dst[c] = m->mix[(size_t)i * m->channels + c] * m->volume * m->channel_volume[c];
+        for (uint32_t c = 0; c < m->channels; c++) master_frame[c] = m->mix[(size_t)i * m->channels + c] * m->volume * m->channel_volume[c];
+        float *dst = e->ring + (size_t)((e->written + i) % e->ring_frames) * e->out_channels;
+        master_frame_to_device(dst, master_frame, m->channels, e->out_channels);
     }
     if (capture_file()) {
         pthread_mutex_lock(&g_capture_lock);
-        for (uint32_t i = 0; i < n; i++) fwrite(e->ring + (size_t)((e->written + i) % e->ring_frames) * m->channels, sizeof(float), m->channels, g_capture);
+        for (uint32_t i = 0; i < n; i++) {
+            for (uint32_t c = 0; c < m->channels; c++) master_frame[c] = m->mix[(size_t)i * m->channels + c] * m->volume * m->channel_volume[c];
+            fwrite(master_frame, sizeof(float), m->channels, g_capture);
+        }
         fflush(g_capture);
         pthread_mutex_unlock(&g_capture_lock);
     }
@@ -718,6 +745,18 @@ static WINAPI HRESULT engine_create_submix(void *this, voice **out, uint32_t cha
     *out = v;
     return S_OK;
 }
+static void configure_audio_spatial_experience(void) {
+#if VX_XROS
+    const char *immersive = getenv("VXRT_XRIZER_XROS_IMMERSIVE");
+    if (!immersive || strcmp(immersive, "1")) return;
+    // The VR game already pans with the listener; leave flat-window audio anchoring unchanged.
+    NSError *error = nil;
+    if (![[AVAudioSession sharedInstance] setIntendedSpatialExperience:AVAudioSessionSpatialExperienceBypassed
+                                                               options:nil error:&error])
+        vx_log("XAudio2: could not bypass system spatialization: %s", error.localizedDescription.UTF8String ?: "unknown error");
+#endif
+}
+
 static WINAPI HRESULT engine_create_master(void *this, voice **out, uint32_t channels, uint32_t rate, uint32_t flags, const WCHAR *device, const void *effects, uint32_t category) {
     (void)device; (void)category;
     engine *e = eself(this);
@@ -731,13 +770,18 @@ static WINAPI HRESULT engine_create_master(void *this, voice **out, uint32_t cha
     m->flags = flags;
     if (effects) voice_set_effects(m, effects);
     e->ring_frames = e->quantum * 6;
+#if VX_XROS
+    e->out_channels = channels == 6 ? 2 : channels;
+#else
     e->out_channels = channels;
+#endif
     e->written = e->read = 0;
-    e->ring = calloc((size_t)e->ring_frames * channels, sizeof(float));
+    e->ring = calloc((size_t)e->ring_frames * e->out_channels, sizeof(float));
     AudioComponentDescription d = { kAudioUnitType_Output, kAudioUnitSubType_DefaultOutput, kAudioUnitManufacturer_Apple, 0, 0 };
     AudioComponent comp = AudioComponentFindNext(NULL, &d);
-    AudioStreamBasicDescription asbd = { rate, kAudioFormatLinearPCM, kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, channels * 4, 1, channels * 4, channels, 32, 0 };
+    AudioStreamBasicDescription asbd = { rate, kAudioFormatLinearPCM, kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, e->out_channels * 4, 1, e->out_channels * 4, e->out_channels, 32, 0 };
     AURenderCallbackStruct cb = { output_callback, e };
+    configure_audio_spatial_experience();
     if (!comp || AudioComponentInstanceNew(comp, &e->unit) ||
         AudioUnitSetProperty(e->unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &asbd, sizeof asbd) ||
         AudioUnitSetProperty(e->unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb) ||
