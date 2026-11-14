@@ -159,10 +159,23 @@ def retry_wait(headers):
     return 60.0
 
 
+def encode_url(url):
+    """Percent-encode the path and query of a URL once. CDN links from download_link.json carry spaces, brackets and unicode in the file name;
+    quote() with '%' kept safe leaves sequences that are already encoded (%20) alone, so nothing is encoded twice."""
+    u = urllib.parse.urlsplit(url)
+    host = u.netloc
+    if not host.isascii():
+        try: host = host.encode('idna').decode('ascii')
+        except UnicodeError: pass
+    safe = "/%:@!$&'()*+,;=~"
+    return urllib.parse.urlunsplit((u.scheme, host, urllib.parse.quote(u.path, safe=safe), urllib.parse.quote(u.query, safe=safe + '?'),
+                                    urllib.parse.quote(u.fragment, safe='/%')))
+
+
 def request(path_or_url, key=None, retries=MAX_RETRIES):
     """GET; returns (status, headers, urllib response) for a 2xx. Honours 429 (waits as the headers say, at most MAX_WAIT) and
     warns on stderr when the hourly allowance is nearly used. Other errors become NexusError/NeedInput with the key scrubbed."""
-    url = path_or_url if '://' in path_or_url else api_base().rstrip('/') + '/' + path_or_url.lstrip('/')
+    url = encode_url(path_or_url if '://' in path_or_url else api_base().rstrip('/') + '/' + path_or_url.lstrip('/'))
     for attempt in range(retries + 1):
         req = urllib.request.Request(url, headers=_headers(key))
         try:
@@ -235,6 +248,47 @@ def list_files(game, mod_id, key):
 
 def file_info(game, mod_id, file_id, key):
     return get_json('games/%s/mods/%s/files/%s.json' % (_ident(game, 'game'), _ident(mod_id, 'mod id', r'\d+'), _ident(file_id, 'file id', r'\d+')), key)
+
+
+def _id_cache_path():
+    return downloads_dir() / 'file-ids.json'
+
+
+def _id_cache():
+    try:
+        d = json.loads(_id_cache_path().read_text())
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def resolve_file_id(game, mod_id, md5, key):
+    """The Nexus file_id of the file with this md5 (a list that pins only mod_id + md5). Asks md5_search, then the mod's file list; the answer
+    is cached under the private downloads dir. Returns the id as a string, or None when Nexus does not know the md5 for that mod."""
+    game = _ident(game, 'game'); mod_id = _ident(mod_id, 'mod id', r'\d+'); md5 = _ident((md5 or '').lower(), 'md5', r'[0-9a-f]{32}')
+    ck = '%s/%s/%s' % (game, mod_id, md5)
+    cached = _id_cache().get(ck)
+    if cached and str(cached).isdigit():
+        return str(cached)
+    found = via = None
+    try:
+        hits = get_json('games/%s/mods/md5_search/%s.json' % (game, md5), key)
+    except NexusError:
+        hits = []                      # (404: Nexus does not know the md5; anything else: the file list below will say what is wrong)
+    for h in hits if isinstance(hits, list) else []:
+        fd = (h or {}).get('file_details') or {}
+        if str((h.get('mod') or {}).get('mod_id')) == mod_id and str(fd.get('md5', '')).lower() == md5 and str(fd.get('file_id', '')).isdigit():
+            found, via = str(fd['file_id']), 'md5_search'; break
+    if not found:
+        for f in list_files(game, mod_id, key):
+            if str(f.get('md5') or '').lower() == md5 and str(f.get('file_id', '')).isdigit():
+                found, via = str(f['file_id']), 'files.json'; break
+    if found:
+        c = _id_cache(); c[ck] = found
+        _id_cache_path().parent.mkdir(parents=True, exist_ok=True)
+        _id_cache_path().write_text(json.dumps(c, indent=1) + '\n')
+        print('nexus: md5 %s is %s mod %s file_id %s (found via %s; record it as "file_id": %s in the mods list)' % (md5, game, mod_id, found, via, found), file=sys.stderr)
+    return found
 
 
 def parse_nxm(url):
@@ -532,7 +586,7 @@ def manual_fetch(game, mod_id, file_id, name=None, md5=None, wait=0, progress=No
     raise Skipped('no matching archive appeared in %s for %s within %d s' % (folder, label, wait))
 
 
-def external_fetch(name, url, file_name, md5, wait=0, folders=None):
+def external_fetch(name, url, file_name, md5, wait=0, folders=None, page=None):
     """An archive that is not on Nexus (SKSE VR): no key and no account. Found by its md5 (any file name, so a browser's "name (1).7z" counts)
     in the private downloads folder or the browser's Downloads folder; if it is not there yet, say where to get it and watch the folder for up
     to `wait` seconds (the same watcher as manual_fetch). Returns the path in place (nothing is copied)."""
@@ -556,6 +610,8 @@ def external_fetch(name, url, file_name, md5, wait=0, folders=None):
         return r
     e('%s is not on Nexus. Download it in your browser (no account needed):' % name)
     e('  %s' % url)
+    if page:
+        e('  (if that link has moved, the current link is on %s)' % page)
     e('and keep the file name (%s). I check the md5 (%s) and pick it up from your Downloads folder (%s).' % (file_name, want, folders[-1]))
     if wait:
         e('Waiting up to %d s. Press Ctrl-C to skip.' % wait)
@@ -573,12 +629,28 @@ def external_fetch(name, url, file_name, md5, wait=0, folders=None):
 
 
 def fetch_file(game, mod_id, file_id, nxm=None, md5=None, wait=0, progress=None, name=None, manual=False, accept_name=False):
-    """One entry point: the API path when a key is set (and not --manual), else the Downloads-folder path."""
-    if manual or not file_id or not (os.environ.get('NEXUS_API_KEY') or '').strip():
-        if nxm:
+    """One entry point: the API path when a key is set (and not --manual), else the Downloads-folder path. With a key and only an md5 pinned
+    (file_id null) the file id is looked up from the md5. A free account (403 from download_link) falls back to the Downloads folder."""
+    have_key = bool((os.environ.get('NEXUS_API_KEY') or '').strip())
+    if have_key and not manual and not file_id and md5:
+        try:
+            file_id = resolve_file_id(game, mod_id, md5, api_key())
+        except NexusError as e:
+            print('nexus: could not look up the file id from the md5 (%s); using the Downloads folder instead.' % scrub(e, api_key()), file=sys.stderr)
+        else:
+            if not file_id:
+                print('nexus: Nexus does not list md5 %s under mod %s; using the Downloads folder instead.' % (md5, mod_id), file=sys.stderr)
+    if manual or not file_id or not have_key:
+        if nxm and not manual:
             print('nexus: an nxm link cannot be used without an API key (the download-link call needs the key); using the Downloads folder instead.', file=sys.stderr)
         return manual_fetch(game, mod_id, file_id, name=name, md5=md5, wait=wait, progress=progress, accept_name=accept_name)
-    return download(game, mod_id, file_id, nxm=nxm, md5=md5, wait=wait, progress=('%d of %d done' % progress) if isinstance(progress, tuple) else progress)
+    try:
+        return download(game, mod_id, file_id, nxm=nxm, md5=md5, wait=wait, progress=('%d of %d done' % progress) if isinstance(progress, tuple) else progress)
+    except NotPremium:
+        print("nexus: %s: this is a free account, so Nexus gives no direct download link (403) without the website's nxm key.\n"
+              'nexus: falling back to your browser: open %s, download the file there; I pick it up from your Downloads folder by its md5.'
+              % (name or 'mod %s' % mod_id, files_page(game, mod_id, file_id)), file=sys.stderr)
+        return manual_fetch(game, mod_id, file_id, name=name, md5=md5, wait=wait, progress=progress, accept_name=accept_name)
 
 
 # --- nxm hand-off: the queue, the handler app, the prompt ------------------------------------------------------------------

@@ -3,7 +3,7 @@
  "comment": [
   "Default mod set: the build installed on the headset on 2026-11-11. A manifest only: no mod files, no game files, no private paths.",
   "Mods come from Nexus Mods (your own account, personal use; see docs/SETUP_SKYRIM.md): python3 tools/vxrt_build.py mods-fetch, then mods.",
-  "nexus.md5 pins the exact archive. nexus.file_id is null until recorded (python3 -I tools/nexus.py files skyrimspecialedition MOD_ID lists the ids and md5s); the Downloads-folder fetch matches by md5 meanwhile.",
+  "nexus.md5 pins the exact archive. nexus.file_id is null until recorded (python3 -I tools/nexus.py files skyrimspecialedition MOD_ID lists the ids and md5s); with an API key the file id is looked up from the md5 at fetch time (printed so it can be recorded here); the Downloads-folder fetch matches by md5.",
   "Load order of the plugins in the built pack: Lit Road Signs.esp, Skyland Watercolor - Slow Green-Vanilla.esp, higgs_vr.esp, SkyUI_SE.esp, vrik.esp (by priority).",
   "SKSE VR core: the skse-core entry takes sksevr_1_4_15.dll from the official archive (not redistributable: your own download, checked by md5, from the Downloads folder). The stub module and the capture of the plugins' code patches are made for your plugin set by python3 tools/vxrt_build.py skse-capture (runs the game on the Mac for a few minutes) and are picked up by the next mods build; a skse_runtime section in your own copy of this list (core, hooks, capture: file paths) overrides them."
  ],
@@ -46,6 +46,7 @@
    "size_bytes": 166980,
    "external": {
     "url": "https://skse.silverlock.org/beta/sksevr_2_00_12.7z",
+    "page": "https://skse.silverlock.org/",
     "file_name": "sksevr_2_00_12.7z",
     "md5": "eafdd0f8163b3131435d54f01977b445",
     "extract": "Data/Scripts/*.pex",
@@ -62,6 +63,7 @@
    "size_bytes": 1504768,
    "external": {
     "url": "https://skse.silverlock.org/beta/sksevr_2_00_12.7z",
+    "page": "https://skse.silverlock.org/",
     "file_name": "sksevr_2_00_12.7z",
     "md5": "eafdd0f8163b3131435d54f01977b445",
     "extract": "sksevr_1_4_15.dll",

@@ -132,7 +132,7 @@ The mod files themselves aren't included. You download them from [Nexus Mods](ht
 python3 tools/vxrt_build.py mods-fetch
 ```
 
-For each mod, this shows a link to its Nexus download page. Open it and click the download button in your browser as usual. The tool watches your Downloads folder, recognises each file, checks that it's exactly the expected file, and unpacks it. Then build the mod pack and send it to the headset:
+For each mod, this shows a link to its Nexus download page. Open it and click the download button in your browser as usual. The tool watches your Downloads folder, recognises each file, checks that it's exactly the expected file, and unpacks it. With an optional `NEXUS_API_KEY` it looks up file ids from the pinned checksums and, on a Premium account, downloads directly; a free account just uses the browser flow. SKSE VR comes from [skse.silverlock.org](https://skse.silverlock.org/) the same way. Then build the mod pack and send it to the headset:
 
 ```sh
 python3 tools/vxrt_build.py mods --deploy
