@@ -141,6 +141,11 @@ final class VXSettings: ObservableObject {
     static let turnSpeedKey = "vxrt.turnSpeed"
     static let moveKey = "vxrt.move"
     static let sharpenKey = "vxrt.sharpen"
+    static let renderQualityKey = "vxrt.renderQuality"
+    static let plainResampleKey = "vxrt.plainResample"
+    /// The display qualities offered (VXDisplay.requestedQuality; 1.0 is the highest and the default). The picture is drawn into the
+    /// display at this share of its finest resolution, on every display frame, whatever the game's own rate.
+    static let displayQualities: [Double] = [1.0, 0.8, 0.65]
     static let foveationKey = "vxrt.foveation"
     static let baseResolutionKey = "vxrt.baseResolution"
     /// The base resolutions offered: 0 is the standard (the display's own picture without foveation, 2048 with it), the others the width
@@ -175,6 +180,23 @@ final class VXSettings: ObservableObject {
             if let v = sharpen { defaults.set(v, forKey: Self.sharpenKey) } else { defaults.removeObject(forKey: Self.sharpenKey) }
         }
     }
+    // The compositor's render quality (VXRT_RENDER_QUALITY, 0...1: how finely the display's picture is rasterized); nil = nothing chosen:
+    // the highest. It counts with the foveated display only (VXDisplay.requestedQuality): without foveation CompositorServices refuses
+    // a render-quality ceiling, and the system's own quality stays. Next launch.
+    @Published var renderQuality: Double? {
+        didSet {
+            guard !suppress else { return }
+            if let v = renderQuality { defaults.set(v, forKey: Self.renderQualityKey) } else { defaults.removeObject(forKey: Self.renderQualityKey) }
+        }
+    }
+    /// The offered display quality nearest to the stored or given one (nil: the highest). Choosing the highest stores nothing.
+    var displayQuality: Double {
+        get { let q = renderQuality ?? 1.0; return Self.displayQualities.min { abs($0 - q) < abs($1 - q) } ?? 1.0 }
+        set { renderQuality = newValue >= 0.999 ? nil : newValue }
+    }
+    // How the finished picture is resampled into the display (src/native_vr_present.m, VXRT_REPROJ_FILTER): false, the default, the
+    // 5-tap Catmull-Rom filter that keeps repeated frames equally sharp; true the plain bilinear one, a fifth of the samples. Next launch.
+    @Published var plainResample: Bool { didSet { if !suppress { defaults.set(plainResample, forKey: Self.plainResampleKey) } } }
     // Whether the display's picture is foveated: sharp where the eye looks, coarser at the edge, which is what lets the system give the
     // app its high-resolution picture at all (CompositorServices accepts a higher render quality only with foveation). Next launch.
     @Published var foveation: Bool { didSet { if !suppress { defaults.set(foveation, forKey: Self.foveationKey) } } }
@@ -298,9 +320,14 @@ final class VXSettings: ObservableObject {
         if let v = defaults.object(forKey: Self.baseResolutionKey) as? Int { base = v }
         if let v = environment["VXRT_BASE_RESOLUTION"].flatMap(Int.init) { base = v }
         baseResolution = Self.baseResolutions.contains(base) ? base : 0
+        // The plain (bilinear) resample of the finished picture instead of the 5-tap one: env VXRT_REPROJ_FILTER, then the saved choice.
+        var plain = defaults.bool(forKey: Self.plainResampleKey)
+        if let e = environment["VXRT_REPROJ_FILTER"] { plain = e == "bilinear" }
+        plainResample = plain
 
         predictMs = environment["VXRT_PREDICT_MS"].flatMap(Double.init) ?? (defaults.object(forKey: Self.predictKey) as? Double)
         sharpen = (environment["VXRT_SHARPEN"].flatMap(Double.init) ?? (defaults.object(forKey: Self.sharpenKey) as? Double)).map { min(max($0, 0), 1) }
+        renderQuality = (environment["VXRT_RENDER_QUALITY"].flatMap(Double.init) ?? (defaults.object(forKey: Self.renderQualityKey) as? Double)).map { min(max($0, 0), 1) }
         stageEyeHeight = environment["VXRT_STAGE_EYE_HEIGHT"].flatMap(Double.init) ?? (defaults.object(forKey: Self.eyeHeightKey) as? Double)
         // Gameplay: env VXRT_TURN / VXRT_SNAP_ANGLE / VXRT_TURN_SPEED / VXRT_MOVE, then the saved choice, then the Info.plist default
         // (VXTurnDefault, VXMoveDefault), then .game.
@@ -352,6 +379,8 @@ final class VXSettings: ObservableObject {
         ]
         if let p = predictMs { out.append(("VXRT_PREDICT_MS", String(format: "%.0f", min(max(p, Self.predictRange.lowerBound), Self.predictRange.upperBound)))) }
         if let v = sharpen, v > 0 { out.append(("VXRT_SHARPEN", String(format: "%.2f", min(max(v, 0), 1)))) }
+        if let v = renderQuality { out.append(("VXRT_RENDER_QUALITY", String(format: "%.2f", min(max(v, 0), 1)))) }
+        if plainResample { out.append(("VXRT_REPROJ_FILTER", "bilinear")) }
         if let h = stageEyeHeight { out.append(("VXRT_STAGE_EYE_HEIGHT", String(format: "%.2f", min(max(h, Self.eyeHeightRange.lowerBound), Self.eyeHeightRange.upperBound)))) }
         let ini = iniOverrides()
         if !ini.isEmpty { out.append(("VXRT_INI_SET", ini.joined(separator: ";"))) }

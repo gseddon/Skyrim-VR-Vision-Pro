@@ -211,6 +211,17 @@ struct VXSettingsPage: View {
                             note("The width in pixels of the picture each eye is drawn for; Resolution above is a share of it, and MetalFX enlarges to it. Standard is the display's own picture, or \(VXSettings.baseResolutionStandard) with the high-resolution display. Higher is sharper and costs graphics time: the game draws about as many more pixels as the number grows, squared. Next launch.")
                             Toggle("High-resolution display", isOn: $settings.foveation)
                             note("On, the finished picture is handed to the headset foveated: at the display's full sharpness where you look, coarser towards the edge. Off, the default, the headset takes a plain picture at the system's own quality, as before. This is how the picture reaches the display, not what the game draws. Turn it off again if the picture looks warped or the game does not start. Next launch.")
+                            Picker("Display quality", selection: Binding(get: { settings.displayQuality }, set: { settings.displayQuality = $0 })) {
+                                Text("High").tag(1.0)
+                                Text("Medium").tag(0.8)
+                                Text("Low").tag(0.65)
+                            }.pickerStyle(.segmented).disabled(!settings.foveation)
+                            note("Display quality: how finely the finished picture is drawn into the display. That happens on every display frame, whatever the game's own rate, and costs graphics time. Lower leaves more for the game and is a little softer. It counts with the high-resolution display only; without it the system's own quality is used. Next launch.")
+                            Picker("Picture filter", selection: $settings.plainResample) {
+                                Text("Sharp").tag(false)
+                                Text("Plain").tag(true)
+                            }.pickerStyle(.segmented)
+                            note("Picture filter: “Sharp”, the default, keeps fine detail steady while you move your head; “Plain” takes a fifth of the samples and saves graphics time, at the price of a slight shimmer on fine detail. Next launch.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                     GroupBox("Latency") {
