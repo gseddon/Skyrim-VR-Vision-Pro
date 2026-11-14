@@ -617,8 +617,10 @@ static WINAPI HRESULT source_flush(void *this) {
     voice *v = vself(this);
     lock(v->eng);
     // The buffer playing (if started) stays; the rest are dropped with their end callbacks, as XAudio2 does.
-    queued *keep = v->buffer_started ? v->queue : NULL, *q = keep ? keep->next : v->queue;
-    if (keep) keep->next = NULL; else v->queue = NULL;
+    queued *keep = (v->started && v->buffer_started) ? v->queue : NULL;
+    queued *q = keep ? keep->next : v->queue;
+    if (keep) keep->next = NULL;
+    else { v->queue = NULL; v->buffer_started = 0; v->pos = 0; v->wma_continue = 0; }
     if (q) v->wma_continue = 0;                                 // (the stream's next packets are gone)
     while (q) {
         queued *n = q->next;
@@ -627,7 +629,6 @@ static WINAPI HRESULT source_flush(void *this) {
         v->queued_count--;
         q = n;
     }
-    if (!keep) v->queue = NULL;
     unlock(v->eng);
     return S_OK;
 }
