@@ -337,16 +337,28 @@ enum VXLifecycle {
 
 struct VXLayerConfiguration: CompositorLayerConfiguration {
     func makeConfiguration(capabilities: LayerRenderer.Capabilities, configuration: inout LayerRenderer.Configuration) {
-        // One texture per eye (the warp writes each eye's whole texture), no foveation for now (the warp would have to
-        // draw through the rasterization rate map: VISIONOS_PORT.md), depth for the compositor's late reprojection.
-        let layouts = capabilities.supportedLayouts(options: [])
+        // One texture per eye (each eye's whole texture is written in a pass of its own), depth for the compositor's late reprojection.
+        // Foveation (Settings > Picture > High-resolution display, VXRT_FOVEATION; off unless chosen): the display's picture is rasterized
+        // through a rate map, dense where the eye looks, and only then does the system accept a higher render quality, which is what
+        // makes the display's picture sharp. It needs one texture an eye (the presenter draws each eye through that eye's map:
+        // vx_xros_native_set_eye_raster, VXOverlay.swift), so it is only asked for where the dedicated layout exists with it. The older
+        // warp (vx_xros_vr_draw_eye), the one-view inspection layout and the controller markers do not draw through a map.
+        let foveatedLayouts = capabilities.supportedLayouts(options: [.foveationEnabled])
+        let foveate = VXSettings.shared.foveation && capabilities.supportsFoveation && foveatedLayouts.contains(.dedicated)
+        let layouts = foveate ? foveatedLayouts : capabilities.supportedLayouts(options: [])
         configuration.layout = layouts.contains(.dedicated) ? .dedicated : (layouts.first ?? .dedicated)
-        configuration.isFoveationEnabled = false
-        // VXRT_RENDER_QUALITY=0..1 (unset: the system default, as before): the drawable's resolution (visionOS 26 CompositorServices render quality; it sets the
-        // size of the textures the compositor gives us, so the game's size, VXRT_RENDER_SCALE of it, moves too). Logged: default, max and the value used.
-        if #available(visionOS 26.0, *), let e = ProcessInfo.processInfo.environment["VXRT_RENDER_QUALITY"], let q = Float(e), q >= 0, q <= 1 {
+        configuration.isFoveationEnabled = foveate
+        VXDisplay.foveated = foveate
+        VXDisplay.qualityCeiling = nil
+        // The render-quality ceiling ONLY together with foveation: without it Compositor Services refuses the value and the whole layer
+        // fails, which ends the app at start (seen on a Vision Pro M5, visionOS 27, with the old "Display quality" setting at 1.0).
+        if #available(visionOS 26.0, *), foveate {
+            let q = VXDisplay.requestedQuality
             configuration.maxRenderQuality = .init(q)
-            vxrt_jlog("render_quality_config", "\"default\":\(capabilities.defaultRenderQuality),\"max\":\(q)")
+            VXDisplay.qualityCeiling = q
+        }
+        if #available(visionOS 26.0, *) {
+            vxrt_jlog("display_config", "\"foveation\":\(foveate),\"wanted\":\(VXSettings.shared.foveation),\"supported\":\(capabilities.supportsFoveation),\"dedicated_with_foveation\":\(foveatedLayouts.contains(.dedicated)),\"quality_default\":\"\(capabilities.defaultRenderQuality)\",\"quality_max\":\(VXDisplay.qualityCeiling.map { String($0) } ?? "null")")
         }
         let colors = capabilities.supportedColorFormats(options: [])
         if colors.contains(.bgra8Unorm_srgb) { configuration.colorFormat = .bgra8Unorm_srgb }

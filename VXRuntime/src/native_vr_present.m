@@ -253,6 +253,13 @@ VX_CAS_MSL
 " if (p.probe.x>.5) { float3 pc=probe(t,p.dst,uv,p.maskins,p.maskrad); if (p.probe.x>1.5) { bool ink=any(abs(pc-float3(.05,.05,.07))>.02); return ink?float4(pc,1):game; } return float4(pc,1); }\n"
 " return game; }\n";
 
+static id<MTLRasterizationRateMap> g_eye_rate_map[2];
+static MTLViewport g_eye_viewport[2];
+void vx_xros_native_set_eye_raster(int eye, void *rate_map, double x, double y, double width, double height) {
+    if (eye < 0 || eye > 1) return;
+    g_eye_rate_map[eye] = (__bridge id<MTLRasterizationRateMap>)rate_map;
+    g_eye_viewport[eye] = (MTLViewport){x, y, width, height, 0, 1};
+}
 int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const float tan[4], void *outp, void *depthp) {
     if (!g_native_held) { GAP(GAP_NOT_HELD); return 0; }
     if (!g_native_frame.pose.tracking_valid) { GAP(GAP_UNTRACKED); return 0; }
@@ -344,8 +351,13 @@ int vx_xros_native_draw_eye(void *cbp, int eye, const float view[16], const floa
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     pass.depthAttachment.texture = depth; pass.depthAttachment.loadAction = MTLLoadActionClear;
     pass.depthAttachment.clearDepth = 0; pass.depthAttachment.storeAction = MTLStoreActionStore;
+    /* Foveation (vx_xros_native_set_eye_raster): the pass rasterizes through the drawable's rate map into the smaller physical texture, in the
+     * viewport the drawable names for this eye (the map's screen size). */
+    id<MTLRasterizationRateMap> rate_map = g_eye_rate_map[eye];
+    if (rate_map) pass.rasterizationRateMap = rate_map;
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:pass];
     if (!enc) { GAP(GAP_ENCODER); return 0; }
+    if (rate_map && g_eye_viewport[eye].width > 0 && g_eye_viewport[eye].height > 0) [enc setViewport:g_eye_viewport[eye]];
     /* DEPTH WRITES. visionOS reprojects the submitted frame with its depth buffer: a colour image over a depth of 0 (reverse-Z: infinitely
      * far everywhere) is composited as "nothing here at any finite distance" and is NOT SHOWN. Klepton measured it on the device
      * (KleptonCompositor.swift, overlay depth: "a fullscreen quad at reverse-Z 0 with writes off is invisible; the same quad at 0.05 (2 m)

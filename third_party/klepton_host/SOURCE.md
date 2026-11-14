@@ -30,6 +30,23 @@ Files read in the fork, `visionos/Sources/` (SHA-256 of the fork's copies): `Kle
 Nothing is copied verbatim beyond the two pinned files above; the other items are reimplementations of the same behavior
 with Klepton's file and symbol named as the reference.
 
+## Foveated display and base resolution (2026-11-13)
+
+Read in the fork `https://github.com/myMartek/Klepton` at tag `toolchain-890`: `visionos/Sources/KleptonCompositor.swift`
+(`KleptonStageConfiguration.makeConfiguration`, `applyRenderQuality`, `encodeViews`) and `KleptonEyeMax.swift`. Nothing copied; the
+MIT header and the reference lines are in `VXOverlay.swift`.
+
+| Piece | Klepton origin | Local form |
+| --- | --- | --- |
+| A foveated drawable with the render-quality ceiling, set only together with foveation; the running quality only where a ceiling was configured; a pass into the drawable sets the eye's rate map and viewport | `KleptonCompositor.swift` `KleptonStageConfiguration.makeConfiguration`, `applyRenderQuality`, `encodeViews` (`pass.rasterizationRateMap`) | `VXApp.swift` `VXLayerConfiguration`, `VXOverlay.swift` `VXDisplay`, `src/native_vr_present.m` `vx_xros_native_set_eye_raster`; one texture an eye (dedicated layout) with one map a view, no vertex amplification needed; setting `vxrt.foveation` (`VXRT_FOVEATION`, Info.plist `VXFoveationDefault`), off unless chosen (Klepton's is on) |
+| A base resolution for the game's picture that does not follow the drawable ("Max resolution per eye", `KleptonEyeMax.swift`) | idea only | `VXSettings.baseSize`, `vxrt.baseResolution` (standard, 2048 to 4096; `VXRT_BASE_RESOLUTION`, Info.plist `VXBaseResolutionDefault`): the width offered to `vx_xros_fixture_offer`, height from the eye's field of view |
+| Head-fixed pictures over the eye image drawn as quads in a pass of their own, through the rate map when there is one | none (ours) | `VXOverlay.swift` `VXOverlayQuad`, used by the loading card (`VXLoading.swift`), which was a blit before |
+
+The "Display quality" slider (`vxrt.renderQuality`, exported as `VXRT_RENDER_QUALITY`) is gone from the settings: without foveation
+Compositor Services refuses a render-quality ceiling and the layer fails, which ended the app at start on a Vision Pro M5 (two
+launches, 2026-11-13, the log ends at `render_quality_config`). A launch's `VXRT_RENDER_QUALITY` still names the quality asked for with
+foveation (1.0 when there is none); without foveation no ceiling is set, and the slider's stored value is not read.
+
 ## Not adopted, and why
 
 * **`KleptonCompositor.swift` (6739 lines) and `KleptonStageConfiguration`.** The compositor is bound to Klepton's own runtime:
@@ -38,8 +55,9 @@ with Klepton's file and symbol named as the reference.
   submit (3dca360) and the fresh/repeat/stale counters, which Klepton does not have. The structure (query frame, update,
   predict timing, wait for the optimal input time, drawables, device anchor, submit; paused/invalidated handling) is the
   same as ours. `KleptonStageConfiguration`'s foveation (amplified single pass drawing through the rasterization rate map,
-  `maxRenderQuality`) needs a composite that honors the rate map; ours does not, so foveation stays off. Its layered layout is
-  not used for the same reason (our draw is per-eye, dedicated). Colour `bgra8Unorm_srgb` and depth `depth32Float` are already
+  `maxRenderQuality`) needs a composite that honors the rate map; ours did not, so foveation stayed off (since 2026-11-13 it is a
+  setting, with a pass per eye through that eye's map: "Foveated display and base resolution" above). Its layered layout is
+  not used (our draw is per-eye, dedicated). Colour `bgra8Unorm_srgb` and depth `depth32Float` are already
   ours.
 * **Mixed immersion with a black backdrop** (`Immersive.mixed`, `mixedBlack`): a 100 Hz versus 120 Hz decision made on Klepton's
   measurements; not measured here, the space stays `.full`.

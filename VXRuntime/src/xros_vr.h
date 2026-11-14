@@ -47,6 +47,10 @@ int vx_xros_native_begin(const float origin_from_head[16], const float head_from
 int vx_xros_native_draw_eye(void *cb, int eye, const float view_from_origin[16],
                             const float tan[4], void *out, void *out_depth);
 void vx_xros_native_end(void *cb);
+// A foveated drawable: the rasterization rate map (id<MTLRasterizationRateMap>, NULL: none) and the viewport of the eye's texture, for the
+// next vx_xros_native_draw_eye of that eye. With a map the pass rasterizes through it (a pass that ignores the map of a foveated drawable
+// fills the physical texture uniformly and the system's unwarp then distorts the picture); without one nothing changes.
+void vx_xros_native_set_eye_raster(int eye, void *rate_map, double x, double y, double width, double height);
 int vx_xros_native_enabled(void);
 int vx_xros_native_set_render_size(uint32_t width, uint32_t height);
 

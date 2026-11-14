@@ -1,7 +1,7 @@
 // The loading screen, shown in the immersive space until the first game pair has been presented (never again after that):
 // a dark background, "Loading Skyrim VR..." and a progress bar, head-locked at about 2 m. The picture is a small bitmap drawn once
-// per progress step with CoreGraphics/CoreText into a shared buffer and copied into each eye's drawable by a blit (no pipeline,
-// no per-frame CPU drawing). The bar is the runtime's own milestones (vx_xros_load_stage: host up, game session begun, first pair
+// per progress step with CoreGraphics/CoreText into a texture and drawn over each eye's drawable as a quad (VXOverlay.swift: no
+// per-frame CPU drawing; a copy of pixels would land warped in a foveated drawable). The bar is the runtime's own milestones (vx_xros_load_stage: host up, game session begun, first pair
 // submitted, first pair shown), eased so it never jumps or goes backwards.
 import CoreGraphics
 import CoreText
@@ -16,7 +16,8 @@ final class VXLoadingCard {
     // The card is 1.4 m wide and 0.37 m high at 2 m (device run B: 0.9 m came out small, about a sixth of the eye image).
     static let widthMeters: Float = 1.4, heightMeters: Float = 0.37, distanceMeters: Float = 2.0
 
-    private var buffer: MTLBuffer?
+    private var texture: MTLTexture?
+    private let quad = VXOverlayQuad()
     private var cardWidth = 0, cardHeight = 0
     private var drawnStep = -1
     private var progress = 0.0, lastTick = CACurrentMediaTime(), stage = 0
@@ -44,43 +45,36 @@ final class VXLoadingCard {
         progress = min(1, max(progress, progress + (target - progress) * min(1, rate * dt)))
     }
 
-    // Draw (if the bar moved by a visible step) and blit the card into `color`, centred where a point 2 m straight ahead falls in this
-    // eye. `view` is the drawable's eye transform (head from eye); `projection` its projection (right-up-back). Returns false if it could
-    // not be drawn this frame.
-    func encode(cb: MTLCommandBuffer, color: MTLTexture, eye: Int, view: simd_float4x4, projection: simd_float4x4, shown: Bool) -> Bool {
+    // Draw (if the bar moved by a visible step) the card over `color`, as a quad with its middle where a point 2 m straight ahead falls in
+    // this eye (VXOverlay.swift; through the eye's rate map when the drawable is foveated). `view` is the drawable's eye transform (head
+    // from eye); `projection` its projection (right-up-back). Returns false if it could not be drawn this frame.
+    func encode(cb: MTLCommandBuffer, color: MTLTexture, eye: Int, view: simd_float4x4, projection: simd_float4x4, shown: Bool,
+                map: MTLRasterizationRateMap?, viewport: MTLViewport) -> Bool {
         if eye == 0 { tick(shown: shown) }
         guard color.pixelFormat == .bgra8Unorm_srgb || color.pixelFormat == .bgra8Unorm else { return false }
-        // pixels per metre at the card's distance, from this eye's projection and the texture width
-        let pxPerMeter = projection.columns.0.x * Float(color.width) / (2 * Self.distanceMeters)
-        let w = Int(Self.widthMeters * pxPerMeter), h = Int(Self.heightMeters * pxPerMeter)
-        guard w >= 64, h >= 24, w < color.width, h < color.height else { return false }
+        let displayWidth = map != nil && viewport.width > 0 ? viewport.width : Double(color.width)
+        guard let at = VXOverlayQuad.place(size: SIMD2(Self.widthMeters, Self.heightMeters), distance: Self.distanceMeters, offset: SIMD2(0, 0),
+                                           view: view, projection: projection, displayWidth: displayWidth) else { return false }
+        // as many pixels as the card gets on the display (bounded: a foveated display is rasterized at up to 6000 pixels across)
+        let w = min(at.pixels & ~1, 1600), h = Int(Float(w) * Self.heightMeters / Self.widthMeters) & ~1
+        guard w >= 64, h >= 24 else { return false }
         let step = Int(progress * 400) + stage * 1000
-        if buffer == nil || w != cardWidth || h != cardHeight || step != drawnStep {
-            if buffer == nil || w != cardWidth || h != cardHeight {
-                cardWidth = w; cardHeight = h
-                buffer = cb.device.makeBuffer(length: w * h * 4, options: .storageModeShared)
-                drawnStep = -1
-            }
-            if step != drawnStep, let buf = buffer { render(into: buf, width: w, height: h); drawnStep = step }
+        if texture == nil || w != cardWidth || h != cardHeight {
+            cardWidth = w; cardHeight = h
+            texture = VXOverlayQuad.makeTexture(cb.device, width: w, height: h)
+            drawnStep = -1
         }
-        guard let buf = buffer else { return false }
-        // where a point 2 m straight ahead of the head lands in this eye
-        let p = projection * (view.inverse * SIMD4<Float>(0, 0, -Self.distanceMeters, 1))
-        guard p.w > 0 else { return false }
-        let ndc = SIMD2<Float>(p.x / p.w, p.y / p.w)
-        let cx = Int((ndc.x * 0.5 + 0.5) * Float(color.width)), cy = Int((1 - (ndc.y * 0.5 + 0.5)) * Float(color.height))
-        let ox = max(0, min(color.width - w, cx - w / 2)), oy = max(0, min(color.height - h, cy - h / 2))
-        guard let blit = cb.makeBlitCommandEncoder() else { return false }
-        blit.copy(from: buf, sourceOffset: 0, sourceBytesPerRow: w * 4, sourceBytesPerImage: w * h * 4, sourceSize: MTLSize(width: w, height: h, depth: 1),
-                  to: color, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin(x: ox, y: oy, z: 0))
-        blit.endEncoding()
-        return true
+        guard let tex = texture else { return false }
+        if step != drawnStep { render(into: tex, width: w, height: h); drawnStep = step }
+        return quad.draw(cb: cb, color: color, texture: tex, centre: at.centre, half: at.half, map: map, viewport: viewport)
     }
 
-    private func render(into buf: MTLBuffer, width w: Int, height h: Int) {
+    private func render(into tex: MTLTexture, width w: Int, height h: Int) {
         guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let ctx = CGContext(data: buf.contents(), width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: space,
-                                  bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue) else { return }
+              let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4, space: space,
+                                  bitmapInfo: CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue),
+              let data = ctx.data else { return }
+        defer { tex.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, withBytes: data, bytesPerRow: w * 4) }
         let bg = CGFloat(Self.backgroundByte) / 255
         ctx.setFillColor(CGColor(red: bg, green: bg, blue: bg, alpha: 1))
         ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))

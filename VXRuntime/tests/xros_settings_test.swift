@@ -25,18 +25,18 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         s2.predictMs = nil; s2.stageEyeHeight = nil
         check(d.object(forKey: "vxrt.predictMs") == nil && d.object(forKey: "vxrt.stageEyeHeight") == nil, "auto removes the stored value")
 
-        // picture extras: off / system default exports nothing; set, they persist and export; env wins and is clamped
+        // picture extras: off exports nothing; set, it persists and exports; env wins and is clamped
         let pd = fresh()
         let p1 = VXSettings(defaults: pd, info: [:], environment: [:])
-        check(p1.sharpen == nil && p1.renderQuality == nil && map(p1)["VXRT_SHARPEN"] == nil && map(p1)["VXRT_RENDER_QUALITY"] == nil, "sharpen and quality default off")
-        p1.sharpen = 0.35; p1.renderQuality = 0.8
+        check(p1.sharpen == nil && map(p1)["VXRT_SHARPEN"] == nil, "sharpen default off")
+        p1.sharpen = 0.35
         let p2 = VXSettings(defaults: pd, info: [:], environment: [:])
-        check(p2.sharpen == 0.35 && p2.renderQuality == 0.8 && map(p2)["VXRT_SHARPEN"] == "0.35" && map(p2)["VXRT_RENDER_QUALITY"] == "0.80", "sharpen and quality persist and export")
+        check(p2.sharpen == 0.35 && map(p2)["VXRT_SHARPEN"] == "0.35", "sharpen persists and exports")
         p2.sharpen = 0; check(map(p2)["VXRT_SHARPEN"] == nil, "sharpen 0 exports nothing")
-        p2.sharpen = nil; p2.renderQuality = nil
-        check(pd.object(forKey: "vxrt.sharpen") == nil && pd.object(forKey: "vxrt.renderQuality") == nil, "off removes the stored values")
-        let p3 = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_SHARPEN": "2", "VXRT_RENDER_QUALITY": "0.5"])
-        check(p3.sharpen == 1 && p3.renderQuality == 0.5, "environment wins and is clamped")
+        p2.sharpen = nil
+        check(pd.object(forKey: "vxrt.sharpen") == nil, "off removes the stored value")
+        let p3 = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_SHARPEN": "2"])
+        check(p3.sharpen == 1, "environment wins and is clamped")
 
         // gameplay: Skyrim's own settings go out as VXRT_INI_SET only when picked; "game default" writes nothing
         d = fresh()
@@ -51,6 +51,37 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         check(g.turn == .smooth && g.move == .teleport && g.turnSpeed == 2.5 && g.snapAngle == nil, "gameplay read back")
         g.turn = .game; g.move = .game; g.turnSpeed = nil
         check(map(g)["VXRT_INI_SET"] == nil && d.object(forKey: "vxrt.turnSpeed") == nil, "back to game default writes nothing")
+        do {
+            // the foveated display: off by default (the display's picture as before), a build's Info.plist default, saved, env wins
+            let fd = fresh()
+            let f1 = VXSettings(defaults: fd, info: [:], environment: [:])
+            check(!f1.foveation && f1.baseResolution == 0, "foveation off, base standard by default")
+            check(VXSettings(defaults: fd, info: ["VXFoveationDefault": "1", "VXBaseResolutionDefault": "3072"], environment: [:]).foveation, "foveation plist default")
+            check(VXSettings(defaults: fd, info: ["VXFoveationDefault": "1", "VXBaseResolutionDefault": "3072"], environment: [:]).baseResolution == 3072, "base plist default")
+            check(!VXSettings(defaults: fd, info: ["VXFoveationDefault": ""], environment: [:]).foveation, "an empty plist default is off")
+            f1.foveation = true; f1.baseResolution = 2560
+            let f2 = VXSettings(defaults: fd, info: [:], environment: [:])
+            check(f2.foveation && f2.baseResolution == 2560, "foveation and base persisted")
+            check(!VXSettings(defaults: fd, info: [:], environment: ["VXRT_FOVEATION": "0"]).foveation, "foveation env wins")
+            check(VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_FOVEATION": "1"]).foveation, "foveation env on")
+            check(VXSettings(defaults: fd, info: [:], environment: ["VXRT_BASE_RESOLUTION": "3584"]).baseResolution == 3584, "base env wins")
+            check(VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_BASE_RESOLUTION": "1234"]).baseResolution == 0, "an unknown base is the standard")
+            // the base resolution: only offered values are kept; the standard is a stored choice, so it beats a build's default
+            f2.foveation = false; f2.baseResolution = 0
+            let f3 = VXSettings(defaults: fd, info: ["VXFoveationDefault": "1", "VXBaseResolutionDefault": "3072"], environment: [:])
+            check(!f3.foveation && f3.baseResolution == 0 && fd.object(forKey: "vxrt.baseResolution") as? Int == 0, "saved choices beat the plist defaults")
+            check(map(f1)["VXRT_FOVEATION"] == nil && map(f1)["VXRT_BASE_RESOLUTION"] == nil, "nothing of the two is exported to the runtime")
+            // the old display-quality slider's stored value is not read any more, and nothing of it is exported
+            fd.set(0.5, forKey: "vxrt.renderQuality")
+            check(map(VXSettings(defaults: fd, info: [:], environment: ["VXRT_RENDER_QUALITY": "0.5"]))["VXRT_RENDER_QUALITY"] == nil, "no display quality from the store")
+            // the size the game is told: the texture itself without foveation and without a choice; otherwise the chosen width, square pixels
+            // over the eye's field of view
+            check(VXSettings.baseSize(choice: 0, foveated: false, texture: (2048, 1984), fieldOfView: (2.2, 2.0)) == (2048, 1984), "base: unchanged without foveation")
+            check(VXSettings.baseSize(choice: 0, foveated: true, texture: (2496, 2432), fieldOfView: (2.2, 2.0)) == (2048, 1862), "base: standard with foveation")
+            check(VXSettings.baseSize(choice: 3072, foveated: true, texture: (2496, 2432), fieldOfView: (2.2, 2.0)) == (3072, 2794), "base: chosen with foveation")
+            check(VXSettings.baseSize(choice: 2560, foveated: false, texture: (2048, 1984), fieldOfView: (2.0, 2.0)) == (2560, 2560), "base: chosen without foveation")
+            check(VXSettings.baseSize(choice: 2560, foveated: true, texture: (2048, 1984), fieldOfView: (0, 0)) == (2048, 1984), "base: no field of view, the texture")
+        }
         // out-of-range values are clamped in the export; plist defaults sit below saved; env beats saved
         s = VXSettings(defaults: fresh(), info: ["VXTurnDefault": "snap", "VXMoveDefault": "walk"], environment: [:])
         check(s.turn == .snap && s.move == .walk, "gameplay plist defaults")
