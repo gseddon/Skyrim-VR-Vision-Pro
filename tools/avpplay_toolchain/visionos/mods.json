@@ -1,0 +1,58 @@
+{
+ "schema": 1,
+ "variable": "KLEPTON_GAME_MODS",
+ "about": {
+  "en": "The mods come from Nexus Mods with your own account and stay on your Mac and your headset. AVP Play opens each download page in your browser; there you click “Manual download”, then “Slow download”. With Nexus Premium and your API key the downloads run by themselves.",
+  "de": "Die Mods kommen von Nexus Mods über dein eigenes Konto und bleiben auf deinem Mac und deinem Headset. AVP Play öffnet jede Download-Seite in deinem Browser; dort klickst du auf „Manual download“ und dann auf „Slow download“. Mit Nexus Premium und deinem API-Schlüssel laufen die Downloads von selbst."
+ },
+ "source": {
+  "name": "Nexus Mods",
+  "account": "https://users.nexusmods.com/register",
+  "key": {
+   "variable": "NEXUS_API_KEY",
+   "page": "https://next.nexusmods.com/settings/api-keys",
+   "hint": {
+    "en": "That page lists a key for many programs. Yours is at the very bottom: “Personal API Key”.",
+    "de": "Die Seite führt einen Schlüssel für viele Programme auf. Deiner steht ganz unten: „Personal API Key“."
+   },
+   "premiumOnly": true
+  }
+ },
+ "sets": [
+  {
+   "id": "core",
+   "title": { "en": "Hands, body and menus", "de": "Hände, Körper und Menüs" },
+   "about": {
+    "en": "Grab, pull and throw things with your hands, weapons and bodies that collide, a body of your own, and a better inventory. Needs a few minutes on the Mac the first time: the game runs there once so the mods' changes to it can be built in.",
+    "de": "Dinge mit den Händen greifen, ziehen und werfen, Waffen und Körper, die zusammenstoßen, ein eigener Körper und ein besseres Inventar. Braucht beim ersten Mal einige Minuten auf dem Mac: Das Spiel läuft dort einmal, damit die Änderungen der Mods eingebaut werden können."
+   },
+   "default": false,
+   "macRun": true,
+   "downloadBytes": 9000000,
+   "entries": ["sksevr-scripts", "skse-core", "skyrimvrtools", "higgs", "planck", "skyui-vr", "skyui-vr-nojit", "vrik"],
+   "mods": [
+    { "name": "SKSE VR", "version": "2.0.12", "url": "https://skse.silverlock.org", "about": { "en": "the script extender the others need", "de": "die Grundlage, die die anderen brauchen" } },
+    { "name": "SkyrimVRTools", "version": "2.3 beta", "url": "https://www.nexusmods.com/skyrimspecialedition/mods/27782", "about": { "en": "a helper library for VR mods", "de": "Hilfsbibliothek für VR-Mods" } },
+    { "name": "HIGGS", "version": "1.10.10", "url": "https://www.nexusmods.com/skyrimspecialedition/mods/43930", "about": { "en": "use your hands: grab, pull, throw", "de": "mit den Händen greifen, ziehen, werfen" } },
+    { "name": "PLANCK", "version": "0.8.2", "url": "https://www.nexusmods.com/skyrimspecialedition/mods/66025", "about": { "en": "physical combat", "de": "Kampf mit echter Berührung" } },
+    { "name": "VRIK", "version": "0.8.8", "url": "https://www.nexusmods.com/skyrimspecialedition/mods/23416", "about": { "en": "a body you can see", "de": "ein sichtbarer eigener Körper" } },
+    { "name": "SkyUI VR", "version": "1.2.2", "url": "https://www.nexusmods.com/skyrimspecialedition/mods/91535", "about": { "en": "better menus and inventory", "de": "bessere Menüs und Inventar" } }
+   ]
+  },
+  {
+   "id": "skyland",
+   "title": { "en": "Sharper landscape and buildings", "de": "Schärfere Landschaft und Gebäude" },
+   "about": {
+    "en": "Skyland AIO replaces the textures of landscape and architecture. A 2.6 GB download, and it takes more memory in the game: leave it off if the game is short of memory at a high base resolution.",
+    "de": "Skyland AIO ersetzt die Texturen von Landschaft und Gebäuden. Ein Download von 2,6 GB, und es braucht im Spiel mehr Speicher: bei hoher Basisauflösung und knappem Speicher besser aus lassen."
+   },
+   "default": false,
+   "macRun": false,
+   "downloadBytes": 2632276741,
+   "entries": ["skyland"],
+   "mods": [
+    { "name": "Skyland AIO", "version": "4.32 (1k)", "url": "https://www.nexusmods.com/skyrimspecialedition/mods/34179", "about": { "en": "landscape and architecture textures", "de": "Texturen für Landschaft und Gebäude" } }
+   ]
+  }
+ ]
+}

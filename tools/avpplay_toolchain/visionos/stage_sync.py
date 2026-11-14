@@ -20,7 +20,16 @@ from; the game's code runs from the signed app, the exe is data for the image ma
 mirror (the prepared exe and the DLLs, a few dozen MB) is copied.
 
 `devicectl device copy to` skips files that are already there unchanged, so an interrupted run is resumed by
-running it again; nothing on the headset is deleted. Runs with the Python that comes with Xcode (3.9).
+running it again; nothing on the headset is deleted.
+
+Mods (vx_mods.py; KLEPTON_GAME_MODS at the build): after the game tree, the pack of the last build goes beside it
+under Documents/root, straight from the pack (it is not part of the mirror): mods.json, Plugins.txt, the SKSE files
+and the merged Data tree into the game's overlay, and mods-files.txt, the list of exactly the files this pack put
+into the overlay. The app removes at its next start what an earlier list named and this one does not (devicectl
+cannot delete; VXRuntime/xros/app/Sources/vx_prune.h), so a smaller pack, or none, leaves nothing of the larger one
+behind. A build without mods sends an empty pack once, when this Mac put mods on that headset before.
+
+Runs with the Python that comes with Xcode (3.9).
 """
 import argparse
 import os
@@ -33,6 +42,7 @@ import time
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import targets as targets_mod       # noqa: E402
+import vx_mods                      # noqa: E402
 import vx_paths                     # noqa: E402
 
 PATHS = vx_paths.apply()
@@ -79,6 +89,51 @@ def parts_of(mirror):
     return loose + other + inside
 
 
+ROOT = "Documents/root"            # the runtime's root in the app's container: SkyrimVR/, overlay_skyrimvr/, drive_c/
+PLUGINS_TXT = ROOT + "/drive_c/users/vxrt/AppData/Local/Skyrim VR/Plugins.txt"
+
+
+def deployed_marker(device, bundle):
+    safe = "".join(c if c.isalnum() or c in "-._" else "_" for c in "%s-%s" % (bundle, device))
+    return vx_mods.work_dir(PATHS) / ("mods-deployed-%s.json" % safe)
+
+
+def mods_plan(device, bundle):
+    """What of the mods goes to the headset: (steps, bytes, sets), steps = [(source path, destination)] in the order they
+    are copied. No steps when the last build had no mods and none were put on this headset from here."""
+    import json
+    sets = vx_mods.read_state(PATHS)["sets"]
+    stage = vx_mods.work_dir(PATHS) / "deploy"
+    shutil.rmtree(stage, ignore_errors=True)
+    stage.mkdir(parents=True)
+    listing = stage / "mods-files.txt"
+    if not sets:
+        if not deployed_marker(device or "", bundle).is_file():
+            return [], 0, []
+        # an empty pack: no plugin, no SKSE plugin, and a list that names nothing
+        (stage / "mods.json").write_text(json.dumps(dict(version=1, profile="none", plugins=[], mods=[], skse_plugins=[], overlay_root_files=[]), indent=1))
+        (stage / "Plugins.txt").write_bytes(b"")
+        listing.write_bytes(b"")
+        return [(stage / "mods.json", ROOT + "/mods.json"), (stage / "Plugins.txt", PLUGINS_TXT), (listing, ROOT + "/mods-files.txt")], 0, []
+    pack = vx_mods.pack_dir(PATHS)
+    doc = json.loads((pack / "mods.json").read_text())
+    data = pack / "merged" / "Data"
+    names, total = [], 0
+    steps = [(pack / "mods.json", ROOT + "/mods.json"), (pack / "Plugins.txt", PLUGINS_TXT)]
+    for f in doc.get("overlay_root_files", []):
+        src = pack / "overlay_root" / f["name"]
+        names.append(f["name"]); total += src.stat().st_size
+        steps.append((src, "%s/overlay_skyrimvr/%s" % (ROOT, f["name"])))
+    for q in sorted(data.rglob("*")):
+        if q.is_file():
+            names.append("Data/" + q.relative_to(data).as_posix()); total += q.stat().st_size
+    for e in sorted(data.iterdir(), key=lambda q: (q.is_dir(), q.name)):
+        steps.append((e, "%s/overlay_skyrimvr/Data/%s" % (ROOT, e.name)))
+    listing.write_text("".join(n + "\n" for n in names))
+    steps.append((listing, ROOT + "/mods-files.txt"))      # last: the list is true once its files are there
+    return steps, total, sets
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--phase", choices=("base", "start", "all"), default="all")
@@ -107,11 +162,18 @@ def main():
         print("!! %s" % e, file=sys.stderr)
         return 1
     print("[stage] %d files, %.1f GB -> %s" % (len(sizes), sum(sizes.values()) / 2**30, dest))
+    device = args.device or os.environ.get("KLEPTON_DEVICE")
+    try:
+        mod_steps, mod_bytes, mod_sets = mods_plan(device, bundle)
+    except (OSError, ValueError, KeyError) as e:
+        print("!! the mod pack of the last build cannot be read (%s) - build again" % e, file=sys.stderr)
+        return 1
+    if mod_steps:
+        print("[stage] mods (%s): %d parts, %.2f GB -> %s" % (", ".join(mod_sets) or "none any more", len(mod_steps), mod_bytes / 2**30, ROOT))
     if args.dry_run:
         print("[stage] dry run - the mirror is at %s" % mirror)
         return 0
 
-    device = args.device or os.environ.get("KLEPTON_DEVICE")
     if not device:
         print("!! no physical Vision Pro - pass --device", file=sys.stderr)
         return 1
@@ -121,6 +183,17 @@ def main():
         if copy(device, bundle, mirror / part, "%s/%s" % (dest, part)) != 0:
             print("!! staging %s failed - run this again to resume" % part, file=sys.stderr)
             return 1
+    for src, to in mod_steps:
+        print("[stage] -> %s" % to, flush=True)
+        if copy(device, bundle, src, to) != 0:
+            print("!! staging the mods failed at %s - run this again to resume" % to, file=sys.stderr)
+            return 1
+    if mod_steps:
+        marker = deployed_marker(device, bundle)
+        if mod_sets:
+            marker.write_text('{"sets": ["%s"]}\n' % '", "'.join(mod_sets))
+        else:
+            marker.unlink(missing_ok=True) if sys.version_info >= (3, 8) else None
     print("[stage] done in %.0f s" % (time.time() - t0))
     return 0
 

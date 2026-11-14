@@ -9,6 +9,8 @@ file (Toolchain.swift, supports...). So this file names exactly the variables ru
     KLEPTON_APP_BUILD          CFBundleVersion (AVP Play's stamp: <game build>.<toolchain number>)
     KLEPTON_DISPLAY_OVERRIDE   the app's name on the Home View
     KLEPTON_DISPLAY_SUFFIX     added to the name
+    KLEPTON_GAME_MODS          the mod sets to build with (mods.json describes them; mods_fetch.py gets their files,
+                               run.sh builds them in, stage_sync.py puts them on the headset)
 
 Deliberately absent, because this app cannot do them (AVP Play then refuses or leaves the option out instead of
 building something that does not work): the free-team switch (the app needs the extended-virtual-addressing
