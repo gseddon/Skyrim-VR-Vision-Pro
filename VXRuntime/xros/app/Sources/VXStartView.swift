@@ -183,6 +183,12 @@ struct VXSettingsPage: View {
                                 Text(String(format: "%.0f%%", settings.renderScale * 100)).font(.system(.body, design: .monospaced)).frame(width: 70)
                             }
                             note("The size the game draws each eye at, as a share of the display's. Lower is smoother on a busy scene; higher is sharper. 65% with MetalFX is the default.")
+                            Picker("Unseen edge", selection: $settings.edgeMask) {
+                                Text("Draw everything").tag(VXEdgeMask.off)
+                                Text("Skip a little").tag(VXEdgeMask.slight)
+                                Text("Skip more").tag(VXEdgeMask.standard)
+                            }.pickerStyle(.segmented)
+                            note("The game can leave out the edge of the picture that the lenses do not show, which makes it run more smoothly. “Skip more” is the default. If you see a black bar or black corners in the game, choose less here; “Draw everything” never shows one. Next launch.")
                             Picker("Upscaling", selection: $settings.upscale) {
                                 Text("MetalFX").tag(VXUpscale.metalfx)
                                 Text("Bilinear").tag(VXUpscale.bilinear)
