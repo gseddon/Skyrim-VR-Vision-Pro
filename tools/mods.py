@@ -249,7 +249,7 @@ def _fetch_external(m, lst, wait=0):
     if marker.is_file() and marker.read_text().strip() == x['md5'].lower() and _tree_ok(m, tree):
         print(f"{m['id']}: already fetched and unpacked (md5 {x['md5']})"); return False
     import nexus
-    try: found = nexus.external_fetch(m.get('name') or m['id'], x['url'], x['file_name'], x['md5'], wait=wait)
+    try: found = nexus.external_fetch(m.get('name') or m['id'], x['url'], x['file_name'], x['md5'], wait=wait, page=x.get('page'))
     except nexus.Skipped as e:
         print(f"{m['id']}: {e}", file=sys.stderr); return None
     with tempfile.TemporaryDirectory() as t:
@@ -298,7 +298,7 @@ def fetch(a):
         todo += 1
         try:
             r = nexus.fetch_file(game, mod, fid, nxm=links.get((game.lower(), mod, fid)), md5=pinned, wait=nexus.default_wait(a.wait),
-                                 progress=(done, len(pending)), name=m.get('name') or m['id'], manual=a.manual or fid is None, accept_name=a.accept_name_match)
+                                 progress=(done, len(pending)), name=m.get('name') or m['id'], manual=a.manual, accept_name=a.accept_name_match)
             tmp = tree.with_name(tree.name + '.tmp')
             if tmp.exists(): shutil.rmtree(tmp)
             raw = tmp / 'raw'; _unpack(Path(r['path']), raw)

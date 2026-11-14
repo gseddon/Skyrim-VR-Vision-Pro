@@ -102,6 +102,14 @@ labelled `apikey`). Nexus has no username/password API login, so a password does
 printed or committed. `--manual` forces the browser path even when a key is set. API downloads of non-Premium accounts need an nxm link
 (below); that path needs the key too, because the download-link call requires it even with a link.
 
+**A list that pins only the md5** (`"file_id": null`, as in `mods/default.json`): with a key, `mods-fetch` looks the file id up from the md5
+(`md5_search`, then the mod's file list), caches it in `$VXRT_PRIVATE_ROOT/downloads/nexus/file-ids.json` and prints the id so you can record it
+in your list. If Nexus does not know the md5 the fetch uses the Downloads-folder path instead. CDN download links are percent-encoded once
+(spaces, brackets, unicode in file names), and the key is never sent to the CDN. A free account gets 403 from the download-link call; the
+fetch then says so and falls back to the browser and Downloads-folder flow (it opens no page by itself outside a terminal). SKSE VR 2.0.12 is
+not on Nexus: it comes from https://skse.silverlock.org/ (the "Current VR build" link, `beta/sksevr_2_00_12.7z`); if that link moves, the fetch
+points at the page and accepts the archive from your Downloads folder by its md5.
+
 **With a key but without Premium.** For each file the API will not hand out, `mods-fetch` (and `nexus.py download`) prints a short
 numbered message with the mod and file name, "[2 of 5 done]", the exact Files-tab page (`https://www.nexusmods.com/<game>/mods/<id>?tab=files&file_id=<id>`;
 in a terminal it offers to `open` it for you) and the instruction to click "Mod Manager Download" there. It then waits (`--wait SECONDS`,
