@@ -823,16 +823,110 @@ static WINAPI BOOL GetStringTypeExW(DWORD lcid, DWORD type, const WCHAR *src, in
         (BOOL (WINAPI *)(DWORD, const WCHAR *, int, uint16_t *))vx_find_export("kernel32.dll", "GetStringTypeW");
     return get ? get(type, src, n, out) : 0;
 }
-static WINAPI BOOL WritePrivateProfileStringW(const WCHAR *app, const WCHAR *key, const WCHAR *value, const WCHAR *file) {
-    // VXRT_TRACE_FILES: what the program would have written (which settings it keeps between runs)
-    static int trace = -1;
-    if (trace < 0) trace = getenv("VXRT_TRACE_FILES") != NULL;
-    if (trace) {
-        char *a = vx_utf8_dup(app), *k = vx_utf8_dup(key), *v = vx_utf8_dup(value), *f = vx_utf8_dup(file);
-        vx_log("WritePrivateProfileString(%s) [%s] %s=%s (not kept)", f ? f : "", a ? a : "", k ? k : "(section deleted)", v ? v : "(key deleted)");
-        free(a); free(k); free(v); free(f);
+// ---- WritePrivateProfileString: .ini files kept ------------------------------------------------------------------------
+// A program's settings persist the way Windows keeps them: the file is read, the one key (or a key's removal, or the
+// whole section's when the key is NULL) is changed, and the file is written back with its other lines, comments and line
+// endings as they were. A missing file is created; a missing section is appended; a new key goes after the section's
+// last line with content. Writes go through VXRT_OVERLAY like any other write (vx_unix_path_write). Skyrim VR's
+// "one-time VR setup" depends on this: it stores bOneTimeCalibrationCompleted=1 in SkyrimPrefs.ini with this call.
+static pthread_mutex_t g_ini_write_lock = PTHREAD_MUTEX_INITIALIZER;
+typedef struct { char *p; size_t n, cap; } ini_buf;
+static void ini_buf_add(ini_buf *b, const char *s, size_t n) {
+    if (b->n + n + 1 > b->cap) { b->cap = (b->n + n + 1) * 2; b->p = realloc(b->p, b->cap); }
+    memcpy(b->p + b->n, s, n); b->n += n; b->p[b->n] = 0;
+}
+// [start, end) of the trimmed text of a line (a UTF-8 byte-order mark skipped).
+static void ini_line_trim(const char *l, size_t n, const char **s, size_t *len) {
+    if (n >= 3 && !memcmp(l, "\xef\xbb\xbf", 3)) { l += 3; n -= 3; }
+    while (n && (*l == ' ' || *l == '\t')) { l++; n--; }
+    while (n && (l[n - 1] == ' ' || l[n - 1] == '\t' || l[n - 1] == '\r' || l[n - 1] == '\n')) n--;
+    *s = l; *len = n;
+}
+static int ini_write_text(const char *old, size_t oldn, const char *app, const char *key, const char *value, ini_buf *out) {
+    const char *eol = "\r\n";
+    if (oldn) { const char *nl = memchr(old, '\n', oldn); if (nl && (nl == old || nl[-1] != '\r')) eol = "\n"; }
+    size_t eoln = strlen(eol), appn = strlen(app), keyn = key ? strlen(key) : 0;
+    int in = 0, found_section = 0, done = 0;
+    size_t insert_at = 0;                                           // in out: after the section's last line with content
+    for (size_t pos = 0; pos < oldn;) {
+        const char *l = old + pos, *nl = memchr(l, '\n', oldn - pos);
+        size_t ln = nl ? (size_t)(nl - l) + 1 : oldn - pos;
+        const char *t; size_t tn; ini_line_trim(l, ln, &t, &tn);
+        pos += ln;
+        int header = tn >= 2 && t[0] == '[' && t[tn - 1] == ']';
+        if (header) {
+            if (in && !done && key && value) {                       // leaving the section without the key: add it here
+                ini_buf tail = { 0 }; ini_buf_add(&tail, out->p + insert_at, out->n - insert_at);
+                out->n = insert_at;
+                ini_buf_add(out, key, keyn); ini_buf_add(out, "=", 1); ini_buf_add(out, value, strlen(value)); ini_buf_add(out, eol, eoln);
+                ini_buf_add(out, tail.p ? tail.p : "", tail.n); free(tail.p); done = 1;
+            }
+            in = tn - 2 == appn && !strncasecmp(t + 1, app, appn);
+            if (in) { found_section = 1; if (!key) continue; }       // (section removal: its header goes too)
+        } else if (in && !key) continue;                             // (and its lines)
+        else if (in && tn && t[0] != ';' && !done && key) {
+            const char *eq = memchr(t, '=', tn);
+            size_t kn = eq ? (size_t)(eq - t) : tn;
+            while (kn && (t[kn - 1] == ' ' || t[kn - 1] == '\t')) kn--;
+            if (eq && kn == keyn && !strncasecmp(t, key, keyn)) {
+                done = 1;
+                if (value) {
+                    ini_buf_add(out, key, keyn); ini_buf_add(out, "=", 1); ini_buf_add(out, value, strlen(value)); ini_buf_add(out, eol, eoln);
+                }
+                continue;
+            }
+        }
+        if (in && tn && !header && t[0] != ';') insert_at = out->n + ln;
+        if (in && header) insert_at = out->n + ln;
+        ini_buf_add(out, l, ln);
+        if (!nl && in && key && value && !done) ini_buf_add(out, eol, eoln), insert_at = out->n;   // (last line had no ending)
     }
-    return 1;                                                      // (not kept: no .ini files written for programs here)
+    if (!key) return found_section;
+    if (!value) return done;                                         // removing a key that is not there: nothing changes
+    if (in && !done) {                                               // the section was the last one
+        ini_buf tail = { 0 }; ini_buf_add(&tail, out->p + insert_at, out->n - insert_at);
+        out->n = insert_at;
+        ini_buf_add(out, key, keyn); ini_buf_add(out, "=", 1); ini_buf_add(out, value, strlen(value)); ini_buf_add(out, eol, eoln);
+        ini_buf_add(out, tail.p ? tail.p : "", tail.n); free(tail.p);
+    } else if (!found_section) {
+        if (out->n && out->p[out->n - 1] != '\n') ini_buf_add(out, eol, eoln);
+        ini_buf_add(out, "[", 1); ini_buf_add(out, app, appn); ini_buf_add(out, "]", 1); ini_buf_add(out, eol, eoln);
+        ini_buf_add(out, key, keyn); ini_buf_add(out, "=", 1); ini_buf_add(out, value, strlen(value)); ini_buf_add(out, eol, eoln);
+    }
+    return 1;
+}
+static WINAPI BOOL WritePrivateProfileStringW(const WCHAR *app, const WCHAR *key, const WCHAR *value, const WCHAR *file) {
+    char *a = vx_utf8_dup(app), *k = vx_utf8_dup(key), *v = vx_utf8_dup(value), *f = vx_utf8_dup(file);
+    static int trace = -1;                                          // VXRT_TRACE_FILES: what is written, and where
+    if (trace < 0) trace = getenv("VXRT_TRACE_FILES") != NULL;
+    BOOL ok = 0;
+    char win[1024], path[1024];
+    if (!a || !f || !*f) { vx_set_last_error(87); goto done; }
+    if (!strpbrk(f, "\\/:")) snprintf(win, sizeof win, "C:\\windows\\%s", f); else snprintf(win, sizeof win, "%s", f);
+    if (!vx_unix_path_write(win, path, sizeof path, 1)) goto done;
+    pthread_mutex_lock(&g_ini_write_lock);
+    char *old = NULL; size_t oldn = 0;
+    FILE *fp = fopen(path, "rb");
+    if (fp) {
+        fseek(fp, 0, SEEK_END); long n = ftell(fp); fseek(fp, 0, SEEK_SET);
+        old = n > 0 ? malloc((size_t)n) : NULL;
+        if (old && fread(old, 1, (size_t)n, fp) == (size_t)n) oldn = (size_t)n; else { free(old); old = NULL; }
+        fclose(fp);
+    }
+    ini_buf out = { 0 };
+    ini_buf_add(&out, "", 0);
+    if (ini_write_text(old ? old : "", oldn, a, k, v, &out)) {
+        char tmp[1100]; snprintf(tmp, sizeof tmp, "%s.vxtmp", path);
+        FILE *w = fopen(tmp, "wb");
+        if (w && fwrite(out.p, 1, out.n, w) == out.n && fclose(w) == 0 && rename(tmp, path) == 0) ok = 1;
+        else { if (w) fclose(w); unlink(tmp); vx_set_last_error(vx_error_from_errno(errno)); }
+    } else ok = 1;                                                   // (nothing to remove)
+    if (trace) vx_log("WritePrivateProfileString(%s -> %s) [%s] %s=%s: %s", f, path, a, k ? k : "(section deleted)", v ? v : "(key deleted)", ok ? "kept" : "failed");
+    free(out.p); free(old);
+    pthread_mutex_unlock(&g_ini_write_lock);
+done:
+    free(a); free(k); free(v); free(f);
+    return ok;
 }
 static WINAPI BOOL WritePrivateProfileStringA(const char *app, const char *key, const char *value, const char *file) {
     WCHAR *a = app ? vx_utf16_dup(app) : NULL, *k = key ? vx_utf16_dup(key) : NULL;

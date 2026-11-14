@@ -78,6 +78,31 @@ int main(void) {
     n = GetPrivateProfileStringW(NULL, NULL, L"", wout, 256, L"C:\\vxini\\game.ini");
     CHECK(n == 16 && !memcmp(wout, L"General\0Archive\0\0", (n + 1) * 2));
 
+
+    // WritePrivateProfileString: a missing file is created, a missing section appended, a key replaced or added in place
+    // (other lines, comments and CRLF kept), a key or a whole section removed; the reads see it.
+    DeleteFileA("C:\\vxini\\w.ini");
+    CHECK(WritePrivateProfileStringA("VR", "bOneTimeCalibrationCompleted", "1", "C:\\vxini\\w.ini"));
+    CHECK(GetPrivateProfileIntA("VR", "bOneTimeCalibrationCompleted", 0, "C:\\vxini\\w.ini") == 1);
+    write_file("C:\\vxini\\w2.ini", "; head\r\n[General]\r\nsA=1\r\n\r\n[VR]\r\nfX=2\r\n; note\r\n\r\n[Last]\r\nz=9");
+    CHECK(WritePrivateProfileStringA("vr", "BONETIMECALIBRATIONCOMPLETED", "1", "C:\\vxini\\w2.ini"));    // new key, section found without case
+    CHECK(WritePrivateProfileStringA("VR", "fX", "3", "C:\\vxini\\w2.ini"));                               // replaced
+    CHECK(WritePrivateProfileStringW(L"New", L"k", L"v", L"C:\\vxini\\w2.ini"));                           // new section (after a last line without an ending)
+    CHECK(WritePrivateProfileStringA("Last", "y", "8", "C:\\vxini\\w2.ini"));                              // added to the section that had no ending
+    CHECK(WritePrivateProfileStringA("General", "sA", NULL, "C:\\vxini\\w2.ini"));                         // key removed
+    {
+        char buf[512]; HANDLE f = CreateFileA("C:\\vxini\\w2.ini", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        DWORD got = 0; memset(buf, 0, sizeof buf);
+        CHECK(f != INVALID_HANDLE_VALUE && ReadFile(f, buf, sizeof buf - 1, &got, NULL));
+        CloseHandle(f);
+        CHECK(!strcmp(buf, "; head\r\n[General]\r\n\r\n[VR]\r\nfX=3\r\nBONETIMECALIBRATIONCOMPLETED=1\r\n; note\r\n\r\n[Last]\r\nz=9\r\ny=8\r\n[New]\r\nk=v\r\n"));
+        if (strcmp(buf, "; head\r\n[General]\r\n\r\n[VR]\r\nfX=3\r\nBONETIMECALIBRATIONCOMPLETED=1\r\n; note\r\n\r\n[Last]\r\nz=9\r\ny=8\r\n[New]\r\nk=v\r\n")) printf("got: %s\n", buf);
+    }
+    CHECK(WritePrivateProfileStringA("VR", NULL, NULL, "C:\\vxini\\w2.ini"));                              // section removed
+    CHECK(GetPrivateProfileIntA("VR", "fX", 7, "C:\\vxini\\w2.ini") == 7);
+    CHECK(GetPrivateProfileIntA("Last", "y", 7, "C:\\vxini\\w2.ini") == 8);
+    CHECK(!WritePrivateProfileStringA(NULL, "k", "v", "C:\\vxini\\w2.ini"));
+
     if (failures) { printf("%d failures\n", failures); return 1; }
     printf("ini ok\n");
     return 0;

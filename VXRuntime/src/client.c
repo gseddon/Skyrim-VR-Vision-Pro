@@ -110,8 +110,8 @@ static WINAPI BOOL GetVolumeNameForVolumeMountPointW(const WCHAR *mount, WCHAR *
     return 0;
 }
 // ---- .ini files (GetPrivateProfile*) -----------------------------------------------------------------------------------
-// Read for real: a program's settings (Skyrim's [Archive] list, ...) come from its .ini files. Read only here: writes
-// (WritePrivateProfileString) are still not kept. A name without a directory is the Windows directory's, as on Windows.
+// Read for real: a program's settings (Skyrim's [Archive] list, ...) come from its .ini files. Writes are kept
+// (WritePrivateProfileString, extras.c). A name without a directory is the Windows directory's, as on Windows.
 // Sections and keys compare case-insensitively; ';' lines are comments; a value's surrounding blanks are dropped and one
 // pair of matching quotes around it too.
 static char *ini_read(const char *name) {
