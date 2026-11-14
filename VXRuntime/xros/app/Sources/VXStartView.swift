@@ -30,6 +30,7 @@ final class VXLauncher: ObservableObject {
         vxrt_jlog("settings_applied", "\"set\":\"\(r.set.joined(separator: " "))\",\"kept\":\"\(r.kept.joined(separator: " "))\"")
         phase = .started
         startedAt = Date()
+        VXStatsPanel.shared.setVisible(VXSettings.shared.statsPanel, why: "setting")
         openDisplay()
         vxrt_boot_fallback()      // (the program still starts after a few seconds if the display view never appears)
     }
@@ -286,6 +287,12 @@ struct VXSettingsPage: View {
                     }
                     GroupBox("Mods") {
                         VXModsList()
+                    }
+                    GroupBox("Performance panel") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle("Show from the start", isOn: $settings.statsPanel)
+                            note("Frame rate, graphics and processor time, memory and heat, above the middle of the view. Off by default. In the game, hold Create and Options (the two menu buttons of the controllers) together for a second to show it or hide it.")
+                        }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                     GroupBox("Start") {
                         VStack(alignment: .leading, spacing: 10) {

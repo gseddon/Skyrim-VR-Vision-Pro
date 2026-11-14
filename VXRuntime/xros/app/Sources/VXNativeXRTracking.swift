@@ -295,6 +295,12 @@ actor VXNativeXRTracking {
             VXPoseAudit.shared.set(hand: c.hand, grip: SIMD3(h.grip.0, h.grip.1, h.grip.2), aim: SIMD3(h.aim.0, h.aim.1, h.aim.2))
         }
         for hand in 0..<2 where hands[hand].connected == 0 { VXPoseAudit.shared.set(hand: hand, grip: nil, aim: nil); VXPoseAudit.shared.clearFull(hand: hand) }
+        // Create and Options held together for a second show and hide the performance panel; the game is not told "menu" for that
+        // (VXStatsPanel.swift, as Klepton's kl_metrics_chord). On every poll: a held button is a matter of time passing.
+        let pass = VXStatsPanel.shared.buttons(left: hands[0].connected != 0 && hands[0].menu != 0, right: hands[1].connected != 0 && hands[1].menu != 0,
+                                               now: ProcessInfo.processInfo.systemUptime)
+        if hands[0].connected != 0 { hands[0].menu = pass.left ? 1 : 0 }
+        if hands[1].connected != 0 { hands[1].menu = pass.right ? 1 : 0 }
         var drivers: [Int: GCController] = [:]
         for o in observations where (0..<2).contains(o.canonical.hand) { drivers[o.canonical.hand] = o.controller }
         VXHapticRouter.shared.setControllers(drivers)
