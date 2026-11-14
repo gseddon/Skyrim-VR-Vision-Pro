@@ -20,13 +20,25 @@ typedef struct {
     volatile LONG pass_start, pass_end, buffer_start, buffer_end, loop_end, stream_end, errors;
     DWORD thread;
     HANDLE done;
+    IXAudio2SourceVoice *resubmit_voice;
+    XAUDIO2_BUFFER resubmit_buffer;
+    volatile LONG resubmit_once;
+    HRESULT resubmit_hr;
 } callback;
 static callback *self(IXAudio2VoiceCallback *i) { return (callback *)i; }
 static void WINAPI on_pass_start(IXAudio2VoiceCallback *i, UINT32 bytes) { (void)bytes; InterlockedIncrement(&self(i)->pass_start); self(i)->thread = GetCurrentThreadId(); }
 static void WINAPI on_pass_end(IXAudio2VoiceCallback *i) { InterlockedIncrement(&self(i)->pass_end); }
 static void WINAPI on_stream_end(IXAudio2VoiceCallback *i) { InterlockedIncrement(&self(i)->stream_end); SetEvent(self(i)->done); }
 static void WINAPI on_buffer_start(IXAudio2VoiceCallback *i, void *ctx) { (void)ctx; InterlockedIncrement(&self(i)->buffer_start); }
-static void WINAPI on_buffer_end(IXAudio2VoiceCallback *i, void *ctx) { (void)ctx; InterlockedIncrement(&self(i)->buffer_end); }
+static void WINAPI on_buffer_end(IXAudio2VoiceCallback *i, void *ctx) {
+    (void)ctx;
+    callback *c = self(i);
+    InterlockedIncrement(&c->buffer_end);
+    if (InterlockedCompareExchange(&c->resubmit_once, 0, 1) == 1) {
+        c->resubmit_hr = IXAudio2SourceVoice_SubmitSourceBuffer(c->resubmit_voice, &c->resubmit_buffer, NULL);
+        SetEvent(c->done);                                                   // submission finished before the test inspects the queue
+    }
+}
 static void WINAPI on_loop_end(IXAudio2VoiceCallback *i, void *ctx) { (void)ctx; InterlockedIncrement(&self(i)->loop_end); }
 static void WINAPI on_error(IXAudio2VoiceCallback *i, void *ctx, HRESULT hr) { (void)ctx; (void)hr; InterlockedIncrement(&self(i)->errors); }
 static IXAudio2VoiceCallbackVtbl callback_vtbl = { on_pass_start, on_pass_end, on_stream_end, on_buffer_start, on_buffer_end, on_loop_end, on_error };
@@ -134,6 +146,51 @@ int main(int argc, char **argv) {
     CHECK(st.BuffersQueued == 0 && cf.buffer_end == before + 3);
     IXAudio2SourceVoice_DestroyVoice(src);
     IXAudio2SubmixVoice_DestroyVoice(sub);
+
+    // A stopped, previously playing infinite loop must not survive a flush or restart.
+    CHECK(SUCCEEDED(IXAudio2_CreateSourceVoice(xa, &src, &w16, 0, 2.0f, NULL, NULL, NULL)));
+    XAUDIO2_BUFFER infinite = { 0 };
+    infinite.AudioBytes = sizeof pcm; infinite.pAudioData = (const BYTE *)pcm;
+    infinite.LoopCount = XAUDIO2_LOOP_INFINITE;
+    CHECK(SUCCEEDED(IXAudio2SourceVoice_SubmitSourceBuffer(src, &infinite, NULL)));
+    CHECK(SUCCEEDED(IXAudio2SourceVoice_Start(src, 0, XAUDIO2_COMMIT_NOW)));
+    Sleep(50);
+    CHECK(SUCCEEDED(IXAudio2SourceVoice_Stop(src, 0, XAUDIO2_COMMIT_NOW)));
+    Sleep(50);                                                              // allow an in-flight processing pass to finish
+    base = played(src);
+    CHECK(base > 0);
+    CHECK(SUCCEEDED(IXAudio2SourceVoice_FlushSourceBuffers(src)));
+    t0 = GetTickCount();
+    do {
+        IXAudio2SourceVoice_GetState(src, &st, 0);
+        if (!st.BuffersQueued) break;
+        Sleep(10);
+    } while (GetTickCount() - t0 < 3000);
+    CHECK(st.BuffersQueued == 0);
+    CHECK(SUCCEEDED(IXAudio2SourceVoice_Start(src, 0, XAUDIO2_COMMIT_NOW)));
+    Sleep(50);
+    CHECK(played(src) == base);
+    IXAudio2SourceVoice_DestroyVoice(src);
+
+    // A flush must preserve the one fresh buffer submitted by its end callback.
+    callback cr; init_callback(&cr);
+    CHECK(SUCCEEDED(IXAudio2_CreateSourceVoice(xa, &src, &w16, 0, 2.0f, &cr.iface, NULL, NULL)));
+    cr.resubmit_voice = src;
+    cr.resubmit_buffer = b; cr.resubmit_buffer.Flags = XAUDIO2_END_OF_STREAM;
+    cr.resubmit_hr = E_FAIL; cr.resubmit_once = 1;
+    b.Flags = 0;
+    CHECK(SUCCEEDED(IXAudio2SourceVoice_SubmitSourceBuffer(src, &b, NULL)));
+    CHECK(SUCCEEDED(IXAudio2SourceVoice_FlushSourceBuffers(src)));
+    CHECK(WaitForSingleObject(cr.done, 3000) == WAIT_OBJECT_0);
+    if (FAILED(cr.resubmit_hr)) printf("callback SubmitSourceBuffer failed: %#lx\n", (unsigned long)cr.resubmit_hr);
+    CHECK(SUCCEEDED(cr.resubmit_hr));
+    IXAudio2SourceVoice_GetState(src, &st, 0);
+    CHECK(st.BuffersQueued == 1 && cr.buffer_end == 1 && cr.resubmit_once == 0);
+    CHECK(SUCCEEDED(IXAudio2SourceVoice_Start(src, 0, XAUDIO2_COMMIT_NOW)));
+    CHECK(WaitForSingleObject(cr.done, 3000) == WAIT_OBJECT_0);
+    CHECK(played(src) == sizeof pcm / sizeof pcm[0] && cr.buffer_end == 2);
+    IXAudio2SourceVoice_DestroyVoice(src);
+    CloseHandle(cr.done);
 
     // A format it does not decode is refused.
     WAVEFORMATEX adpcm = format(2, 1, 22050, 4);
