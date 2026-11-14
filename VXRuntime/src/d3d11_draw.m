@@ -154,7 +154,7 @@ static HRESULT query(void *this, const GUID *iid, void **out, const GUID *iface)
 // works on many at once, and a game creating thousands while it loads would otherwise wait for each in turn; the
 // first draw (or dispatch) that needs one waits for it.
 // so: a geometry shader made with stream output (so_layout), else NULL.
-typedef struct { d3d_object base; dxbc_shader info; void *function, *compute; gpu_ir_pipeline *compute_ir; uint32_t id, hash; unsigned char sha[32]; volatile int ready; void *dual; int dual_tried; void *dither; int dither_tried; void *variant; int variant_tried; void *so; } d3d_shader;   // hash: as in VXRT_DUMP_SHADERS names
+typedef struct { d3d_object base; dxbc_shader info; void *function, *compute; gpu_ir_pipeline *compute_ir; uint32_t id, hash; unsigned char sha[32]; volatile int ready; void *dual; int dual_tried; void *dither; int dither_tried; void *variant; int variant_tried; void *so; void *fove[2][3]; int fove_tried[2][3]; char *fove_msl[2]; int fove_msl_tried[2], fove_slot[2]; void *code; size_t code_size; } d3d_shader;   // hash: as in VXRT_DUMP_SHADERS names
 // Stream output (stream 0): which output register components go where in the target buffers. An entry copies
 // count components from register reg, component comp on, to dword dword of each vertex's record in buffer slot.
 typedef struct { uint32_t reg, comp, count, slot_dword; } so_entry;   // slot_dword: slot << 24 | dword
@@ -219,6 +219,72 @@ static id<MTLFunction> dither_function(d3d_device *dev, d3d_shader *s) {
     pthread_mutex_unlock(&g_variant_lock);
     return (__bridge id<MTLFunction>)s->dither;
 }
+// The variants of a pixel shader for foveated rendering (see "foveated rendering" below; dxbc_translate_fove: near, for
+// passes of the eyes' size, and far, for any other): the source, translated once from the bytecode kept for it (NULL:
+// none), and the function of its base (form 0), dual-source (1) or dithered (2) form, compiled when first used.
+static const char *fove_source(d3d_shader *s, int far) {   // with g_variant_lock held
+    if (!s->fove_msl_tried[far]) {
+        s->fove_msl_tried[far] = 1;
+        dxbc_shader v;
+        if (s->code && !dxbc_translate_fove(s->code, s->code_size, &v, far)) {
+            s->fove_msl[far] = v.msl; v.msl = NULL;
+            s->fove_slot[0] = v.fove_slot[0]; s->fove_slot[1] = v.fove_slot[1];
+            dxbc_free(&v);
+            const char *dir = getenv("VXRT_DUMP_SHADERS");   // (the variant too, as psf_<hash>.metal or psff_<hash>.metal)
+            if (dir && *dir) {
+                char path[1024];
+                snprintf(path, sizeof path, "%s/%s_%08x.metal", dir, far ? "psff" : "psf", s->hash);
+                FILE *f = fopen(path, "w");
+                if (f) { fputs(s->fove_msl[far], f); fclose(f); }
+            }
+        } else if (s->code) vx_log("Direct3D: no foveated variant of shader %08x: %s", s->hash, v.error);
+    }
+    return s->fove_msl[far];
+}
+static int fove_has_variant(d3d_shader *s) {
+    if (s->fove_msl_tried[0]) return s->fove_msl[0] != NULL;
+    pthread_mutex_lock(&g_variant_lock);
+    int has = fove_source(s, 0) != NULL;
+    pthread_mutex_unlock(&g_variant_lock);
+    return has;
+}
+// Compiled in the background (VXRT_SYNC_SHADERS: at once), so the draw that first needs a variant does not wait for
+// Metal's compiler: until it is there (*pending) that draw goes the way of a shader without a variant.
+static id<MTLFunction> fove_function(d3d_device *dev, d3d_shader *s, int form, int far, int *pending) {
+    static const char *const names[2][3] = { { "fove", "fove-dual-source", "fove-dither" }, { "fove-far", "fove-far-dual-source", "fove-far-dither" } };
+    static int sync = -1;
+    if (sync < 0) sync = getenv("VXRT_SYNC_SHADERS") != NULL;
+    *pending = 0;
+    pthread_mutex_lock(&g_variant_lock);
+    int state = s->fove_tried[far][form];              // 0 not tried, 1 compiling, 2 done (with or without a function)
+    NSString *source = nil;
+    if (!state) {
+        const char *msl = fove_source(s, far);
+        source = !msl ? nil : form == 1 ? vx_d3d11_dual_source(msl) : form == 2 ? vx_d3d11_dither_source(msl) : @(msl);
+        s->fove_tried[far][form] = state = source ? 1 : 2;
+        if (source) variant_log(s, names[far][form], source.UTF8String, "");
+    }
+    id<MTLFunction> fn = (__bridge id<MTLFunction>)s->fove[far][form];
+    pthread_mutex_unlock(&g_variant_lock);
+    if (source) {
+        d3d_addref(&s->base);                          // kept until its compile is done
+        const char *name = names[far][form];
+        __block id<MTLFunction> made = nil;
+        d3d11_library_async((__bridge id<MTLDevice>)dev->mtl, source, sync, ^(id<MTLLibrary> lib, NSError *err) {
+            id<MTLFunction> f = lib ? [lib newFunctionWithName:@"vx_main"] : nil;
+            if (!f) vx_log("Direct3D: %s variant of shader %08x did not compile: %s", name, s->hash, err.localizedDescription.UTF8String);
+            pthread_mutex_lock(&g_variant_lock);
+            if (f) s->fove[far][form] = (void *)CFBridgingRetain(f);
+            s->fove_tried[far][form] = 2;
+            pthread_mutex_unlock(&g_variant_lock);
+            made = f;
+            d3d_release(&s->base);
+        });
+        if (sync) { fn = made; state = 2; }
+    }
+    if (state == 1) *pending = 1;
+    return fn;
+}
 static id<MTLFunction> shader_function(d3d_shader *s) {
     if (!s) return nil;
     if (!__atomic_load_n(&s->ready, __ATOMIC_ACQUIRE)) {
@@ -233,6 +299,8 @@ static void shader_destroy(d3d_object *o) {
     d3d_shader *s = (d3d_shader *)o;
     if (s->function) CFBridgingRelease(s->function);
     if (s->dual) CFBridgingRelease(s->dual);
+    for (int i = 0; i < 6; i++) if (s->fove[i / 3][i % 3]) CFBridgingRelease(s->fove[i / 3][i % 3]);
+    free(s->fove_msl[0]); free(s->fove_msl[1]); free(s->code);
     if (s->dither) CFBridgingRelease(s->dither);
     if (s->variant) CFBridgingRelease(s->variant);
     gpu_ir_pipeline_release(s->compute_ir);
@@ -297,6 +365,7 @@ static HRESULT create_shader(d3d_device *dev, const void *code, size_t size, int
         return E_INVALIDARG;
     }
     dump(&s->info, code, size);
+    if (want == DXBC_PIXEL && out && d3d_fove_on() > 0 && (s->code = malloc(size))) { memcpy(s->code, code, size); s->code_size = size; }   // (for its foveated variant, made when a draw needs it)
     unsigned char digest[CC_SHA256_DIGEST_LENGTH];
     CC_SHA256(code, (CC_LONG)size, digest);
     memcpy(s->sha, digest, 32);
@@ -555,6 +624,9 @@ typedef struct d3d_draw_state {
     d3d_buffer *so[4];                         // stream output targets
     void *dummy_depth;                         // id<MTLTexture>: for shaders writing depth with no depth target bound
     void *pass_depth;                          // the dummy depth the open render encoder has (or NULL)
+    int pass_fove, pass_fove_depth;            // the open render encoder is foveated; and its depth twin is marked as the newest
+    uint64_t fove_mask;                        // this draw: the pixel shader's textures bound as their twins (a bit per t#)
+    void *pass_fove_params;                    // ... and its map's parameters (id<MTLBuffer>)
     struct pso_key { uint32_t vs, ps, layout, blend, color[8], depth, stride[16]; } last_key;   // the last pipeline state used
     void *last_pso;
     // What is set on the open render encoder (cleared when one is made), so a draw sends Metal only what
@@ -563,6 +635,7 @@ typedef struct d3d_draw_state {
         void *pso, *dss; uint32_t stencil_ref; float blend[4]; uint32_t raster[7];
         uint32_t nvp; MTLViewport vp[16]; MTLScissorRect sc[16];
         void *buf[2][64]; NSUInteger off[2][64]; void *tex[2][80]; void *smp[2][16];
+        struct { uint32_t mask0, mask1, pos, pad, sw, sh, pw, ph; } fove; int fove_slot;   // the VxFove constants sent last, and where
     } bound;
     gpu_ir_stream gpu_ir;                     // D3D11 immediate operations execute and clear one common IR command
 } d3d_draw_state;
@@ -1249,13 +1322,14 @@ static MTLVertexFormat vertex_format_for(MTLVertexFormat f, const char *msl, uin
 
 // unbound: targets of the open render pass that this draw has no render target view for (it keeps the pass, which
 // has them: their writes are masked off).
-static id<MTLRenderPipelineState> pipeline(d3d_context *c, d3d_draw_state *s, id<MTLTexture> const *colors, int ncolors, id<MTLTexture> depth, uint32_t unbound) {
+static id<MTLRenderPipelineState> pipeline(d3d_context *c, d3d_draw_state *s, id<MTLTexture> const *colors, int ncolors, id<MTLTexture> depth, uint32_t unbound, int fove, int *fove_missing) {
     d3d_shader *vs = s->shader[STAGE_VS], *ps = s->shader[STAGE_PS], *gs = s->gs_vertices ? s->shader[STAGE_GS] : NULL;
     pso_key key;
     memset(&key, 0, sizeof key);
     key.vs = gs ? gs->id | 0x80000000u : vs->id; key.ps = ps ? ps->id : 0; key.layout = s->layout && !gs ? s->layout->id : 0; key.blend = s->blend ? s->blend->id : 0;
     for (int i = 0; i < ncolors; i++) if (colors[i]) key.color[i] = (uint32_t)colors[i].pixelFormat | (uint32_t)colors[i].sampleCount << 16 | (unbound >> i & 1u) << 31;
     if (depth) key.depth = (uint32_t)depth.pixelFormat | (uint32_t)depth.sampleCount << 16;
+    if (fove) key.depth |= (uint32_t)fove << 30;      // (foveated rendering: the pixel shader's near (1) or far (2) variant)
     if (s->layout && !gs) for (uint32_t i = 0; i < s->layout->n; i++) key.stride[s->layout->attr[i].slot & 15] = s->stride[s->layout->attr[i].slot & 15] | 0x80000000u;
     if (s->last_pso && !memcmp(&key, &s->last_key, sizeof key)) return (__bridge id<MTLRenderPipelineState>)s->last_pso;
     pthread_mutex_lock(&g_pso_lock);
@@ -1271,7 +1345,7 @@ static id<MTLRenderPipelineState> pipeline(d3d_context *c, d3d_draw_state *s, id
     if (!pd.vertexFunction || (ps && !pd.fragmentFunction)) return nil;   // a shader that did not compile
     // SRC1 blend factors on target 0: the shader's second output feeds them (or, with none, Direct3D leaves the
     // result undefined: the first output stands in).
-    int dual = 0;
+    int dual = 0, form = 0;                            // form: which of the shader's forms is used (0 base, 1 dual-source, 2 dithered)
     if (s->blend && ncolors > 0) for (int k = 1; k <= 6 && !dual; k++) if (k != 3) dual = s->blend->desc[2 + k] >= 16 && s->blend->desc[2 + k] <= 19;
     // Metal refuses dual-source blending with more than one color target, and stops the program over it (an assertion
     // in its pipeline validation; Elite Dangerous's loading screen, flat); Direct3D allows it (only target 0 blends
@@ -1281,7 +1355,7 @@ static id<MTLRenderPipelineState> pipeline(d3d_context *c, d3d_draw_state *s, id
     if (dual && targets > 1) dual = 2;
     if (dual == 1 && ps && shader_function(ps)) {
         id<MTLFunction> f = dual_source_function(c->base.dev, ps);
-        if (f) pd.fragmentFunction = f; else dual = 2;
+        if (f) { pd.fragmentFunction = f; form = 1; } else dual = 2;
     }
     if (!dual && ps && ncolors > 0 && !(s->blend && s->blend->desc[0])) {
         // 8-bit unorm targets written without blending: the dithered variant (shader_cache.m / dither_source.m)
@@ -1292,7 +1366,13 @@ static id<MTLRenderPipelineState> pipeline(d3d_context *c, d3d_draw_state *s, id
             if ((colors[i].pixelFormat != MTLPixelFormatRGBA8Unorm && colors[i].pixelFormat != MTLPixelFormatBGRA8Unorm) ||
                 colors[i].sampleCount != 1 || (rt && rt[0])) ok = 0;
         }
-        if (ok && shader_function(ps)) { id<MTLFunction> f = dither_function(c->base.dev, ps); if (f) pd.fragmentFunction = f; }
+        if (ok && shader_function(ps)) { id<MTLFunction> f = dither_function(c->base.dev, ps); if (f) { pd.fragmentFunction = f; form = 2; } }
+    }
+    if (fove && ps && pd.fragmentFunction) {           // foveated rendering: the variant; not there (yet): the caller draws without it
+        int pending;
+        id<MTLFunction> f = fove_function(c->base.dev, ps, form, fove == 2, &pending);
+        if (!f) { *fove_missing = 1; return nil; }
+        pd.fragmentFunction = f;
     }
     if (s->layout && s->layout->n && !gs) {
         MTLVertexDescriptor *vd = [MTLVertexDescriptor vertexDescriptor];
@@ -1566,6 +1646,598 @@ static void pass_stats(MTLRenderPassDescriptor *rp) {
     passes = msaa = loaded = stored = cleared = 0; since = now;
 }
 
+// ---- foveated rendering ---------------------------------------------------------------------------------------------------------
+// VXRT_FOVE=low|medium|high: the passes that draw the eyes run through a Metal rasterization rate map: full shading rate
+// around each eye's straight-ahead point, a ramp, and a floor at the edge, where a headset's lenses blur anyway. The program
+// is not asked: it has no such setting, and its targets, viewports and draws stay as they are.
+//
+// Which passes: every pass whose depth target has the size of the texture the program hands over as its eyes (both eyes
+// side by side: d3d_fove_note_eyes) and holds depth of this frame's foveated passes or is cleared for the pass. In Skyrim
+// VR that is the depth pre-pass, the scene and everything drawn over it up to the anti-aliasing pass (13 of a frame's 26
+// passes). All of them, because they share one depth and stencil buffer, which then never has to change layout.
+//
+// Twins. A pass under a map stores its picture squeezed into the top left of its targets ("physical" layout). So each
+// target of such a pass has a twin of the map's physical size, which those passes draw to instead; the texture itself
+// keeps the screen layout. Which of the two holds the newest picture is the twin's state. A foveated pass that loads a
+// target whose texture is newer first contracts it into the twin (one full-screen draw under the map). Who needs the
+// texture itself while the twin is newer first expands the twin into it (one full-screen draw): a copy that is not a
+// whole-texture copy, a compute shader, the hand-over of the eyes. A whole-texture copy goes twin to twin.
+//
+// Pixel shaders read twins in place. Expanding every intermediate picture for the next pass that samples it costs more
+// than foveation saves (Skyrim VR: 16 expands a frame). So a pixel shader has variants (dxbc_translate_fove, dxbc.h)
+// that take tables of the map and a mask of which of its textures are bound as twins, and move those textures'
+// coordinates to where the place is stored; under a map they also turn the fragment position, which is the physical
+// one there, back into the screen's for the shader's own code. Viewports and scissors are in screen coordinates under
+// a map and need nothing. What is left to expand in a Skyrim VR frame is one texture (read by a compute shader).
+// The tables, not Metal's own decoder in the shader: that is a library call whose cost per call is not small (the
+// first version called it once or more per fragment: 10 ms a frame at 4608x2250, more than the map saved at "medium").
+//
+// Memory. A texture that only foveated passes and such shaders use is never read itself; its memory is given back
+// while that lasts (fove_rest), so the twins, which are smaller, take its place instead of adding to it.
+//
+// Measured (Mac, Apple M4 (Mac mini), a replay of 200 frames of Skyrim VR in Helgen at 2304x2250 an eye, GPU working time a frame):
+// off 33.4 ms, low 32.7, medium 27.7, high 21.3; a map that shrinks nothing 37.8 (the machinery's own cost).
+//
+// The profile (box, ramp, floor per level, as fractions of the eye's height), the two peaks per eye (its own straight-
+// ahead point and the other eye's, so both eyes' maps are mirror images and the nasal side stays sharp) and the measured
+// facts about rate maps behind them are from the Klepton fork's foveation for Vulkan guests (https://github.com/myMartek/
+// Klepton, runtime/gfx/kl_fove.m at tag toolchain-890, MIT; docs/FOVEATION.md there). The method here is its own: Klepton has to
+// find the passes among MoltenVK's encoders, patches gl_FragCoord in MoltenVK's shader source and expands in place.
+//
+// Not handled: the stencil of a foveated depth target read as a texture, a twin read through a view of another format
+// (expanded first), and targets with mips, array slices, samples or integer formats (such a pass is not foveated).
+enum { FOVE_SCREEN, FOVE_PHYS, FOVE_BOTH };          // which holds the newest picture: the texture, its twin, both
+typedef struct {
+    void *phys, *view;                               // id<MTLTexture>: the twin, and a view of it in another format (sRGB)
+    void *map, *params;                              // id<MTLRasterizationRateMap> the twin is laid out by, id<MTLBuffer> its tables
+    float seam;                                      // where the eyes meet in the twin (physical x)
+    uint32_t pw, ph;
+    int state;
+    int asleep;                                      // the texture's own memory is given back (see fove_rest)
+    uint64_t used_at;                                // the foveated pass count when the texture itself was last read or written
+} fove_twin;
+static int g_fove_level = -1;
+static float g_fove_box, g_fove_ramp, g_fove_floor;
+static pthread_mutex_t g_fove_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t g_fove_w, g_fove_h, g_fove_gen = 1;  // the eyes' texture; gen counts changes of it and of the centres
+static float g_fove_fx[2] = { 0.5f, 0.5f }, g_fove_fy[2] = { 0.5f, 0.5f };
+static struct { void *map, *params; uint32_t w, h, gen, pw, ph; float seam; } g_fove_cur;   // (the drawing thread's)
+static int g_fove_twins;                             // live twins: 0 means none of the checks below has anything to do
+static uint64_t g_fove_passes, g_fove_expands, g_fove_contracts, g_fove_splits, g_fove_since;
+static uint64_t g_fove_pass_no;                      // foveated passes so far
+static int g_fove_asleep;                            // textures whose own memory is given back
+
+int d3d_fove_on(void) {
+    if (g_fove_level >= 0) return g_fove_level;
+    pthread_mutex_lock(&g_fove_lock);
+    if (g_fove_level < 0) {
+        const char *e = getenv("VXRT_FOVE");
+        int level = 0;
+        if (e && !strcmp(e, "low")) { level = 1; g_fove_box = 1216.f / 2016; g_fove_floor = 1.f / 3; }
+        else if (e && !strcmp(e, "medium")) { level = 2; g_fove_box = 1024.f / 2016; g_fove_floor = 0.22f; }
+        else if (e && !strcmp(e, "high")) { level = 3; g_fove_box = 768.f / 2016; g_fove_floor = 0.125f; }
+        else if (e && *e && strcmp(e, "off") && strcmp(e, "0")) vx_log("foveation: VXRT_FOVE=%s is not off, low, medium or high: off", e);
+        g_fove_ramp = 384.f / 2016;
+        const char *v;
+        if ((v = getenv("VXRT_FOVE_BOX")) && *v) g_fove_box = (float)atof(v);
+        if ((v = getenv("VXRT_FOVE_RAMP")) && *v) g_fove_ramp = (float)atof(v);
+        if ((v = getenv("VXRT_FOVE_FLOOR")) && *v) g_fove_floor = (float)atof(v);
+        if (!(g_fove_floor > 0.02f)) g_fove_floor = 0.02f;
+        if (g_fove_floor > 1) g_fove_floor = 1;
+        if (g_fove_box < 0) g_fove_box = 0;
+        if (g_fove_ramp < 0) g_fove_ramp = 0;
+        if (level) vx_log("foveation: %s (full rate in a box of %.3f of the eye's height, ramp %.3f, floor %.3f)", e, g_fove_box, g_fove_ramp, g_fove_floor);
+        __atomic_store_n(&g_fove_level, level, __ATOMIC_RELEASE);
+    }
+    pthread_mutex_unlock(&g_fove_lock);
+    return g_fove_level;
+}
+// For a status display: the level in use (0: none, or no map yet) and how much of the eyes' pixels the map keeps, in percent.
+int vx_d3d_fove_status(unsigned *percent) {
+    uint32_t w = g_fove_cur.w, h = g_fove_cur.h, pw = g_fove_cur.pw, ph = g_fove_cur.ph;
+    if (g_fove_level <= 0 || !g_fove_cur.map || !w || !h) return 0;
+    if (percent) *percent = (unsigned)(100.0 * pw * ph / ((double)w * h) + 0.5);
+    return g_fove_level;
+}
+void d3d_fove_note_eyes(uint32_t width, uint32_t height) {
+    if (d3d_fove_on() <= 0 || (width == g_fove_w && height == g_fove_h) || !width || !height) return;
+    pthread_mutex_lock(&g_fove_lock);
+    g_fove_w = width; g_fove_h = height; g_fove_gen++;
+    pthread_mutex_unlock(&g_fove_lock);
+    vx_log("foveation: the eyes are handed over as %ux%u (both, side by side): passes with a depth target of that size are foveated", width, height);
+}
+void d3d_fove_note_frustum(int eye, float left, float right, float up, float down) {
+    if (d3d_fove_on() <= 0 || eye < 0 || eye > 1 || !(left + right > 0) || !(up + down > 0)) return;
+    float fx = left / (left + right), fy = up / (up + down);
+    if (fabsf(fx - g_fove_fx[eye]) < 0.004f && fabsf(fy - g_fove_fy[eye]) < 0.004f) return;
+    pthread_mutex_lock(&g_fove_lock);
+    g_fove_fx[eye] = fx; g_fove_fy[eye] = fy; g_fove_gen++;
+    pthread_mutex_unlock(&g_fove_lock);
+    vx_log("foveation: eye %d looks straight ahead at %.1f%% of its width, %.1f%% of its height", eye, 100 * fx, 100 * fy);
+}
+
+// One axis of the profile: full rate within box/2 of the centre, a linear ramp, then the floor; and the larger of two.
+static float fove_profile(float d, float box, float ramp, float fl) {
+    d = fabsf(d) - box * 0.5f;
+    if (d <= 0) return 1.0f;
+    if (ramp <= 0 || d >= ramp) return fl;
+    return 1.0f - (1.0f - fl) * d / ramp;
+}
+static float fove_profile2(float x, const float c[2], float box, float ramp, float fl) {
+    return fmaxf(fove_profile(x - c[0], box, ramp, fl), fove_profile(x - c[1], box, ramp, fl));
+}
+// The map for the eyes' texture as it is now, in g_fove_cur: 1 when there is one.
+static int fove_map(d3d_device *dev) {
+    pthread_mutex_lock(&g_fove_lock);
+    uint32_t w = g_fove_w, h = g_fove_h, gen = g_fove_gen;
+    float fx[2] = { g_fove_fx[0], g_fove_fx[1] }, fy[2] = { g_fove_fy[0], g_fove_fy[1] };
+    pthread_mutex_unlock(&g_fove_lock);
+    if (!w) return 0;
+    if (g_fove_cur.gen == gen) return g_fove_cur.map != NULL;
+    if (g_fove_cur.map) CFRelease(g_fove_cur.map);
+    if (g_fove_cur.params) CFRelease(g_fove_cur.params);
+    memset(&g_fove_cur, 0, sizeof g_fove_cur);
+    g_fove_cur.gen = gen; g_fove_cur.w = w; g_fove_cur.h = h;
+    id<MTLDevice> d = (__bridge id<MTLDevice>)dev->mtl;
+    if (![d supportsRasterizationRateMapWithLayerCount:1]) {
+        static int told;
+        if (!told++) vx_log("foveation: this GPU has no rasterization rate maps: off");
+        return 0;
+    }
+    int nh = (int)MIN(w / 16 + 1, 4096u), nv = (int)MIN(h / 16 + 1, 4096u);
+    float *hc = malloc(sizeof(float) * (size_t)nh), *vc = malloc(sizeof(float) * (size_t)nv);
+    float half = w * 0.5f, box = g_fove_box * (float)h, ramp = g_fove_ramp * (float)h, cy = 0.5f * (fy[0] + fy[1]) * (float)h;
+    // each half peaks at its own eye's point and where the other eye's would be in it
+    const float c0[2] = { fx[0] * half, fx[1] * half }, c1[2] = { half + fx[1] * half, half + fx[0] * half };
+    for (int k = 0; k < nh; k++) {
+        float x = (float)k * (float)w / (float)(nh - 1);
+        float a = fove_profile2(x, c0, box, ramp, g_fove_floor), b = fove_profile2(x, c1, box, ramp, g_fove_floor);
+        hc[k] = x < half ? a : x > half ? b : fmaxf(a, b);
+    }
+    for (int k = 0; k < nv; k++) vc[k] = fove_profile((float)k * (float)h / (float)(nv - 1) - cy, box, ramp, g_fove_floor);
+    MTLRasterizationRateLayerDescriptor *layer = [[MTLRasterizationRateLayerDescriptor alloc] initWithSampleCount:MTLSizeMake((NSUInteger)nh, (NSUInteger)nv, 0) horizontal:hc vertical:vc];
+    MTLRasterizationRateMapDescriptor *md = [MTLRasterizationRateMapDescriptor rasterizationRateMapDescriptorWithScreenSize:MTLSizeMake(w, h, 1) layer:layer];
+    id<MTLRasterizationRateMap> map = [d newRasterizationRateMapWithDescriptor:md];
+    free(hc); free(vc);
+    if (!map) { vx_log("foveation: no rate map for %ux%u: off for this size", w, h); return 0; }
+    // The map as tables for the shaders (dxbc.h, dxbc_translate_fove): where each screen column and row is stored, and
+    // back, at the pixels' middles. Metal's own decoder in a shader is a library call of unknown cost per call (measured:
+    // 10 ms a frame at 4608x2250 with one or more calls per fragment); a table is two reads.
+    MTLSize p = [map physicalSizeForLayer:0];
+    id<MTLBuffer> params = [d newBufferWithLength:(w + h + p.width + p.height) * sizeof(float) options:MTLResourceStorageModeShared];
+    float *tab = params.contents;
+    for (uint32_t x = 0; x < w; x++) *tab++ = (float)[map mapScreenToPhysicalCoordinates:MTLCoordinate2DMake(x + 0.5, 0.5) forLayer:0].x;
+    for (uint32_t y = 0; y < h; y++) *tab++ = (float)[map mapScreenToPhysicalCoordinates:MTLCoordinate2DMake(0.5, y + 0.5) forLayer:0].y;
+    for (NSUInteger x = 0; x < p.width; x++) *tab++ = (float)[map mapPhysicalToScreenCoordinates:MTLCoordinate2DMake(x + 0.5, 0.5) forLayer:0].x;
+    for (NSUInteger y = 0; y < p.height; y++) *tab++ = (float)[map mapPhysicalToScreenCoordinates:MTLCoordinate2DMake(0.5, y + 0.5) forLayer:0].y;
+    g_fove_cur.map = (void *)CFBridgingRetain(map); g_fove_cur.params = (void *)CFBridgingRetain(params);
+    g_fove_cur.pw = (uint32_t)p.width; g_fove_cur.ph = (uint32_t)p.height;
+    g_fove_cur.seam = (float)[map mapScreenToPhysicalCoordinates:MTLCoordinate2DMake(half, 0) forLayer:0].x;
+    vx_log("foveation: map for %ux%u: stored as %ux%u (%.0f%% of the pixels), eyes meet at physical x %.1f; centres %.0f and %.0f of %u, %.0f of %u",
+           w, h, g_fove_cur.pw, g_fove_cur.ph, 100.0 * g_fove_cur.pw * g_fove_cur.ph / ((double)w * h), g_fove_cur.seam, c0[0], c1[0], w, cy, h);
+    return 1;
+}
+
+static int fove_depth_format(MTLPixelFormat f) { return f == MTLPixelFormatDepth32Float || f == MTLPixelFormatDepth16Unorm || f == MTLPixelFormatDepth32Float_Stencil8; }
+static NSString *const kFoveMSL = @
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct FoveV { float4 pos [[position]]; float2 uv; };\n"
+    "struct FoveC { float seam; float half_w; float pw; float ph; uint sw; uint sh; uint pad0; uint pad1; };\n"
+    "struct FoveD { float depth [[depth(any)]]; };\n"
+    "vertex FoveV fove_vs(uint vid [[vertex_id]]) {\n"
+    "    float2 p = float2((vid << 1) & 2, vid & 2);\n"
+    "    FoveV o; o.pos = float4(p * 2.0 - 1.0, 0.0, 1.0); o.uv = float2(p.x, 1.0 - p.y); return o;\n"
+    "}\n"
+    "static float fove_tab(constant float *t, float x, uint n) {\n"
+    "    float f = clamp(x - 0.5f, 0.0f, float(n - 1u));\n"
+    "    uint i = min(uint(f), n - 2u);\n"
+    "    return mix(t[i], t[i + 1u], f - float(i));\n"
+    "}\n"
+    // where a screen pixel is in the twin (the screen-to-physical tables); each eye's samples stay on its own side of the seam
+    "static float2 fove_phys(float2 screen, constant float *t, constant FoveC &c) {\n"
+    "    float2 p = float2(fove_tab(t, screen.x, c.sw), fove_tab(t + c.sw, screen.y, c.sh));\n"
+    "    if (screen.x < c.half_w) p.x = min(p.x, c.seam - 0.5); else p.x = max(p.x, c.seam + 0.5);\n"
+    "    return clamp(p, float2(0.5), float2(c.pw, c.ph) - 0.5);\n"
+    "}\n"
+    "fragment float4 fove_expand(FoveV in [[stage_in]], constant float *t [[buffer(0)]], constant FoveC &c [[buffer(1)]], texture2d<float> phys [[texture(0)]]) {\n"
+    "    constexpr sampler ls(coord::pixel, filter::linear, address::clamp_to_edge);\n"
+    "    return phys.sample(ls, fove_phys(in.pos.xy, t, c));\n"
+    "}\n"
+    "fragment FoveD fove_expand_depth(FoveV in [[stage_in]], constant float *t [[buffer(0)]], constant FoveC &c [[buffer(1)]], depth2d<float> phys [[texture(0)]]) {\n"
+    "    constexpr sampler ns(coord::pixel, filter::nearest, address::clamp_to_edge);\n"
+    "    FoveD o; o.depth = phys.sample(ns, fove_phys(in.pos.xy, t, c)); return o;\n"
+    "}\n"
+    // drawn under the map: uv is the fragment's place on the screen
+    "fragment float4 fove_contract(FoveV in [[stage_in]], texture2d<float> screen [[texture(0)]]) {\n"
+    "    constexpr sampler ls(filter::linear, address::clamp_to_edge);\n"
+    "    return screen.sample(ls, in.uv);\n"
+    "}\n"
+    "fragment FoveD fove_contract_depth(FoveV in [[stage_in]], depth2d<float> screen [[texture(0)]]) {\n"
+    "    constexpr sampler ns(filter::nearest, address::clamp_to_edge);\n"
+    "    FoveD o; o.depth = screen.sample(ns, in.uv); return o;\n"
+    "}\n";
+// kind: 0 expand, 1 contract; the pipeline for a target of this format.
+static id<MTLRenderPipelineState> fove_pipeline(d3d_device *dev, MTLPixelFormat f, int kind) {
+    static struct { MTLPixelFormat f; int kind; void *pso; } made[24];
+    static int n;
+    static void *lib;
+    for (int i = 0; i < n; i++) if (made[i].f == f && made[i].kind == kind) return (__bridge id<MTLRenderPipelineState>)made[i].pso;
+    id<MTLDevice> d = (__bridge id<MTLDevice>)dev->mtl;
+    NSError *err = nil;
+    if (!lib) {
+        id<MTLLibrary> l = [d newLibraryWithSource:kFoveMSL options:nil error:&err];
+        if (!l) { vx_log("foveation: its own shaders did not compile: %s", err.localizedDescription.UTF8String); return nil; }
+        lib = (void *)CFBridgingRetain(l);
+    }
+    int depth = fove_depth_format(f);
+    MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
+    pd.vertexFunction = [(__bridge id<MTLLibrary>)lib newFunctionWithName:@"fove_vs"];
+    pd.fragmentFunction = [(__bridge id<MTLLibrary>)lib newFunctionWithName:kind ? (depth ? @"fove_contract_depth" : @"fove_contract") : (depth ? @"fove_expand_depth" : @"fove_expand")];
+    if (depth) pd.depthAttachmentPixelFormat = f; else pd.colorAttachments[0].pixelFormat = f;
+    id<MTLRenderPipelineState> pso = [d newRenderPipelineStateWithDescriptor:pd error:&err];
+    if (!pso) vx_log("foveation: no pipeline for format %lu (%s): %s", (unsigned long)f, kind ? "contract" : "expand", err.localizedDescription.UTF8String);
+    if (n < 24) { made[n].f = f; made[n].kind = kind; made[n].pso = pso ? (void *)CFBridgingRetain(pso) : NULL; n++; }
+    return pso;
+}
+static id<MTLDepthStencilState> fove_depth_always(d3d_context *c) {
+    static void *state;
+    if (!state) { uint32_t d[13] = { 1, 1, 8 /* ALWAYS */ }; state = make_depth_state((__bridge id<MTLDevice>)c->base.dev->mtl, d); }
+    return (__bridge id<MTLDepthStencilState>)state;
+}
+// A texture that only foveated passes and their shaders use is never read in its own layout: all of that goes through the
+// twin. Its own memory, the larger of the two, is then given back to the system (an empty purgeable texture keeps its
+// identity and takes no memory) after FOVE_REST_AFTER foveated passes without such a use, and taken again, contents
+// undefined, right before the next one: an expand, a clear, or a pass that overwrites it. So the twins cost no memory
+// where they replace the texture, which is most of them. VXRT_FOVE_KEEP=1: never given back.
+#define FOVE_REST_AFTER 600
+static void fove_wake(d3d_texture *t, fove_twin *tw) {
+    tw->used_at = g_fove_pass_no;
+    if (!tw->asleep) return;
+    [(__bridge id<MTLTexture>)t->mtl setPurgeableState:MTLPurgeableStateNonVolatile];
+    tw->asleep = 0; g_fove_asleep--;
+}
+static void fove_rest(d3d_texture *t, fove_twin *tw) {
+    static int keep = -1;
+    if (tw->asleep || tw->state != FOVE_PHYS || g_fove_pass_no - tw->used_at < FOVE_REST_AFTER) return;
+    if (keep < 0) keep = getenv("VXRT_FOVE_KEEP") != NULL;
+    if (keep) return;
+    [(__bridge id<MTLTexture>)t->mtl setPurgeableState:MTLPurgeableStateEmpty];
+    tw->asleep = 1; g_fove_asleep++;
+}
+void d3d_fove_wake(d3d_texture *t) { if (t && t->fove) fove_wake(t, t->fove); }
+static void fove_stats(void) {
+    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    if (!g_fove_since) g_fove_since = now;
+    if (now - g_fove_since < 10000000000ull) return;
+    double s = (now - g_fove_since) / 1e9;
+    vx_log("foveation: %.0f foveated passes/s, %.0f expands/s, %.0f contracts/s, %.0f passes split by a read/s; %d twins, %d of their textures' memory given back",
+           g_fove_passes / s, g_fove_expands / s, g_fove_contracts / s, g_fove_splits / s, g_fove_twins, g_fove_asleep);
+    g_fove_passes = g_fove_expands = g_fove_contracts = g_fove_splits = 0; g_fove_since = now;
+}
+// VXRT_FOVE_TRACE=<n>: the first n conversions and foveated passes after the 300th foveated pass, one line each.
+static int g_fove_trace = -1;
+static const char *g_fove_why = "";
+static void fove_trace(const char *what, d3d_texture *t) {
+    if (g_fove_trace < 0) { const char *e = getenv("VXRT_FOVE_TRACE"); g_fove_trace = e ? atoi(e) : 0; }
+    if (g_fove_trace <= 0 || g_fove_passes < 300) return;
+    g_fove_trace--;
+    if (t) vx_log("fove %s %p f%lu (%s)", what, (void *)t, (unsigned long)((__bridge id<MTLTexture>)t->mtl).pixelFormat, g_fove_why);
+    else vx_log("fove %s", what);
+}
+// The twin's picture into the texture (the texture is then as new as the twin). Ends the pass in progress.
+static void fove_expand(d3d_context *c, d3d_texture *t) {
+    fove_twin *tw = t->fove;
+    fove_trace("expand", t);
+    fove_wake(t, tw);
+    d3d_end_render(c);
+    id<MTLTexture> into = (__bridge id<MTLTexture>)t->mtl, dst = into, src = (__bridge id<MTLTexture>)tw->phys;
+    int depth = fove_depth_format(dst.pixelFormat);
+    id<MTLRenderPipelineState> pso = fove_pipeline(c->base.dev, dst.pixelFormat, 0);
+    tw->state = FOVE_BOTH;
+    if (!pso) return;
+    if (!(into.usage & MTLTextureUsageRenderTarget)) {   // a texture nothing can draw to (it got its twin by a copy): by way of one that can be
+        static void *scratch[4];
+        static int next;
+        dst = nil;
+        for (int i = 0; i < 4 && !dst; i++) {
+            id<MTLTexture> k = (__bridge id<MTLTexture>)scratch[i];
+            if (k && k.pixelFormat == into.pixelFormat && k.width == into.width && k.height == into.height) dst = k;
+        }
+        if (!dst) {
+            MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:into.pixelFormat width:into.width height:into.height mipmapped:NO];
+            td.usage = MTLTextureUsageRenderTarget; td.storageMode = MTLStorageModePrivate;
+            if (!(dst = [into.device newTextureWithDescriptor:td])) return;
+            if (scratch[next]) CFRelease(scratch[next]);
+            scratch[next] = (void *)CFBridgingRetain(dst); next = (next + 1) % 4;
+        }
+    }
+    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    MTLRenderPassAttachmentDescriptor *a = depth ? (MTLRenderPassAttachmentDescriptor *)rp.depthAttachment : rp.colorAttachments[0];
+    a.texture = dst; a.loadAction = MTLLoadActionDontCare; a.storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> enc = [(__bridge id<MTLCommandBuffer>)d3d_context_cmd(c) renderCommandEncoderWithDescriptor:rp];
+    struct { float seam, half_w, pw, ph; uint32_t sw, sh, pad0, pad1; } k = { tw->seam, (float)dst.width * 0.5f, (float)tw->pw, (float)tw->ph, (uint32_t)dst.width, (uint32_t)dst.height, 0, 0 };
+    enc.label = @"fove expand";
+    [enc setRenderPipelineState:pso];
+    if (depth) [enc setDepthStencilState:fove_depth_always(c)];
+    [enc setFragmentBuffer:(__bridge id<MTLBuffer>)tw->params offset:0 atIndex:0];
+    [enc setFragmentBytes:&k length:sizeof k atIndex:1];
+    [enc setFragmentTexture:src atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [enc endEncoding];
+    if (dst != into) {
+        id<MTLBlitCommandEncoder> blit = [(__bridge id<MTLCommandBuffer>)d3d_context_cmd(c) blitCommandEncoder];
+        [blit copyFromTexture:dst toTexture:into];
+        [blit endEncoding];
+    }
+    g_fove_expands++;
+}
+// The texture's picture into the twin, under the twin's map. No pass is in progress.
+static void fove_contract(d3d_context *c, d3d_texture *t) {
+    fove_twin *tw = t->fove;
+    fove_trace("contract", t);
+    tw->used_at = g_fove_pass_no;
+    id<MTLTexture> src = (__bridge id<MTLTexture>)t->mtl, dst = (__bridge id<MTLTexture>)tw->phys;
+    int depth = fove_depth_format(dst.pixelFormat);
+    tw->state = FOVE_BOTH;
+    if (!(src.usage & MTLTextureUsageShaderRead)) return;
+    id<MTLRenderPipelineState> pso = fove_pipeline(c->base.dev, dst.pixelFormat, 1);
+    if (!pso) return;
+    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    MTLRenderPassAttachmentDescriptor *a = depth ? (MTLRenderPassAttachmentDescriptor *)rp.depthAttachment : rp.colorAttachments[0];
+    a.texture = dst; a.loadAction = MTLLoadActionDontCare; a.storeAction = MTLStoreActionStore;
+    rp.rasterizationRateMap = (__bridge id<MTLRasterizationRateMap>)tw->map;
+    id<MTLRenderCommandEncoder> enc = [(__bridge id<MTLCommandBuffer>)d3d_context_cmd(c) renderCommandEncoderWithDescriptor:rp];
+    enc.label = @"fove contract";
+    [enc setRenderPipelineState:pso];
+    if (depth) [enc setDepthStencilState:fove_depth_always(c)];
+    [enc setViewport:(MTLViewport){ 0, 0, (double)src.width, (double)src.height, 0, 1 }];
+    [enc setFragmentTexture:src atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [enc endEncoding];
+    g_fove_contracts++;
+}
+void d3d_fove_drop(d3d_texture *t) {
+    fove_twin *tw = t->fove;
+    if (!tw) return;
+    if (tw->asleep && t->mtl) fove_wake(t, tw);
+    t->fove = NULL;
+    if (tw->phys) CFRelease(tw->phys);
+    if (tw->view) CFRelease(tw->view);
+    if (tw->map) CFRelease(tw->map);
+    if (tw->params) CFRelease(tw->params);
+    free(tw);
+    __atomic_sub_fetch(&g_fove_twins, 1, __ATOMIC_RELAXED);
+}
+void d3d_fove_use(d3d_context *c, d3d_texture *t, int write) {
+    fove_twin *tw = t ? t->fove : NULL;
+    if (!tw) return;
+    if (!c) c = (d3d_context *)t->base.dev->context;
+    if (tw->state == FOVE_PHYS && c) { g_fove_why = write ? "copied to or written" : "copied from or handed over"; fove_expand(c, t); g_fove_why = ""; }
+    if (write) { tw->state = FOVE_SCREEN; fove_wake(t, tw); }
+}
+// A clear pass was recorded for v's texture: the same clear for its twin, so neither has to be converted for it.
+void d3d_fove_cleared(d3d_context *c, d3d_view *v, void *descriptor) {
+    if (!v || v->resource->kind != K_TEXTURE) return;
+    d3d_texture *t = (d3d_texture *)v->resource;
+    fove_twin *tw = t->fove;
+    if (!tw) return;
+    MTLRenderPassDescriptor *rp = (__bridge MTLRenderPassDescriptor *)descriptor;
+    id<MTLTexture> phys = (__bridge id<MTLTexture>)tw->phys;
+    int all = 1;
+    if (rp.colorAttachments[0].texture) {
+        id<MTLTexture> was = rp.colorAttachments[0].texture;
+        if (was.pixelFormat != phys.pixelFormat) {
+            id<MTLTexture> view = (__bridge id<MTLTexture>)tw->view;
+            if (!view || view.pixelFormat != was.pixelFormat) {
+                view = [phys newTextureViewWithPixelFormat:was.pixelFormat];
+                if (tw->view) CFRelease(tw->view);
+                tw->view = view ? (void *)CFBridgingRetain(view) : NULL;
+            }
+            if (view) phys = view;
+        }
+        rp.colorAttachments[0].texture = phys;
+    } else {
+        all = rp.depthAttachment.texture && (rp.stencilAttachment.texture || phys.pixelFormat != MTLPixelFormatDepth32Float_Stencil8);
+        if (rp.depthAttachment.texture) rp.depthAttachment.texture = phys;
+        if (rp.stencilAttachment.texture) rp.stencilAttachment.texture = phys;
+    }
+    [[(__bridge id<MTLCommandBuffer>)d3d_context_cmd(c) renderCommandEncoderWithDescriptor:rp] endEncoding];
+    if (all) tw->state = FOVE_BOTH;                    // (a clear of one plane leaves the other where it was newest)
+}
+// Whether the targets bound now make a foveated pass.
+static int fove_target(const d3d_view *v, uint32_t w, uint32_t h, int depth) {
+    if (v->resource->kind != K_TEXTURE || v->mip || v->first_slice) return 0;
+    const d3d_texture *t = (const d3d_texture *)v->resource;
+    if (t->dim != 2 || t->desc[TD_WIDTH] != w || t->desc[TD_HEIGHT] != h || t->desc[TD_SAMPLES] > 1 || t->desc[TD_ARRAY] != 1 || t->desc[TD_MIPS] != 1 || !t->mtl || t->shared || t->external_origin) return 0;
+    MTLPixelFormat f = ((__bridge id<MTLTexture>)t->mtl).pixelFormat;
+    if (depth) return fove_depth_format(f);
+    switch (f) {                                       // what the expand can sample and filter
+    case MTLPixelFormatRGBA8Unorm: case MTLPixelFormatRGBA8Unorm_sRGB: case MTLPixelFormatBGRA8Unorm: case MTLPixelFormatBGRA8Unorm_sRGB:
+    case MTLPixelFormatRG11B10Float: case MTLPixelFormatRGB10A2Unorm: case MTLPixelFormatRGBA16Float: case MTLPixelFormatRG16Float:
+    case MTLPixelFormatR16Float: case MTLPixelFormatRG8Unorm: case MTLPixelFormatR8Unorm: case MTLPixelFormatRG16Unorm: case MTLPixelFormatRGBA16Unorm:
+    case MTLPixelFormatR16Unorm: case MTLPixelFormatRG8Snorm: case MTLPixelFormatRGBA8Snorm: case MTLPixelFormatRG16Snorm:
+        return 1;
+    default: return 0;
+    }
+}
+// Whether the bound targets have the eyes' size (the first of them: a pass's targets are of one size).
+static int fove_eye_sized(d3d_context *c) {
+    const d3d_view *v = c->dsv;
+    for (int i = 7; i >= 0; i--) if (c->rtv[i]) v = c->rtv[i];
+    if (!v || v->resource->kind != K_TEXTURE || v->mip) return 0;
+    const d3d_texture *t = (const d3d_texture *)v->resource;
+    return t->desc[TD_WIDTH] == g_fove_w && t->desc[TD_HEIGHT] == g_fove_h;
+}
+static int fove_candidate(d3d_context *c) {
+    if (g_fove_level <= 0 || !g_fove_w || !c->dsv || c != (d3d_context *)c->base.dev->context) return 0;
+    uint32_t w = g_fove_w, h = g_fove_h;
+    if (!fove_target(c->dsv, w, h, 1)) return 0;
+    for (int i = 0; i < 8; i++) if (c->rtv[i] && !fove_target(c->rtv[i], w, h, 0)) return 0;
+    // The depth must come from a foveated pass, or be cleared for this one: a depth and stencil buffer whose texture is
+    // the newest stays in passes that are not foveated (a contract brings no stencil). Skyrim VR's fade pass tests the
+    // stencil of a buffer it never clears or draws to; and a program that never clears its depth is never foveated.
+    fove_twin *tw = ((d3d_texture *)c->dsv->resource)->fove;
+    if (tw && tw->state != FOVE_SCREEN) return 1;
+    for (int k = 0; k < c->nclears; k++) {
+        const d3d_pending_clear *p = &c->clears[k];
+        if (!p->discard && !p->is_color && p->clear_depth && p->v && d3d_same_target(p->v, c->dsv)) return 1;
+    }
+    return 0;
+}
+// t's twin for the current map: made now, or made again when the map changed. No pass is in progress.
+static fove_twin *fove_twin_for(d3d_context *c, d3d_texture *t) {
+    fove_twin *tw = t->fove;
+    if (tw && tw->map == g_fove_cur.map) return tw;
+    if (tw) { if (tw->state == FOVE_PHYS) fove_expand(c, t); d3d_fove_drop(t); }
+    id<MTLTexture> base = (__bridge id<MTLTexture>)t->mtl;
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:base.pixelFormat width:g_fove_cur.pw height:g_fove_cur.ph mipmapped:NO];
+    td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | (base.usage & MTLTextureUsagePixelFormatView);
+    td.storageMode = MTLStorageModePrivate;
+    id<MTLTexture> phys = [base.device newTextureWithDescriptor:td];
+    if (!phys) return NULL;
+    tw = calloc(1, sizeof *tw);
+    tw->phys = (void *)CFBridgingRetain(phys);
+    tw->map = (void *)CFRetain(g_fove_cur.map); tw->params = (void *)CFRetain(g_fove_cur.params);
+    tw->seam = g_fove_cur.seam; tw->pw = g_fove_cur.pw; tw->ph = g_fove_cur.ph;
+    tw->state = FOVE_SCREEN;
+    tw->used_at = g_fove_pass_no;
+    t->fove = tw;
+    if (fove_depth_format(phys.pixelFormat)) {         // starts as zeros, as the texture itself did (d3d11.m, zero_depth_texture): a contract brings depth only
+        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        rp.depthAttachment.texture = phys; rp.depthAttachment.loadAction = MTLLoadActionClear; rp.depthAttachment.storeAction = MTLStoreActionStore; rp.depthAttachment.clearDepth = 0;
+        if (phys.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) {
+            rp.stencilAttachment.texture = phys; rp.stencilAttachment.loadAction = MTLLoadActionClear; rp.stencilAttachment.storeAction = MTLStoreActionStore; rp.stencilAttachment.clearStencil = 0;
+        }
+        [[(__bridge id<MTLCommandBuffer>)d3d_context_cmd(c) renderCommandEncoderWithDescriptor:rp] endEncoding];
+    }
+    __atomic_add_fetch(&g_fove_twins, 1, __ATOMIC_RELAXED);
+    return tw;
+}
+// A new pass for the bound targets, which make a foveated one (fove_candidate): its descriptor gets the twins and the
+// map; a target that is loaded and newer in its texture is contracted first. 0: not possible, the descriptor is as it was.
+static int fove_begin(d3d_context *c, MTLRenderPassDescriptor *rp) {
+    if (!fove_map(c->base.dev)) return 0;
+    fove_twin *tw[9] = { NULL };
+    for (int i = 0; i < 8; i++) if (c->rtv[i] && rp.colorAttachments[i].texture && !(tw[i] = fove_twin_for(c, (d3d_texture *)c->rtv[i]->resource))) return 0;
+    if (!(tw[8] = fove_twin_for(c, (d3d_texture *)c->dsv->resource))) return 0;
+    for (int i = 0; i < 8; i++) {
+        if (!tw[i]) continue;
+        MTLRenderPassColorAttachmentDescriptor *a = rp.colorAttachments[i];
+        if (a.loadAction == MTLLoadActionLoad && tw[i]->state == FOVE_SCREEN) fove_contract(c, (d3d_texture *)c->rtv[i]->resource);
+        id<MTLTexture> phys = (__bridge id<MTLTexture>)tw[i]->phys;
+        if (a.texture.pixelFormat != phys.pixelFormat) {       // (an sRGB view of the texture: the same view of the twin)
+            id<MTLTexture> view = (__bridge id<MTLTexture>)tw[i]->view;
+            if (!view || view.pixelFormat != a.texture.pixelFormat) {
+                view = [phys newTextureViewWithPixelFormat:a.texture.pixelFormat];
+                if (tw[i]->view) CFRelease(tw[i]->view);
+                tw[i]->view = view ? (void *)CFBridgingRetain(view) : NULL;
+            }
+            if (view) phys = view;
+        }
+        a.texture = phys;
+        tw[i]->state = FOVE_PHYS;
+        fove_rest((d3d_texture *)c->rtv[i]->resource, tw[i]);
+    }
+    int loads = rp.depthAttachment.loadAction == MTLLoadActionLoad || (rp.stencilAttachment.texture && rp.stencilAttachment.loadAction == MTLLoadActionLoad);
+    if (loads && tw[8]->state == FOVE_SCREEN) fove_contract(c, (d3d_texture *)c->dsv->resource);
+    else if (!loads) tw[8]->state = FOVE_PHYS;         // (cleared here: the twin is the newest from now on)
+    rp.depthAttachment.texture = (__bridge id<MTLTexture>)tw[8]->phys;
+    if (rp.stencilAttachment.texture) rp.stencilAttachment.texture = (__bridge id<MTLTexture>)tw[8]->phys;
+    rp.rasterizationRateMap = (__bridge id<MTLRasterizationRateMap>)g_fove_cur.map;
+    d3d_draw_state *s = state_of(c);
+    s->pass_fove_params = g_fove_cur.params;
+    s->pass_fove_depth = tw[8]->state == FOVE_PHYS;   // (else: set by the first draw that writes depth)
+    fove_rest((d3d_texture *)c->dsv->resource, tw[8]);
+    g_fove_passes++; g_fove_pass_no++;
+    fove_stats();
+    if (g_fove_trace) {
+        char text[200]; size_t l = 0;
+        for (int i = 0; i < 8; i++) if (tw[i]) l += (size_t)snprintf(text + l, sizeof text - l, " c%d:%p%s", i, (void *)c->rtv[i]->resource, rp.colorAttachments[i].loadAction == MTLLoadActionLoad ? "" : "*");
+        snprintf(text + l, sizeof text - l, " d:%p%s", (void *)c->dsv->resource, loads ? "" : "*");
+        if (g_fove_trace > 0 && g_fove_passes >= 300) { g_fove_trace--; vx_log("fove pass%s", text); }
+    }
+    return 1;
+}
+// A new pass that is not foveated: targets of it that are newer in their twins are expanded when the pass loads them,
+// and are then the newest themselves.
+static void fove_plain_pass(d3d_context *c, MTLRenderPassDescriptor *rp) {
+    for (int i = 0; i < 8; i++) {
+        d3d_view *v = c->rtv[i];
+        if (!v || v->resource->kind != K_TEXTURE || !((d3d_texture *)v->resource)->fove) continue;
+        d3d_texture *t = (d3d_texture *)v->resource;
+        if (((fove_twin *)t->fove)->state == FOVE_PHYS && rp.colorAttachments[i].loadAction == MTLLoadActionLoad) { g_fove_why = "target of a plain pass"; fove_expand(c, t); g_fove_why = ""; }
+        ((fove_twin *)t->fove)->state = FOVE_SCREEN;
+        fove_wake(t, t->fove);
+    }
+    d3d_view *v = c->dsv;
+    if (v && v->resource->kind == K_TEXTURE && ((d3d_texture *)v->resource)->fove) {
+        d3d_texture *t = (d3d_texture *)v->resource;
+        if (((fove_twin *)t->fove)->state == FOVE_PHYS && rp.depthAttachment.loadAction == MTLLoadActionLoad) fove_expand(c, t);
+        if (!(v->flags & 1)) ((fove_twin *)t->fove)->state = FOVE_SCREEN;
+        fove_wake(t, t->fove);
+    }
+}
+// Before a draw or dispatch: what its shaders read must be current where they read it. A pixel shader with a foveated
+// variant reads a texture whose twin is newer straight from the twin (returned: a bit per such t#; the variant moves the
+// coordinates); for any other reader the twin is expanded into the texture first, which ends the pass in progress. A
+// texture that is one of the bound targets is left alone (the shader reads 0 there, as in Direct3D), unless it is a
+// depth target bound read-only.
+static uint64_t fove_reads(d3d_context *c, d3d_draw_state *s, int first_stage, int last_stage) {
+    uint64_t direct = 0;
+    for (int st = first_stage; st <= last_stage; st++) {
+        d3d_shader *sh = s->shader[st];
+        if (!sh) continue;
+        for (uint64_t m = sh->info.textures[0]; m; m &= m - 1) {
+            int slot = __builtin_ctzll(m);
+            d3d_view *v = s->srv[st][slot];
+            if (!v || v->resource->kind != K_TEXTURE) continue;
+            d3d_texture *t = (d3d_texture *)v->resource;
+            fove_twin *tw = t->fove;
+            if (!tw || tw->state != FOVE_PHYS) continue;
+            if (st != STAGE_CS) {
+                int hit = reads_target(v, c->dsv, 1);
+                for (int i = 0; i < 8 && !hit; i++) hit = reads_target(v, c->rtv[i], 0);
+                if (hit) continue;
+            }
+            // (the twin stands in when the view is the whole texture as it is: 2D, and no other format than the texture's)
+            if (st == STAGE_PS && sh->info.tex_dim[slot] == 3 /* DIM_2D */ && tw->map == g_fove_cur.map && shader_texture(v) == (__bridge id<MTLTexture>)t->mtl && fove_has_variant(sh)) {
+                direct |= 1ull << slot;
+                continue;
+            }
+            if (c->render) g_fove_splits++;
+            char why[64]; snprintf(why, sizeof why, "%s shader %08x reads t%d%s", st == STAGE_CS ? "compute" : st == STAGE_PS ? "pixel" : "vertex", sh->hash, slot, c->render ? ", pass split" : "");
+            g_fove_why = why; fove_expand(c, t); g_fove_why = "";
+        }
+        for (uint32_t m = sh->info.uavs; m; m &= m - 1) {       // a texture written by the shader: the newest from then on
+            int i = __builtin_ctz(m);
+            d3d_view *v = i < 8 ? s->uav[st][i] : NULL;
+            if (v && v->resource->kind == K_TEXTURE && ((d3d_texture *)v->resource)->fove) d3d_fove_use(c, (d3d_texture *)v->resource, 1);
+        }
+    }
+    return direct;
+}
+// CopyResource between two textures that can be targets of foveated passes, the source newer in its twin: twin to twin
+// (stencil and all), and the destination is then newer in its twin too. 0: not such a copy.
+int d3d_fove_copy(d3d_context *c, d3d_texture *dst, d3d_texture *src) {
+    fove_twin *st = src->fove;
+    if (!st || st->state != FOVE_PHYS || st->map != g_fove_cur.map || dst == src || !dst->mtl) return 0;
+    if (dst->dim != 2 || dst->desc[TD_WIDTH] != src->desc[TD_WIDTH] || dst->desc[TD_HEIGHT] != src->desc[TD_HEIGHT] || dst->desc[TD_SAMPLES] > 1 ||
+        dst->desc[TD_ARRAY] != 1 || dst->desc[TD_MIPS] != 1 || dst->shared || dst->external_origin) return 0;
+    id<MTLTexture> a = (__bridge id<MTLTexture>)src->mtl, b = (__bridge id<MTLTexture>)dst->mtl;
+    if (a.pixelFormat != b.pixelFormat) return 0;
+    d3d_end_render(c);
+    fove_twin *dt = fove_twin_for(c, dst);
+    if (!dt) return 0;
+    id<MTLBlitCommandEncoder> blit = [(__bridge id<MTLCommandBuffer>)d3d_context_cmd(c) blitCommandEncoder];
+    [blit copyFromTexture:(__bridge id<MTLTexture>)st->phys toTexture:(__bridge id<MTLTexture>)dt->phys];
+    [blit endEncoding];
+    dt->state = FOVE_PHYS;
+    fove_rest(dst, dt);
+    fove_trace("copy twin to twin", dst);
+    return 1;
+}
+
 // Whether the open render pass can take a draw to the bound targets: the same depth target, and each bound render
 // target one of the pass's (a pass may have more: a game that switches between drawing color and depth and drawing
 // depth alone keeps one pass, instead of writing its multisampled targets out and reading them back each time).
@@ -1635,7 +2307,11 @@ static id<MTLRenderCommandEncoder> render_pass(d3d_context *c, id<MTLTexture> ex
     }
     state_of(c)->pass_depth = (__bridge void *)extra_depth;
     if (!any) return nil;
+    int fove = !extra_depth && fove_candidate(c);     // (before the clears go into the pass: a depth clear counts)
     if (c->nclears) d3d_clears_into_pass(c, (__bridge void *)rp, c->rtv, c->dsv);
+    fove = fove && fove_begin(c, rp);
+    if (!fove && g_fove_twins) fove_plain_pass(c, rp);
+    state_of(c)->pass_fove = fove;
     pass_stats(rp);
     if (d3d_pass_dump_begin()) {                      // VXRT_PASS_DUMP: each target as c<i>/d <w>x<h> f<format> x<samples> <load><store>
         static const char act[] = "LCDS";             // load: L(oad) C(lear) D(ont care); store: S(tore) D(ont care)
@@ -1716,6 +2392,7 @@ static void bind_buffer(id<MTLRenderCommandEncoder> enc, bound_state *b, int st,
     } else if (st == STAGE_VS) [enc setVertexBuffer:buf offset:off atIndex:idx];
     else [enc setFragmentBuffer:buf offset:off atIndex:idx];
     if (idx < 64) { b->buf[st][idx] = p; b->off[st][idx] = off; }
+    if (st == STAGE_PS && b->fove_slot == (int)idx + 1) b->fove_slot = 0;   // (the VxFove constants are no longer there)
 }
 static void bind_texture(id<MTLRenderCommandEncoder> enc, bound_state *b, int st, id<MTLTexture> t, unsigned idx) {
     void *p = (__bridge void *)t;
@@ -1884,6 +2561,7 @@ static void bind_stage(d3d_context *c, d3d_draw_state *s, int st, id<MTLRenderCo
     for (int i = 0; i < 64; i++) {                              // texture SRVs t0..t63 (the shader may declare up to t127)
         if (!(sh->info.textures[0] & (1ull << i))) continue;
         id<MTLTexture> tex = shader_texture(readable_srv(c, sh, i, s->srv[st][i]));
+        if (st == STAGE_PS && (s->fove_mask >> i & 1) && !cenc) tex = (__bridge id<MTLTexture>)((fove_twin *)((d3d_texture *)s->srv[st][i]->resource)->fove)->phys;   // (foveated rendering: read from its twin)
         if (!tex) tex = zero_texture(c, sh->info.tex_dim[i], sh->info.tex_ret[i], sh->info.tex_cmp[i]);   // (reads 0, as Direct3D)
         SET_TEXTURE(tex, i);
     }
@@ -2213,6 +2891,7 @@ static id<MTLRenderCommandEncoder> prepare(d3d_context *c, MTLPrimitiveType *typ
         }
         if (reads) { d3d_end_render(c); d3d_clears_flush(c); }
     }
+    s->fove_mask = g_fove_twins ? fove_reads(c, s, STAGE_VS, STAGE_PS) : 0;
     id<MTLTexture> colors[8] = { nil };
     int ncolors = 0;
     for (int i = 0; i < 8; i++) if (c->rtv[i]) { colors[i] = view_texture(c->rtv[i]); ncolors = i + 1; }
@@ -2230,16 +2909,42 @@ static id<MTLRenderCommandEncoder> prepare(d3d_context *c, MTLPrimitiveType *typ
         depth = extra = d;
     }
     uint32_t unbound = 0;
+    int fove = 0;                                      // whether the pass this draw goes to is foveated
     if (pass_covers(c, extra)) {                       // the open pass's targets, those not bound here masked off
         for (int i = 0; i < 8; i++) {
             if (!c->render_rtv[i] || c->rtv[i]) continue;
             colors[i] = view_texture(c->render_rtv[i]); unbound |= 1u << i; ncolors = MAX(ncolors, i + 1);
         }
+        fove = s->pass_fove;
+    } else if (g_fove_level > 0) fove = !extra && fove_candidate(c) && fove_map(c->base.dev);
+    // The pixel shader's foveated variant: in a foveated pass when it reads its position, and wherever it reads a twin;
+    // the near one (1) in a pass of the eyes' size, the far one (2) in any other.
+    d3d_shader *fps = s->shader[STAGE_PS];
+    int variant = fps && (s->fove_mask || (fove && fps->info.reads_position && fove_has_variant(fps))) ? (fove || fove_eye_sized(c) ? 1 : 2) : 0;
+    int missing = 0;
+    id<MTLRenderPipelineState> pso = pipeline(c, s, colors, ncolors, depth, unbound, variant, &missing);
+    if (!pso && missing) {                             // the variant is still being compiled (or never will be): the textures themselves
+        for (uint64_t m = s->fove_mask; m; m &= m - 1) {
+            d3d_texture *t = (d3d_texture *)s->srv[STAGE_PS][__builtin_ctzll(m)]->resource;
+            if (((fove_twin *)t->fove)->state == FOVE_PHYS) { g_fove_why = "read by a shader whose variant is not compiled yet"; fove_expand(c, t); g_fove_why = ""; }
+        }
+        s->fove_mask = 0; variant = 0;
+        if (!pass_covers(c, extra)) {                  // the expand ended the pass this draw would have joined: a pass of the bound targets alone
+            ncolors = 0; unbound = 0;
+            for (int i = 0; i < 8; i++) { if (c->rtv[i]) ncolors = i + 1; else colors[i] = nil; }
+            fove = g_fove_level > 0 && !extra && fove_candidate(c) && fove_map(c->base.dev);
+        }
+        pso = pipeline(c, s, colors, ncolors, depth, unbound, 0, &missing);
     }
-    id<MTLRenderPipelineState> pso = pipeline(c, s, colors, ncolors, depth, unbound);
     if (!pso) return nil;
     id<MTLRenderCommandEncoder> enc = render_pass(c, extra);
     if (!enc) return nil;
+    if (fove != s->pass_fove) {                        // (the pass could not be foveated after all: the pipeline for what it is)
+        variant = fps && (s->fove_mask || (s->pass_fove && fps->info.reads_position && fove_has_variant(fps))) ? (s->pass_fove || fove_eye_sized(c) ? 1 : 2) : 0;
+        pso = pipeline(c, s, colors, ncolors, depth, unbound, variant, &missing);
+        if (!pso && missing && !s->fove_mask) { variant = 0; pso = pipeline(c, s, colors, ncolors, depth, unbound, 0, &missing); }
+        if (!pso) return nil;
+    }
     if (c->prof_sample >= 0 && s->shader[STAGE_PS] && !prof_note_shader((uint32_t)c->prof_sample, s->shader[STAGE_PS]->hash)) c->prof_sample = -1;
     bound_state *bs = &s->bound;
     if (bs->pso != (__bridge void *)pso) { [enc setRenderPipelineState:pso]; bs->pso = (__bridge void *)pso; }
@@ -2307,6 +3012,22 @@ static id<MTLRenderCommandEncoder> prepare(d3d_context *c, MTLPrimitiveType *typ
         bind_stage(c, s, STAGE_VS, enc, nil);
     }
     bind_stage(c, s, STAGE_PS, enc, nil);
+    if (variant) {                                     // the variant's two buffers: the map's tables, and what is in which layout
+        __typeof__(bs->fove) k = { (uint32_t)s->fove_mask, (uint32_t)(s->fove_mask >> 32), (uint32_t)s->pass_fove, 0, g_fove_cur.w, g_fove_cur.h, g_fove_cur.pw, g_fove_cur.ph };
+        bind_buffer(enc, bs, STAGE_PS, (__bridge id<MTLBuffer>)(s->pass_fove ? s->pass_fove_params : g_fove_cur.params), 0, (unsigned)fps->fove_slot[0]);
+        if (bs->fove_slot != fps->fove_slot[1] + 1 || memcmp(&bs->fove, &k, sizeof k)) {
+            [enc setFragmentBytes:&k length:sizeof k atIndex:(NSUInteger)fps->fove_slot[1]];
+            bs->buf[STAGE_PS][fps->fove_slot[1]] = (void *)-1;       // (no longer a buffer of ours)
+            bs->fove = k; bs->fove_slot = fps->fove_slot[1] + 1;
+        }
+    }
+    if (s->pass_fove) {
+        if (!s->pass_fove_depth && c->dsv && !(c->dsv->flags & 1) && (!s->depth || (s->depth->desc[0] && s->depth->desc[1]))) {
+            fove_twin *tw = ((d3d_texture *)c->dsv->resource)->fove;   // the first draw of the pass that writes depth
+            if (tw) tw->state = FOVE_PHYS;
+            s->pass_fove_depth = 1;
+        }
+    }
     return enc;
 }
 
@@ -2805,6 +3526,7 @@ static int gpu11_dispatch_metal(d3d_context *c, id<MTLComputePipelineState> pso,
     if (!pso || !threads) return GPU_IR_INVALID;
     d3d_draw_state *s = state_of(c);
     d3d_shader *cs = s->shader[STAGE_CS];
+    if (g_fove_twins) fove_reads(c, s, STAGE_CS, STAGE_CS);
     d3d_end_render(c);
     id<MTLComputeCommandEncoder> enc;
     if (prof_on(c->base.dev)) {                         // VXRT_GPU_PROFILE: the dispatch timed

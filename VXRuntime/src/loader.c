@@ -1717,7 +1717,12 @@ int main(int argc, char **argv, char **envp) {
     if (vx_xrizer_openvr_enabled()) {
         size_t count = 0;
         const vx_export *exports = vx_xrizer_openvr_exports(&count);
-        if (vx_native_openvr_enabled() || vx_xrizer_dev_host_start(getenv("VXRT_XRIZER_DYLIB"), 1024, 1024))
+        // VXRT_XRIZER_DEV_EYE=<width>x<height>: the eye size the dev host recommends (default 1024x1024), to measure the
+        // renderer at a headset's resolution on the Mac.
+        unsigned eye_w = 1024, eye_h = 1024;
+        const char *eye = getenv("VXRT_XRIZER_DEV_EYE");
+        if (eye && (sscanf(eye, "%ux%u", &eye_w, &eye_h) != 2 || eye_w < 256 || eye_h < 256 || eye_w > 4096 || eye_h > 4096)) { eye_w = eye_h = 1024; vx_log("xrizer dev host: VXRT_XRIZER_DEV_EYE=%s is not <256..4096>x<256..4096>: 1024x1024", eye); }
+        if (vx_native_openvr_enabled() || vx_xrizer_dev_host_start(getenv("VXRT_XRIZER_DYLIB"), eye_w, eye_h))
             vx_log("xrizer dev host: configuration unavailable or conflicting; OpenVR initialization fails closed");
         vx_register_module("openvr_api.dll", exports, count);
     } else

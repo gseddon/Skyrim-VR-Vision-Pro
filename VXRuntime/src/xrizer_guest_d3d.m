@@ -4,6 +4,7 @@
 #include "xrizer_guest_d3d.h"
 #include "xrizer_eye_ring.h"   /* vx_eye_ring_sync_requested() */
 #include "vx.h"
+#include "native_vr.h"
 #include <stdlib.h>
 
 typedef struct lease { d3d_texture *texture; void *metal; struct lease *next; } lease;
@@ -45,6 +46,12 @@ static int32_t acquire(void *ctx, void *handle, XrizerMetalTexture *out) {
         d3d_release(&t->base); return -1;
     }
     note_acquire("accepted", handle, t, src, device_ok);
+    if (d3d_fove_on()) {                                   /* foveated rendering: this is the eyes' size; the texture itself must hold the newest picture */
+        d3d_fove_note_eyes(t->desc[TD_WIDTH], t->desc[TD_HEIGHT]);
+        float fr[2][4];                                    /* raw signed tangents: left, right, top, bottom */
+        if (vx_native_vr_last_frustum(fr)) for (int e = 0; e < 2; e++) d3d_fove_note_frustum(e, -fr[e][0], fr[e][1], -fr[e][2], fr[e][3]);
+        d3d_fove_use(NULL, t, 0);
+    }
     if (b->acquired == UINT64_MAX) { d3d_release(&t->base); return -1; }
     lease *held=malloc(sizeof(*held)); if (!held) { d3d_release(&t->base); return -1; }
     held->texture=t; held->metal=(void *)CFRetain(t->mtl); held->next=b->active; b->active=held; ++b->acquired;

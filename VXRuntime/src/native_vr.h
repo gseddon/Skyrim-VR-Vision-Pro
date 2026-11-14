@@ -43,6 +43,8 @@ vx_native_vr *vx_native_vr_create(void (*retain)(void *), void (*release)(void *
 // The caller must exclude concurrent calls during a successful destroy.
 int vx_native_vr_destroy(vx_native_vr *q);
 int vx_native_vr_begin(vx_native_vr *q, const vx_native_vr_pose *pose, vx_native_vr_handle *handle);
+// The frustum of the newest frame begun on any queue (raw signed tangents, as in the pose); 0 before the first.
+int vx_native_vr_last_frustum(float out[2][4]);
 int vx_native_vr_submit(vx_native_vr *q, vx_native_vr_handle handle, unsigned eye,
                         uint64_t frame_id, uint64_t pose_id, const vx_native_vr_eye *image);
 int vx_native_vr_complete(vx_native_vr *q, vx_native_vr_handle handle, unsigned eye);

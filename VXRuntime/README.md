@@ -42,6 +42,7 @@ VXRT_PROFILE=report.txt ...                # sampling profiler through Rosetta: 
 VXRT_GPU_TIMESTAMPS=1 ...                  # timestamp queries are the GPU's end times (default: the CPU's, on the same clock)
 VXRT_FLUSH_DRAWS=100 ...                   # send recorded work to the GPU every 100 draws, between render passes (default: off)
 VXRT_EAGER_CLEARS=1 ...                    # clears as passes of their own (default: folded into the next render pass's load action)
+VXRT_FOVE=low|medium|high ...              # Direct3D 11: foveated rendering of the eyes' passes through a rasterization rate map (src/d3d11_draw.m, "foveated rendering"); VXRT_FOVE_BOX/RAMP/FLOOR override the profile, VXRT_FOVE_TRACE=n lists conversions, VXRT_FOVE_KEEP=1 keeps the textures' own memory
 VXRT_EXTRA_ARGS='helper.exe=--a --b' ...   # helper.exe, wherever in the process tree it starts, gets --a --b after its name
 <VXRT_ROOT>/program_env.txt                # "NMS.exe VXRT_STATS=1 ...": settings for one program however it starts (a game Windows Steam starts)
 VXRT_STATS=1 (Vulkan)                      # every 5 s: fps, frame times, GPU busy, submit/encode/present/drawable waits, draws, passes, barriers, pipelines and compiles

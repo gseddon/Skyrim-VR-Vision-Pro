@@ -296,6 +296,7 @@ static WINAPI HRESULT texture3d_qi(void *this, const GUID *iid, void **out) {
 }
 static void texture_destroy(d3d_object *o) {
     d3d_texture *t = (d3d_texture *)o;
+    d3d_fove_drop(t);
     if (t->mtl) CFBridgingRelease(t->mtl);
     if (t->shared) d3d_shared_release(t->shared - 1);            // only its creator's release frees the slot
     free(t->cpu);
@@ -438,6 +439,7 @@ d3d_texture *d3d_texture_wrap(d3d_device *dev, const uint32_t desc[TD_COUNT], vo
 d3d_texture *d3d_texture_create(d3d_device *dev, const uint32_t desc[TD_COUNT], HRESULT *hr) { return texture_create(dev, desc, 2, 1, hr); }
 void d3d_texture_replace(d3d_texture *t, void *mtl_texture) {
     t->external_origin = 1;
+    d3d_fove_drop(t);
     if (t->mtl) CFBridgingRelease(t->mtl);
     t->mtl = mtl_texture;
     id<MTLTexture> tex = (__bridge id<MTLTexture>)mtl_texture;
@@ -666,13 +668,15 @@ void d3d_vtable_override(void **vt, const char *const *names, int count, const d
         for (const d3d_method *m = impl; m->name; m++) if (!strcmp(m->name, names[i])) { vt[i] = m->fn; break; }
 }
 // VXRT_STATS=1: every 2 seconds, how busy the GPU was with this process's command buffers.
+static double g_gpu_busy_total;                          // (and in all, for the replayer's summary)
+double d3d_gpu_busy_seconds(void) { return g_gpu_busy_total; }
 static void gpu_stats(double start, double end) {
     static int on = -1;
     static double busy, since, last_end;
     if (on < 0) on = getenv("VXRT_STATS") != NULL;
     if (!on || end <= start) return;
     double from = start > last_end ? start : last_end;     // command buffers can overlap
-    if (end > from) busy += end - from;
+    if (end > from) { busy += end - from; g_gpu_busy_total += end - from; }
     if (end > last_end) last_end = end;
     if (!since) since = start;
     if (end - since >= 2.0) {
@@ -959,7 +963,9 @@ static void clear_pass(d3d_context *c, d3d_view *v, const float *color, int dept
         }
     }
     d3d_end_render(c);
+    if (t->fove) d3d_fove_wake(t);                          // (foveated rendering: its own memory may have been given back)
     [[raw_cmd(c) renderCommandEncoderWithDescriptor:rp] endEncoding];
+    if (t->fove) d3d_fove_cleared(c, v, (__bridge void *)rp);   // (... and the twin gets the same clear)
 }
 static uint64_t g_discards, g_discards_used;   // (VXRT_STATS)
 // Clears wait for the render pass that draws to their target, which then starts from the clear values (its load
@@ -1452,6 +1458,8 @@ static WINAPI void ctx_copy_resource(void *this, d3d_object *dst, d3d_object *sr
             !d3d_copy_formats_compatible(d->desc[TD_FORMAT], s->desc[TD_FORMAT]))
             return;
     }
+    if (dst->kind == K_TEXTURE && d3d_fove_copy(c, (d3d_texture *)dst, (d3d_texture *)src)) { d3d_mark_gpu(c, dst); d3d_mark_gpu(c, src); return; }   // (foveated rendering: twin to twin)
+    if (dst->kind == K_TEXTURE) { d3d_fove_use(c, (d3d_texture *)src, 0); d3d_fove_use(c, (d3d_texture *)dst, 1); }   // (foveated rendering)
     d3d_end_render(c);
     if (!d3d11_record_copy_resource(c, dst, src)) {
         // Keep the prior Metal path available for a resource shape the common metadata cannot describe.
@@ -1479,6 +1487,10 @@ static WINAPI void ctx_copy_subresource_region(void *this, d3d_object *dst, uint
     trace_shared_use("region copy source", src); trace_shared_use("region copy destination", dst);
     if (!dst || !src || dst->kind != src->kind ||
         (dst == src && (dst->kind == K_BUFFER || dst_sub == src_sub))) return;
+    if (dst->kind == K_TEXTURE && !x && !y && !z && !dst_sub && !src_sub && dst != src &&
+        (!box || (!box[0] && !box[1] && !box[2] && box[3] >= ((d3d_texture *)src)->desc[TD_WIDTH] && box[4] >= ((d3d_texture *)src)->desc[TD_HEIGHT])) &&
+        d3d_fove_copy(c, (d3d_texture *)dst, (d3d_texture *)src)) { d3d_mark_gpu(c, dst); d3d_mark_gpu(c, src); return; }   // (foveated rendering: a whole texture, twin to twin)
+    if (dst->kind == K_TEXTURE) { d3d_fove_use(c, (d3d_texture *)src, 0); d3d_fove_use(c, (d3d_texture *)dst, 1); }   // (foveated rendering)
     d3d_end_render(c);
     if (dst->kind == K_TEXTURE) {
         d3d_texture *ds = (d3d_texture *)dst, *ss = (d3d_texture *)src;
@@ -1545,7 +1557,7 @@ static void upload_texture(d3d_context *c, d3d_texture *t, uint32_t sub, const u
         for (uint32_t r = 0; r < rows; r++)
             memcpy((uint8_t *)staging.contents + z * image + (size_t)r * pitch, (const uint8_t *)data + z * depth_pitch + (size_t)r * row_pitch, pitch);
     id<MTLCommandBuffer> own = nil;
-    if (c) { d3d_end_render(c); d3d_mark_gpu(c, &t->base); }
+    if (c) { d3d_fove_use(c, t, 1); d3d_end_render(c); d3d_mark_gpu(c, &t->base); }
     else own = [(__bridge id<MTLCommandQueue>)t->base.dev->queue commandBuffer];
     id<MTLBlitCommandEncoder> blit = [(c ? context_cmd(c) : own) blitCommandEncoder];
     [blit copyFromBuffer:staging sourceOffset:0 sourceBytesPerRow:pitch sourceBytesPerImage:image sourceSize:sz

@@ -93,6 +93,11 @@ names, precedence and Info.plist default names (`klepton.renderScale`, `klepton.
 window and settings page layout and wording (`KleptonApp.swift` BootView/PlayerSettingsView/settingsPage, `KleptonTuning.swift` TuningView)
 in `VXRuntime/xros/app/Sources/VXStartView.swift`. Details: `third_party/klepton_host/SOURCE.md`.
 
+The foveated rendering of the game's passes (`VXRuntime/src/d3d11_draw.m`, "foveated rendering") takes its rate profile (three
+levels, two peaks per eye) and the seam clamp from the same fork's `runtime/gfx/kl_fove.m` and `docs/FOVEATION.md` (tag `toolchain-890`,
+MIT, the fork's own work on top of Klepton); the functions are ported, the rest is written for this renderer. Details:
+`third_party/klepton_host/SOURCE.md`.
+
 ## WMA v2 decoder derived from FFmpeg (LGPL-2.1-or-later)
 
 `VXRuntime/src/wmadec/` decodes xWMA (WMA v2, format tag 0x161) audio for

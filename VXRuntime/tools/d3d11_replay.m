@@ -166,6 +166,10 @@ static uint64_t g_eye_images, g_eye_same, g_eye_compared;
 
 static void eye_record(rd *r) {
     uint32_t eye = r32(r), xid = r32(r), x = r32(r), y = r32(r), w = r32(r), h = r32(r);
+    if (d3d_fove_on()) {                               // foveated rendering: this is the eyes' size (as xrizer's hand-over says live)
+        d3d_texture *et = obj(xid);
+        if (et) { d3d_fove_note_eyes(et->desc[TD_WIDTH], et->desc[TD_HEIGHT]); d3d_fove_use(NULL, et, 0); }
+    }
     if (!in_range() || (!g_eye_dir && !g_cmp_dir) || g_neyes >= 4) return;
     if (!g_eye_dir) {                                  // only comparing: only frames with a live dump (this frame's id, if ids run on)
         char path[1200];
@@ -218,10 +222,19 @@ static void eyes_done(uint64_t fid) {
     }
     g_neyes = 0;
 }
+// VXRT_STATS: the GPU's working time for the frames really drawn (after --fast's fast-forward, whose uploads would
+// otherwise drown them): marked when the first drawn frame begins, with everything before it finished.
+extern double d3d_gpu_busy_seconds(void);
+static double g_busy_mark = -1;
+static uint64_t g_busy_from;
 static void frame_done(uint64_t fid) {
     if (g_eye_unit) eyes_done(fid);
     g_frame = fid + 1;
     g_frame_draws = 0;
+    if (g_busy_mark < 0 && g_frame >= g_skip_before && g_dev && getenv("VXRT_STATS")) {
+        d3d_flush(g_dev, 1);
+        g_busy_mark = d3d_gpu_busy_seconds(); g_busy_from = g_frame;
+    }
 }
 
 // ---- render target dumps -----------------------------------------------------------------------------------------------
@@ -817,6 +830,13 @@ int main(int argc, char **argv) {
            (unsigned long long)records, (double)bytes / 1048576.0, secs, (unsigned long long)(g_frame - 1), g_eye_unit ? "eye frames" : "presents",
            (unsigned long long)g_draws, (unsigned long long)presents, (unsigned long long)g_reads,
            clean ? "the capture's end" : g_frame > g_to ? "the frames asked for" : truncated == 2 ? "the file ends without an end record (the process ended without closing the capture; a frame or readback flushed what came before)" : truncated ? "the file ends inside a record (a capture cut short): stopped there" : "?");
+    if (getenv("VXRT_STATS")) {
+        double all = d3d_gpu_busy_seconds();
+        uint64_t n = g_busy_mark >= 0 && g_frame > g_busy_from ? g_frame - g_busy_from : 0;
+        printf("GPU busy with the replayed work: %.3f s", all);
+        if (n) printf("; with the %llu frames drawn from frame %llu on: %.3f s, %.2f ms a frame", (unsigned long long)n, (unsigned long long)g_busy_from, all - g_busy_mark, 1000 * (all - g_busy_mark) / (double)n);
+        printf("\n");
+    }
     if (g_skip_before) printf("fast-forward: %llu draws and dispatches before frame %llu not done (an approximation: what they drew is missing)\n",
                               (unsigned long long)g_skipped, (unsigned long long)g_skip_before);
     if (g_stats) {

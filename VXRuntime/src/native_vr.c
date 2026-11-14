@@ -53,6 +53,14 @@ static int valid_pose(const vx_native_vr_pose *p) {
     }
     return 1;
 }
+// The frustum of the newest frame begun (any queue): what the program renders its eyes with (foveated rendering centres its map by it).
+static float g_last_frustum[2][4];
+static int g_have_frustum;
+int vx_native_vr_last_frustum(float out[2][4]) {
+    if (!g_have_frustum) return 0;
+    memcpy(out, g_last_frustum, sizeof g_last_frustum);
+    return 1;
+}
 int vx_native_vr_begin(vx_native_vr *q, const vx_native_vr_pose *pose, vx_native_vr_handle *handle) {
     if (!q || !valid_pose(pose) || !handle) return -1;
     pthread_mutex_lock(&q->lock);
@@ -66,6 +74,7 @@ int vx_native_vr_begin(vx_native_vr *q, const vx_native_vr_pose *pose, vx_native
     if (!s || q->next_handle == UINT64_MAX) { pthread_mutex_unlock(&q->lock); return -1; }
     if (s->frame.handle) clear(q, s);
     s->frame.handle = ++q->next_handle; s->frame.pose = *pose; *handle = s->frame.handle;
+    memcpy(g_last_frustum, pose->frustum, sizeof g_last_frustum); g_have_frustum = 1;
     pthread_mutex_unlock(&q->lock); return 0;
 }
 static int valid(const vx_native_vr_eye *e) {
