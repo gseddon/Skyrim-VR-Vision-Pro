@@ -20,9 +20,10 @@ enum VXDisplay {
     /// The size the game's picture is made for (VXSettings.baseSize), fixed at the first frame of a run.
     nonisolated(unsafe) static var base: (w: Int, h: Int)?
 
-    /// The render quality asked for with foveation: the launch's VXRT_RENDER_QUALITY (0...1), else the highest (as Klepton's default).
+    /// The render quality asked for with foveation: the launch's VXRT_RENDER_QUALITY (0...1), then the choice in the settings (Display
+    /// quality), else the highest (as Klepton's default).
     static var requestedQuality: Float {
-        if let v = VXSettings.shared.environment["VXRT_RENDER_QUALITY"].flatMap(Float.init), v >= 0, v <= 1 { return v }
+        if let v = VXSettings.shared.renderQuality, v >= 0, v <= 1 { return Float(v) }
         return 1.0
     }
 

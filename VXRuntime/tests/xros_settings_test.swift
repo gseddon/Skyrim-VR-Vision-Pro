@@ -25,18 +25,18 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         s2.predictMs = nil; s2.stageEyeHeight = nil
         check(d.object(forKey: "vxrt.predictMs") == nil && d.object(forKey: "vxrt.stageEyeHeight") == nil, "auto removes the stored value")
 
-        // picture extras: off exports nothing; set, it persists and exports; env wins and is clamped
+        // picture extras: off / system default exports nothing; set, they persist and export; env wins and is clamped
         let pd = fresh()
         let p1 = VXSettings(defaults: pd, info: [:], environment: [:])
-        check(p1.sharpen == nil && map(p1)["VXRT_SHARPEN"] == nil, "sharpen default off")
-        p1.sharpen = 0.35
+        check(p1.sharpen == nil && p1.renderQuality == nil && map(p1)["VXRT_SHARPEN"] == nil && map(p1)["VXRT_RENDER_QUALITY"] == nil, "sharpen and quality default off")
+        p1.sharpen = 0.35; p1.renderQuality = 0.8
         let p2 = VXSettings(defaults: pd, info: [:], environment: [:])
-        check(p2.sharpen == 0.35 && map(p2)["VXRT_SHARPEN"] == "0.35", "sharpen persists and exports")
+        check(p2.sharpen == 0.35 && p2.renderQuality == 0.8 && map(p2)["VXRT_SHARPEN"] == "0.35" && map(p2)["VXRT_RENDER_QUALITY"] == "0.80", "sharpen and quality persist and export")
         p2.sharpen = 0; check(map(p2)["VXRT_SHARPEN"] == nil, "sharpen 0 exports nothing")
-        p2.sharpen = nil
-        check(pd.object(forKey: "vxrt.sharpen") == nil, "off removes the stored value")
-        let p3 = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_SHARPEN": "2"])
-        check(p3.sharpen == 1, "environment wins and is clamped")
+        p2.sharpen = nil; p2.renderQuality = nil
+        check(pd.object(forKey: "vxrt.sharpen") == nil && pd.object(forKey: "vxrt.renderQuality") == nil, "off removes the stored values")
+        let p3 = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_SHARPEN": "2", "VXRT_RENDER_QUALITY": "0.5"])
+        check(p3.sharpen == 1 && p3.renderQuality == 0.5, "environment wins and is clamped")
 
         // the edge mask: Standard by default, which exports nothing (the runtime's own mask and shape, as before the setting); Off turns
         // the mask off, Slight gives its own shape; saved; the Info.plist default counts before a choice; a launch's VXRT_VISMASK wins
@@ -93,9 +93,6 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
             let f3 = VXSettings(defaults: fd, info: ["VXFoveationDefault": "1", "VXBaseResolutionDefault": "3072"], environment: [:])
             check(!f3.foveation && f3.baseResolution == 0 && fd.object(forKey: "vxrt.baseResolution") as? Int == 0, "saved choices beat the plist defaults")
             check(map(f1)["VXRT_FOVEATION"] == nil && map(f1)["VXRT_BASE_RESOLUTION"] == nil, "nothing of the two is exported to the runtime")
-            // the old display-quality slider's stored value is not read any more, and nothing of it is exported
-            fd.set(0.5, forKey: "vxrt.renderQuality")
-            check(map(VXSettings(defaults: fd, info: [:], environment: ["VXRT_RENDER_QUALITY": "0.5"]))["VXRT_RENDER_QUALITY"] == nil, "no display quality from the store")
             // the size the game is told: the texture itself without foveation and without a choice; otherwise the chosen width, square pixels
             // over the eye's field of view
             check(VXSettings.baseSize(choice: 0, foveated: false, texture: (2048, 1984), fieldOfView: (2.2, 2.0)) == (2048, 1984), "base: unchanged without foveation")
@@ -103,6 +100,19 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
             check(VXSettings.baseSize(choice: 3072, foveated: true, texture: (2496, 2432), fieldOfView: (2.2, 2.0)) == (3072, 2794), "base: chosen with foveation")
             check(VXSettings.baseSize(choice: 2560, foveated: false, texture: (2048, 1984), fieldOfView: (2.0, 2.0)) == (2560, 2560), "base: chosen without foveation")
             check(VXSettings.baseSize(choice: 2560, foveated: true, texture: (2048, 1984), fieldOfView: (0, 0)) == (2048, 1984), "base: no field of view, the texture")
+            // display quality: one of the offered values, the highest by default and stored as nothing; the picture filter: sharp unless chosen
+            let qd = fresh()
+            let q1 = VXSettings(defaults: qd, info: [:], environment: [:])
+            check(q1.displayQuality == 1.0 && q1.renderQuality == nil && !q1.plainResample && map(q1)["VXRT_RENDER_QUALITY"] == nil && map(q1)["VXRT_REPROJ_FILTER"] == nil, "display quality high, sharp filter by default")
+            q1.displayQuality = 0.8; q1.plainResample = true
+            check(map(q1)["VXRT_RENDER_QUALITY"] == "0.80" && map(q1)["VXRT_REPROJ_FILTER"] == "bilinear", "display quality and filter exported \(map(q1))")
+            let q2 = VXSettings(defaults: qd, info: [:], environment: [:])
+            check(q2.displayQuality == 0.8 && q2.plainResample, "display quality and filter persisted")
+            check(VXSettings(defaults: qd, info: [:], environment: ["VXRT_RENDER_QUALITY": "0.7", "VXRT_REPROJ_FILTER": "bicubic"]).displayQuality == 0.65, "a stored or given quality shows as the nearest offered one")
+            check(!VXSettings(defaults: qd, info: [:], environment: ["VXRT_REPROJ_FILTER": "bicubic"]).plainResample, "filter env wins")
+            check(VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_REPROJ_FILTER": "bilinear"]).plainResample, "filter env selects the plain one")
+            q1.displayQuality = 1.0; q1.plainResample = false
+            check(q1.renderQuality == nil && qd.object(forKey: "vxrt.renderQuality") == nil && map(q1)["VXRT_RENDER_QUALITY"] == nil && map(q1)["VXRT_REPROJ_FILTER"] == nil, "the highest quality stores nothing, the sharp filter exports nothing")
         }
         // out-of-range values are clamped in the export; plist defaults sit below saved; env beats saved
         s = VXSettings(defaults: fresh(), info: ["VXTurnDefault": "snap", "VXMoveDefault": "walk"], environment: [:])

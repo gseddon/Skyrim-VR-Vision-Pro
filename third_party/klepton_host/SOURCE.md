@@ -42,10 +42,11 @@ MIT header and the reference lines are in `VXOverlay.swift`.
 | A base resolution for the game's picture that does not follow the drawable ("Max resolution per eye", `KleptonEyeMax.swift`) | idea only | `VXSettings.baseSize`, `vxrt.baseResolution` (standard, 2048 to 4096; `VXRT_BASE_RESOLUTION`, Info.plist `VXBaseResolutionDefault`): the width offered to `vx_xros_fixture_offer`, height from the eye's field of view |
 | Head-fixed pictures over the eye image drawn as quads in a pass of their own, through the rate map when there is one | none (ours) | `VXOverlay.swift` `VXOverlayQuad`, used by the loading card (`VXLoading.swift`), which was a blit before |
 
-The "Display quality" slider (`vxrt.renderQuality`, exported as `VXRT_RENDER_QUALITY`) is gone from the settings: without foveation
-Compositor Services refuses a render-quality ceiling and the layer fails, which ended the app at start on a Vision Pro M5 (two
-launches, 2026-11-13, the log ends at `render_quality_config`). A launch's `VXRT_RENDER_QUALITY` still names the quality asked for with
-foveation (1.0 when there is none); without foveation no ceiling is set, and the slider's stored value is not read.
+The "Display quality" slider is gone from the settings: without foveation Compositor Services refuses a render-quality ceiling and
+the layer fails, which ended the app at start on a Vision Pro M5 (two launches, 2026-11-13, the log ends at
+`render_quality_config`). In its place "Display quality" is a choice of three steps (`vxrt.renderQuality`, `VXRT_RENDER_QUALITY`:
+1.0, 0.8, 0.65; ours, not Klepton's) that names the quality asked for with foveation (1.0 when nothing is chosen); without foveation
+no ceiling is set.
 
 ## Not adopted, and why
 
