@@ -230,6 +230,24 @@ struct VXSettingsPage: View {
                             note("Off by default: the game draws its own controllers, and your real hands would be a second pair in the same place. Takes effect at once.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    GroupBox("Graphics quality") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Graphics quality", selection: $settings.graphics) {
+                                Text("Standard").tag(VXGraphics.standard)
+                                Text("Low").tag(VXGraphics.low)
+                                Text("Medium").tag(VXGraphics.medium)
+                                Text("High").tag(VXGraphics.high)
+                            }.pickerStyle(.segmented).labelsHidden()
+                            note(settings.graphics == .standard
+                                 ? "The default: the balanced values this app starts the game with. Nothing more is written."
+                                 : settings.graphics == .low
+                                 ? "The game's own “Low”: shorter shadows, distant objects and trees in their simpler forms sooner, less grass, no tree animation. The one to try when the game stutters."
+                                 : settings.graphics == .medium
+                                 ? "The game's own “Medium”: full detail in the distance, shadows to a middle distance."
+                                 : "The game's own “High”: finer shadows than Low, shadows on trees, more grass. The heaviest of the three.")
+                            note("Low, Medium and High write the scene-detail values of the game's own presets over its settings; the size of the picture stays as set under Picture. Applies the next time you start.")
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     GroupBox("Turning") {
                         VStack(alignment: .leading, spacing: 10) {
                             Picker("Turning", selection: $settings.turn) {

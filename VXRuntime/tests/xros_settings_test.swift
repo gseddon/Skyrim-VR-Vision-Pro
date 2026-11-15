@@ -68,6 +68,28 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         check(getenv("VXRT_INI_SET").map { String(cString: $0) } == "Display.bUseTAA=0;VRInput.bDirectMovementWithWands=1", "applyEnvironment merges VXRT_INI_SET")
         for n in ["VXRT_INI_SET", "VXRT_RENDER_SCALE", "VXRT_UPSCALE", "VXRT_GATE"] { unsetenv(n) }
 
+        // graphics quality: standard (the default) writes nothing; a level writes the game's own preset keys, before the other ini settings
+        // and after the launch's own (the first match wins in client.c); saved; the Info.plist default counts before a choice; env wins
+        let gd = fresh()
+        let g1 = VXSettings(defaults: gd, info: [:], environment: [:])
+        check(g1.graphics == .standard && VXGraphics.standard.iniSet.isEmpty && map(g1)["VXRT_INI_SET"] == nil && gd.object(forKey: "vxrt.graphics") == nil, "graphics standard writes nothing")
+        g1.graphics = .low
+        let lowSet = map(g1)["VXRT_INI_SET"] ?? ""
+        check(lowSet.hasPrefix("Display.iShadowMapResolution=1024;Display.fShadowDistance=2000;") && lowSet.contains("Display.fMeshLODLevel1FadeDist=4096")
+              && lowSet.contains("Trees.bEnableTreeAnimations=0") && lowSet.hasSuffix("Grass.fGrassStartFadeDistance=1500"), "graphics low keys \(lowSet)")
+        check(!lowSet.contains("DynamicResolution") && !lowSet.contains("fRenderTargetSizeMultiplier"), "graphics leaves the picture size alone")
+        check(VXGraphics.low.iniSet.count == 13 && VXGraphics.medium.iniSet.map(\.key) == VXGraphics.low.iniSet.map(\.key) && VXGraphics.high.iniSet.map(\.key) == VXGraphics.low.iniSet.map(\.key), "graphics levels name the same keys")
+        check(gd.string(forKey: "vxrt.graphics") == "low" && VXSettings(defaults: gd, info: [:], environment: [:]).graphics == .low, "graphics persisted")
+        check(VXSettings(defaults: fresh(), info: ["VXGraphicsDefault": "medium"], environment: [:]).graphics == .medium, "graphics plist default")
+        check(VXSettings(defaults: gd, info: ["VXGraphicsDefault": "medium"], environment: [:]).graphics == .low, "saved graphics beats plist")
+        check(VXSettings(defaults: gd, info: [:], environment: ["VXRT_GRAPHICS": "high"]).graphics == .high, "graphics env wins")
+        let g2 = VXSettings(defaults: gd, info: [:], environment: ["VXRT_INI_SET": "Display.fShadowDistance=7000"])
+        check((map(g2)["VXRT_INI_SET"] ?? "").hasPrefix("Display.fShadowDistance=7000;Display.iShadowMapResolution=1024"), "the launch's own key comes first")
+        g2.turn = .snap
+        check((map(g2)["VXRT_INI_SET"] ?? "").contains("Grass.fGrassStartFadeDistance=1500;VRInput.bGamepadLookAngleSnapping=1;VRInput.bGamepadLookAngleSnapSmoothing=0"), "graphics keys come before the gameplay keys")
+        g1.graphics = .standard
+        check(map(g1)["VXRT_INI_SET"] == nil, "back to standard writes nothing")
+
         // the further settings: all game default (nothing exported) until picked
         d = fresh()
         s = VXSettings(defaults: d, info: [:], environment: [:])

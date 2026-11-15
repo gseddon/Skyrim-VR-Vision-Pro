@@ -78,6 +78,36 @@ enum VXMove: String, CaseIterable, Identifiable {
     }
 }
 
+// Graphics quality: the scene-detail keys of the game's own quality presets (its Low.ini, Medium.ini and High.ini: shadow map size and
+// distance, the distances at which meshes and trees go to their simpler forms, grass distance, tree animation), written over the
+// ini values through VXRT_INI_SET like the settings above. "Standard" writes nothing: the runtime's own balanced preset stays as it
+// is (VXRT_SKYRIM_PRESET, src/client.c), and so do the keys it does not name. The presets' render-size and dynamic-resolution keys are
+// left out on purpose: the size of the game's picture is this app's (Resolution).
+// Low is the one meant to take work off the game's main thread: fewer and simpler objects in the distance are fewer draw calls.
+enum VXGraphics: String, CaseIterable, Identifiable {
+    case standard, low, medium, high
+    var id: String { rawValue }
+    var iniSet: [(key: String, value: String)] {
+        func keys(shadowMap: String, shadowDistance: String, rain: String, treeShadows: String, focus: String, mesh1: String, mesh2: String,
+                  tree1: String, tree2: String, treeMid: String, skinned: String, animated: String, grass: String) -> [(String, String)] {
+            [("Display.iShadowMapResolution", shadowMap), ("Display.fShadowDistance", shadowDistance), ("Display.bUsePrecipitationOcclusion", rain),
+             ("Display.bTreesReceiveShadows", treeShadows), ("Display.iNumFocusShadow", focus), ("Display.fMeshLODLevel1FadeDist", mesh1),
+             ("Display.fMeshLODLevel2FadeDist", mesh2), ("Display.fMeshLODLevel1FadeTreeDistance", tree1), ("Display.fMeshLODLevel2FadeTreeDistance", tree2),
+             ("Display.fTreesMidLODSwitchDist", treeMid), ("Trees.bRenderSkinnedTrees", skinned), ("Trees.bEnableTreeAnimations", animated),
+             ("Grass.fGrassStartFadeDistance", grass)]
+        }
+        switch self {
+        case .standard: return []
+        case .low: return keys(shadowMap: "1024", shadowDistance: "2000", rain: "0", treeShadows: "0", focus: "0", mesh1: "4096", mesh2: "3072",
+                               tree1: "2000", tree2: "1500", treeMid: "2500", skinned: "0", animated: "0", grass: "1500")
+        case .medium: return keys(shadowMap: "2048", shadowDistance: "3000", rain: "0", treeShadows: "0", focus: "0", mesh1: "9999999", mesh2: "9999999",
+                                  tree1: "16896", tree2: "16896", treeMid: "3600", skinned: "1", animated: "1", grass: "3500")
+        case .high: return keys(shadowMap: "2048", shadowDistance: "4000", rain: "1", treeShadows: "1", focus: "2", mesh1: "9999999", mesh2: "9999999",
+                                tree1: "16896", tree2: "16896", treeMid: "5000", skinned: "1", animated: "1", grass: "5000")
+        }
+    }
+}
+
 // More of the game's own settings, each "Game default" (nothing written) until the player picks a value. A yes/no is on, off or default; a number is
 // default or a value in a range. Keys are strings of the game's exe (research/2026-11-11-skyrim-vr-gameplay-settings.md). Number ranges: the
 // game's own Min/Max keys exist only for the snap angle and turn speed; the rest are conservative bounds, defaults and units NOT verified.
@@ -136,6 +166,7 @@ final class VXSettings: ObservableObject {
     static let autoStartKey = "vxrt.startAutomatically"
     static let predictKey = "vxrt.predictMs"
     static let eyeHeightKey = "vxrt.stageEyeHeight"
+    static let graphicsKey = "vxrt.graphics"
     static let turnKey = "vxrt.turn"
     static let snapAngleKey = "vxrt.snapAngle"
     static let turnSpeedKey = "vxrt.turnSpeed"
@@ -202,6 +233,8 @@ final class VXSettings: ObservableObject {
             if let v = stageEyeHeight { defaults.set(v, forKey: Self.eyeHeightKey) } else { defaults.removeObject(forKey: Self.eyeHeightKey) }
         }
     }
+    // Graphics quality: the game's own Low/Medium/High scene detail (.standard: nothing written). Next launch.
+    @Published var graphics: VXGraphics { didSet { if !suppress { defaults.set(graphics.rawValue, forKey: Self.graphicsKey) } } }
     // Gameplay (Skyrim VR's own settings; .game / nil = leave the game's own value alone).
     @Published var turn: VXTurn { didSet { if !suppress { defaults.set(turn.rawValue, forKey: Self.turnKey) } } }
     @Published var move: VXMove { didSet { if !suppress { defaults.set(move.rawValue, forKey: Self.moveKey) } } }
@@ -282,6 +315,11 @@ final class VXSettings: ObservableObject {
         if let s = defaults.string(forKey: Self.turnKey), let v = VXTurn(rawValue: s) { t = v }
         if let v = environment["VXRT_TURN"].flatMap(VXTurn.init(rawValue:)) { t = v }
         turn = t
+        // Graphics quality: env VXRT_GRAPHICS, then the saved choice, then the Info.plist default (VXGraphicsDefault), then .standard.
+        var gfx: VXGraphics = (info["VXGraphicsDefault"] as? String).flatMap(VXGraphics.init(rawValue:)) ?? .standard
+        if let st = defaults.string(forKey: Self.graphicsKey), let v = VXGraphics(rawValue: st) { gfx = v }
+        if let v = environment["VXRT_GRAPHICS"].flatMap(VXGraphics.init(rawValue:)) { gfx = v }
+        graphics = gfx
         var m: VXMove = (info["VXMoveDefault"] as? String).flatMap(VXMove.init(rawValue:)) ?? .game
         if let s = defaults.string(forKey: Self.moveKey), let v = VXMove(rawValue: s) { m = v }
         if let v = environment["VXRT_MOVE"].flatMap(VXMove.init(rawValue:)) { m = v }
@@ -309,6 +347,7 @@ final class VXSettings: ObservableObject {
     func iniOverrides() -> [String] {
         var out = environment["VXRT_INI_SET"].map { $0.split(separator: ";").map(String.init) } ?? []
         var mine = turn.iniSet + move.iniSet
+        mine = graphics.iniSet + mine
         if let a = snapAngle { mine.append(("VRInput.fGamepadLookAngleSnapAmount", Self.num(a, Self.snapAngleRange))) }
         if let v = turnSpeed { mine.append(("VRInput.fGamepadLookAngleSnapSmoothingSpeed", Self.num(v, Self.turnSpeedRange))) }
         for s in VXIniSetting.all { if let v = iniValues[s.id].flatMap(s.normalize) { mine.append((s.iniName, v)) } }
