@@ -172,6 +172,91 @@ struct VXIniSetting: Identifiable {
     }
 }
 
+// The game's language. Skyrim VR has no menu for it: it reads sLanguage and the list of its archives from Skyrim.ini, and Steam installs a
+// language by replacing that file. Here the two keys are overridden instead (VXRT_INI_SET, as the settings above), so one set of game files
+// serves every language. The texts of seven languages are part of the game's data; the voices of a language other than English are one file of
+// their own, "Skyrim - Voices_<code>0.bsa" (Steam's language depot; German seen 2026-11-14: that file and a Skyrim.ini that differs in exactly
+// these two keys). Without that file the language's texts go with the English voices.
+enum VXGameLanguage: String, CaseIterable, Identifiable {
+    case auto, en, de, fr, it, es, pl, ru
+    var id: String { rawValue }
+    /// The languages a player can pick (auto aside).
+    static let named: [VXGameLanguage] = [.en, .de, .fr, .it, .es, .pl, .ru]
+    /// sLanguage as the game's string files are named (Data/Strings/Skyrim_GERMAN.STRINGS).
+    var skyrimName: String? {
+        switch self {
+        case .auto: return nil
+        case .en: return "ENGLISH"
+        case .de: return "GERMAN"
+        case .fr: return "FRENCH"
+        case .it: return "ITALIAN"
+        case .es: return "SPANISH"
+        case .pl: return "POLISH"
+        case .ru: return "RUSSIAN"
+        }
+    }
+    /// The language's own name, for the picker.
+    var ownName: String {
+        switch self {
+        case .auto: return "Automatic"
+        case .en: return "English"
+        case .de: return "Deutsch"
+        case .fr: return "Français"
+        case .it: return "Italiano"
+        case .es: return "Español"
+        case .pl: return "Polski"
+        case .ru: return "Русский"
+        }
+    }
+    /// The voice archive in the game's Data folder. Verified for English and German; the others follow the same pattern and are only
+    /// used when the file is really there.
+    var voiceArchive: String? { self == .auto ? nil : "Skyrim - Voices_\(rawValue)0.bsa" }
+    /// From what an installer presets ("device", "en", or a language with region like "de_DE", as AVP Play names a game's language) or a
+    /// system language identifier ("de-DE"): the language, when it is one of the game's.
+    static func from(code: String) -> VXGameLanguage? {
+        let head = code.lowercased().split(whereSeparator: { $0 == "_" || $0 == "-" }).first.map(String.init) ?? ""
+        return named.first { $0.rawValue == head }
+    }
+    /// What the game is started with. A picked language is that language. Automatic: the one language other than English whose voices are
+    /// installed (installing them is the player's choice of language); else what the installer preset ("device": the first of the
+    /// headset's languages the game has); else nothing, and the game's own files decide (English, as shipped).
+    static func resolve(choice: VXGameLanguage, preset: String?, deviceLanguages: [String], hasVoices: (VXGameLanguage) -> Bool) -> VXGameLanguage? {
+        if choice != .auto { return choice }
+        let installed = named.filter { $0 != .en && hasVoices($0) }
+        if installed.count == 1 { return installed[0] }
+        guard let preset, !preset.isEmpty else { return nil }
+        if preset == "device" { return deviceLanguages.lazy.compactMap(from(code:)).first }
+        return from(code: preset)
+    }
+    /// The archive list the game ships (Skyrim.ini, [Archive] sResourceArchiveList2), for a game folder whose file cannot be read.
+    static let shippedArchiveList = "Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa, Skyrim - Patch.bsa"
+    /// The overrides for a language: its texts always; its voices only when their archive is installed, by naming it in the game's own
+    /// archive list in place of whichever voice archive stands there (`archiveList`: the list from the game's Skyrim.ini, nil when unread).
+    static func iniSet(_ language: VXGameLanguage, hasVoices: Bool, archiveList: String?) -> [(key: String, value: String)] {
+        guard let name = language.skyrimName, let archive = language.voiceArchive else { return [] }
+        var out = [("General.sLanguage", name)]
+        if hasVoices {
+            let list = (archiveList?.isEmpty == false ? archiveList! : shippedArchiveList)
+            let swapped = list.replacingOccurrences(of: "Skyrim - Voices_[A-Za-z]{2}0\\.bsa", with: archive, options: [.regularExpression, .caseInsensitive])
+            out.append(("Archive.sResourceArchiveList2", swapped.contains(archive) ? swapped : archive + ", " + swapped))
+        }
+        return out
+    }
+    /// [Archive] sResourceArchiveList2 of a Skyrim.ini's text.
+    static func archiveList(ofIni text: String) -> String? {
+        var inArchive = false
+        for raw in text.split(whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" }) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") { inArchive = line.lowercased().hasPrefix("[archive]"); continue }
+            guard inArchive, let eq = line.firstIndex(of: "=") else { continue }
+            if line[..<eq].trimmingCharacters(in: .whitespaces).lowercased() == "sresourcearchivelist2" {
+                return line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
+    }
+}
+
 final class VXSettings: ObservableObject {
     static let shared = VXSettings()
     // Called when the latency choice changes, so a running game's gate follows at once (VXApp.swift sets it in the xrizer build).
@@ -189,6 +274,7 @@ final class VXSettings: ObservableObject {
     static let graphicsKey = "vxrt.graphics"
     static let turnKey = "vxrt.turn"
     static let snapAngleKey = "vxrt.snapAngle"
+    static let gameLanguageKey = "vxrt.gameLanguage"
     static let turnSpeedKey = "vxrt.turnSpeed"
     static let moveKey = "vxrt.move"
     static let sharpenKey = "vxrt.sharpen"
@@ -274,6 +360,8 @@ final class VXSettings: ObservableObject {
             if let v = turnSpeed { defaults.set(v, forKey: Self.turnSpeedKey) } else { defaults.removeObject(forKey: Self.turnSpeedKey) }
         }
     }
+    // The game's language (VXGameLanguage): env VXRT_GAME_LANGUAGE, then the saved choice, else automatic. Next launch.
+    @Published var gameLanguage: VXGameLanguage { didSet { if !suppress { defaults.set(gameLanguage.rawValue, forKey: Self.gameLanguageKey) } } }
     // The extra settings above: id -> "1"/"0"/number text; absent = game default.
     @Published var iniValues: [String: String] {
         didSet {
@@ -354,6 +442,10 @@ final class VXSettings: ObservableObject {
         move = m
         snapAngle = environment["VXRT_SNAP_ANGLE"].flatMap(Double.init) ?? (defaults.object(forKey: Self.snapAngleKey) as? Double)
         turnSpeed = environment["VXRT_TURN_SPEED"].flatMap(Double.init) ?? (defaults.object(forKey: Self.turnSpeedKey) as? Double)
+        var lang: VXGameLanguage = .auto
+        if let st = defaults.string(forKey: Self.gameLanguageKey), let v = VXGameLanguage(rawValue: st) { lang = v }
+        if let v = environment["VXRT_GAME_LANGUAGE"].flatMap(VXGameLanguage.init(rawValue:)) { lang = v }
+        gameLanguage = lang
         // The extra settings: env (VXRT_*; "game" = default), then saved, then Info.plist "VXIni.<id>", else game default.
         var vals: [String: String] = [:]
         for s in VXIniSetting.all {
@@ -366,6 +458,40 @@ final class VXSettings: ObservableObject {
         suppress = false
     }
 
+    /// What the installer preset for a game in which nothing is chosen (Info.plist VXGameLanguageDefault; empty: nothing).
+    var gameLanguagePreset: String? { (info["VXGameLanguageDefault"] as? String).flatMap { $0.isEmpty ? nil : $0 } }
+    /// The game's folder on this device (the runtime's root, main.m), where its Skyrim.ini and Data/ are.
+    var gameFolder: String {
+        let root = environment["VXRT_GAME_ROOT"].flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory() + "/Documents/root"
+        return root + "/SkyrimVR"
+    }
+    /// Whether a language's voice archive is installed. An empty file counts as absent: an installer that cannot delete in the app's
+    /// data empties a file the player no longer wants.
+    func hasVoices(_ language: VXGameLanguage) -> Bool {
+        guard let archive = language.voiceArchive,
+              let size = (try? FileManager.default.attributesOfItem(atPath: gameFolder + "/Data/" + archive))?[.size] as? NSNumber else { return false }
+        return size.int64Value > 0
+    }
+    /// The language the game starts in with the current choice; nil: the game's own files decide.
+    var effectiveGameLanguage: VXGameLanguage? {
+        VXGameLanguage.resolve(choice: gameLanguage, preset: gameLanguagePreset, deviceLanguages: Locale.preferredLanguages, hasVoices: hasVoices)
+    }
+    func gameLanguageIniSet() -> [(key: String, value: String)] {
+        guard let language = effectiveGameLanguage else { return [] }
+        let list = (try? String(contentsOfFile: gameFolder + "/Skyrim.ini", encoding: .isoLatin1)).flatMap(VXGameLanguage.archiveList(ofIni:))
+        return VXGameLanguage.iniSet(language, hasVoices: hasVoices(language), archiveList: list)
+    }
+    /// The settings page's note under the picker: what the next start will be in, and whether that language's voices are installed.
+    var gameLanguageNote: String {
+        guard let language = effectiveGameLanguage else {
+            return "Nothing is chosen: the game's own files decide (English, as shipped). Texts exist for every language in this list. The voices of another language are that language's Steam depot file “Skyrim - Voices_<code>0.bsa” (German: “Skyrim - Voices_de0.bsa”) in the game's Data folder; with exactly one such file there, Automatic starts the game in that language."
+        }
+        let chosen = gameLanguage == .auto ? "Automatic: " : ""
+        if language == .en || hasVoices(language) {
+            return chosen + "\(language.ownName), texts and voices."
+        }
+        return chosen + "\(language.ownName) texts with the English voices: this language's voices are not installed. They are the language's Steam depot file “\(language.voiceArchive ?? "")” in the game's Data folder."
+    }
     static func num(_ v: Double, _ r: ClosedRange<Double>) -> String {
         let c = min(max(v, r.lowerBound), r.upperBound)
         return c == c.rounded() ? String(Int(c)) : String(format: "%.2f", c)
@@ -379,6 +505,7 @@ final class VXSettings: ObservableObject {
         if let a = snapAngle { mine.append(("VRInput.fGamepadLookAngleSnapAmount", Self.num(a, Self.snapAngleRange))) }
         if let v = turnSpeed { mine.append(("VRInput.fGamepadLookAngleSnapSmoothingSpeed", Self.num(v, Self.turnSpeedRange))) }
         for s in VXIniSetting.all { if let v = iniValues[s.id].flatMap(s.normalize) { mine.append((s.iniName, v)) } }
+        mine += gameLanguageIniSet()
         out += mine.map { "\($0.key)=\($0.value)" }
         return out
     }

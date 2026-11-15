@@ -298,6 +298,15 @@ struct VXSettingsPage: View {
                             note("Applies the next time you start.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    GroupBox("Game language") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Game language", selection: $settings.gameLanguage) {
+                                ForEach([VXGameLanguage.auto] + VXGameLanguage.named) { Text($0.ownName).tag($0) }
+                            }.pickerStyle(.menu).labelsHidden()
+                            note(settings.gameLanguageNote)
+                            note("Applies the next time you start.")
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     ForEach(VXIniSetting.Group.allCases, id: \.self) { g in
                         GroupBox(g.rawValue) {
                             VStack(alignment: .leading, spacing: 10) {
