@@ -132,6 +132,7 @@ final class VXSettings: ObservableObject {
     static let renderScaleKey = "klepton.renderScale"
     static let handsKey = "klepton.chroma"
     static let latencyKey = "vxrt.latency"
+    static let maxRateKey = "klepton.maxRate"       // Klepton's key and values (KleptonTuning.swift, KleptonRendering.maxRate)
     static let upscaleKey = "vxrt.upscale"
     static let autoStartKey = "vxrt.startAutomatically"
     static let predictKey = "vxrt.predictMs"
@@ -179,6 +180,10 @@ final class VXSettings: ObservableObject {
     }
     // Latency: the pair gate, read per frame, so it applies at once.
     @Published var latency: VXLatency { didSet { if !suppress { defaults.set(latency.rawValue, forKey: Self.latencyKey); Self.latencyHook?(latency) } } }
+    // Frame rate, as in Klepton's games: 120 is the fully immersive space, at up to 120 Hz, and the default (what the app did before
+    // this was a setting); 100 is the mixed space with the game's picture opaque over the whole view, where the headset's display runs
+    // at up to 100 Hz. visionOS halves either when the app cannot keep up. The immersive scene's style follows it (VXApp.swift).
+    @Published var maxRate: Int { didSet { if !suppress { defaults.set(maxRate, forKey: Self.maxRateKey) } } }
     // Whether the wearer's real hands and arms show over the game. Live: the immersive scene observes it (VXApp.swift).
     // While the keyboard window is open (VXKeyboard.swift) the wearer's hands are shown whatever the setting says, so the fingers can be
     // seen typing; not saved, and off again when the keyboard closes. The scene shows the hands when `handsVisible`.
@@ -261,6 +266,12 @@ final class VXSettings: ObservableObject {
         if let p = environment["VXRT_PAIRS_IN_FLIGHT"].flatMap(Int.init) { lat = p == 0 ? .throughput : .lower }
         if let g = environment["VXRT_GATE"] { lat = g == "off" ? .throughput : g == "one" ? .lower : g == "smart" ? .smart : lat }
         latency = lat
+        // Frame rate: env VXRT_MAX_RATE, then the saved choice, then the Info.plist default (KLMaxRateDefault), then 120. Only 100 selects
+        // the mixed space; any other value is 120.
+        var rate = (info["KLMaxRateDefault"] as? String) == "100" ? 100 : 120
+        if let v = defaults.object(forKey: Self.maxRateKey) as? Int { rate = v }
+        if let v = environment["VXRT_MAX_RATE"].flatMap(Int.init) { rate = v }
+        maxRate = rate == 100 ? 100 : 120
 
         var up: VXUpscale = (info["VXUpscaleDefault"] as? String).flatMap(VXUpscale.init(rawValue:)) ?? .metalfx
         if let s = defaults.string(forKey: Self.upscaleKey), let u = VXUpscale(rawValue: s) { up = u }
