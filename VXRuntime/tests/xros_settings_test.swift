@@ -38,6 +38,28 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         let p3 = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_SHARPEN": "2", "VXRT_RENDER_QUALITY": "0.5"])
         check(p3.sharpen == 1 && p3.renderQuality == 0.5, "environment wins and is clamped")
 
+        // the edge mask: Standard by default, which exports nothing (the runtime's own mask and shape, as before the setting); Off turns
+        // the mask off, Slight gives its own shape; saved; the Info.plist default counts before a choice; a launch's VXRT_VISMASK wins
+        let md = fresh()
+        let m1 = VXSettings(defaults: md, info: [:], environment: [:])
+        check(m1.edgeMask == .standard && VXEdgeMask.standard.exports.isEmpty && map(m1)["VXRT_VISMASK"] == nil && map(m1)["VXRT_VISMASK_SHAPE"] == nil && md.object(forKey: "vxrt.edgeMask") == nil, "edge mask default exports nothing \(map(m1))")
+        m1.edgeMask = .off
+        check(map(m1)["VXRT_VISMASK"] == "off" && map(m1)["VXRT_VISMASK_SHAPE"] == nil, "edge mask off exports \(map(m1))")
+        m1.edgeMask = .slight
+        check(map(m1)["VXRT_VISMASK"] == "on" && map(m1)["VXRT_VISMASK_SHAPE"] == VXEdgeMask.slightShape, "edge mask slight exports \(map(m1))")
+        check(md.string(forKey: "vxrt.edgeMask") == "slight" && VXSettings(defaults: md, info: [:], environment: [:]).edgeMask == .slight, "edge mask persisted")
+        m1.edgeMask = .standard
+        check(map(m1)["VXRT_VISMASK"] == nil && map(m1)["VXRT_VISMASK_SHAPE"] == nil, "back to standard exports nothing \(map(m1))")
+        m1.edgeMask = .slight
+        check(VXSettings(defaults: fresh(), info: ["VXEdgeMaskDefault": "off"], environment: [:]).edgeMask == .off, "edge mask plist default")
+        check(VXSettings(defaults: md, info: ["VXEdgeMaskDefault": "off"], environment: [:]).edgeMask == .slight, "saved edge mask beats plist")
+        check(VXSettings(defaults: md, info: [:], environment: ["VXRT_VISMASK": "off"]).edgeMask == .off, "env off wins")
+        check(VXSettings(defaults: md, info: [:], environment: ["VXRT_VISMASK": "on"]).edgeMask == .slight, "env on keeps the saved shape choice")
+        check(VXSettings(defaults: fresh(), info: ["VXEdgeMaskDefault": "off"], environment: ["VXRT_VISMASK": "on"]).edgeMask == .standard, "env on over off is the runtime's own")
+        // Slight is a valid shape (l,r,u,d 0...0.45, radius) and smaller at every edge than the runtime's default 0.13,0.05,0.07,0.14 (src/vismask_shape.h)
+        let parts = VXEdgeMask.slightShape.split(separator: ",").compactMap { Float($0) }
+        check(parts.count == 5 && parts[0...3].allSatisfy { $0 >= 0 && $0 <= 0.45 } && zip(parts, [0.13, 0.05, 0.07, 0.14] as [Float]).allSatisfy { $0 < $1 }, "slight shape is a valid, smaller shape")
+
         // gameplay: Skyrim's own settings go out as VXRT_INI_SET only when picked; "game default" writes nothing
         d = fresh()
         s = VXSettings(defaults: d, info: [:], environment: [:])

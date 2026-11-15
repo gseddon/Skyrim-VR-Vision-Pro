@@ -21,6 +21,25 @@ import Foundation
 // Environment as a dictionary so tests can inject one.
 typealias VXEnvironment = [String: String]
 
+// How much of each eye image the game leaves undrawn because the lenses do not show it (the hidden-area mesh the game asks for,
+// VXRT_VISMASK and VXRT_VISMASK_SHAPE: src/vismask_shape.h). "Standard" is the runtime's own shape and the default: it exports nothing,
+// so the runtime decides as it did before this was a setting (the mask on, its measured default shape, Documents/vxrt_vismask.txt
+// still read). That shape was measured on one wearer's headset and hides about 38 % of the picture
+// (research/2026-11-10-hidden-area-mask.md); on another headset its bottom edge showed as a black bar in the game. "Slight" hides
+// about half as much at every edge, "Off" nothing (the game then draws the whole picture, which costs graphics time).
+enum VXEdgeMask: String, CaseIterable, Identifiable {
+    case off, slight, standard
+    var id: String { rawValue }
+    static let slightShape = "0.07,0.03,0.04,0.06,0.4"
+    var exports: [(String, String)] {
+        switch self {
+        case .off: return [("VXRT_VISMASK", "off")]
+        case .slight: return [("VXRT_VISMASK", "on"), ("VXRT_VISMASK_SHAPE", Self.slightShape)]
+        case .standard: return []
+        }
+    }
+}
+
 struct VXHandsBlob: Codable, Equatable {
     var handMatting: Bool
     private enum CodingKeys: String, CodingKey { case handMatting }
@@ -164,6 +183,7 @@ final class VXSettings: ObservableObject {
     static let latencyKey = "vxrt.latency"
     static let upscaleKey = "vxrt.upscale"
     static let autoStartKey = "vxrt.startAutomatically"
+    static let edgeMaskKey = "vxrt.edgeMask"
     static let predictKey = "vxrt.predictMs"
     static let eyeHeightKey = "vxrt.stageEyeHeight"
     static let graphicsKey = "vxrt.graphics"
@@ -194,6 +214,8 @@ final class VXSettings: ObservableObject {
     @Published var renderScale: Double { didSet { if !suppress { defaults.set(renderScale, forKey: Self.renderScaleKey) } } }
     // Upscaling of the game's eye to the display (next launch).
     @Published var upscale: VXUpscale { didSet { if !suppress { defaults.set(upscale.rawValue, forKey: Self.upscaleKey) } } }
+    // How much of the picture's unseen edge the game skips (VXRT_VISMASK, VXRT_VISMASK_SHAPE; next launch).
+    @Published var edgeMask: VXEdgeMask { didSet { if !suppress { defaults.set(edgeMask.rawValue, forKey: Self.edgeMaskKey) } } }
     // Sharpening of the final picture (VXRT_SHARPEN, 0...1); nil = off (next launch).
     @Published var sharpen: Double? {
         didSet {
@@ -299,6 +321,12 @@ final class VXSettings: ObservableObject {
         if let s = defaults.string(forKey: Self.upscaleKey), let u = VXUpscale(rawValue: s) { up = u }
         if let u = environment["VXRT_UPSCALE"].flatMap(VXUpscale.init(rawValue:)) { up = u }
         upscale = up
+        // The edge mask: env VXRT_VISMASK=off turns it off (a shape given by the launch stays the launch's: exports never replace it),
+        // then the saved choice, then the Info.plist default (VXEdgeMaskDefault), then Standard (the runtime's own).
+        var mask: VXEdgeMask = (info["VXEdgeMaskDefault"] as? String).flatMap(VXEdgeMask.init(rawValue:)) ?? .standard
+        if let st = defaults.string(forKey: Self.edgeMaskKey), let v = VXEdgeMask(rawValue: st) { mask = v }
+        if let e = environment["VXRT_VISMASK"] { mask = (e == "off" || e == "0") ? .off : (mask == .off ? .standard : mask) }
+        edgeMask = mask
 
         var auto = (info["KLAutoBootDefault"] as? String).map { $0 == "1" } ?? false
         if let v = defaults.object(forKey: Self.autoStartKey) as? Bool { auto = v }
@@ -363,6 +391,7 @@ final class VXSettings: ObservableObject {
             ("VXRT_UPSCALE", upscale.rawValue),
             ("VXRT_GATE", latency.gate),
         ]
+        out += edgeMask.exports
         if let p = predictMs { out.append(("VXRT_PREDICT_MS", String(format: "%.0f", min(max(p, Self.predictRange.lowerBound), Self.predictRange.upperBound)))) }
         if let v = sharpen, v > 0 { out.append(("VXRT_SHARPEN", String(format: "%.2f", min(max(v, 0), 1)))) }
         if let v = renderQuality { out.append(("VXRT_RENDER_QUALITY", String(format: "%.2f", min(max(v, 0), 1)))) }
