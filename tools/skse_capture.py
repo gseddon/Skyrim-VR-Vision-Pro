@@ -289,6 +289,27 @@ def early_run(cfg, modules, pack, w, out_capture, wait):
     return int(m.group(1)), int(m.group(3)), log
 
 
+def repo_local(folder, label, name):
+    """A folder of the private root as the harness accepts it: inside this checkout. tools/vxrt_native_startup.py runs
+    only a repository-local image and module set, and counts a DLL folder outside the checkout as one of the player's
+    original trees (which must then share a parent with the game's folder that is not above the checkout). The private
+    root is outside the checkout when an installer fetched the project as one commit
+    (tools/avpplay_toolchain/visionos/vx_paths.py: ~/.avpplay/vxruntime/private); then the folder is cloned into the
+    checkout's git-ignored build/ (APFS copy-on-write: no space; a plain copy on another volume), as
+    tools/play_skyrim_dev.sh does with the prepared image."""
+    folder = Path(folder).resolve()
+    if folder.is_relative_to(REPO.resolve()):
+        return folder
+    local = REPO / 'build' / 'skse-capture-run' / label / name
+    shutil.rmtree(local, ignore_errors=True)
+    local.parent.mkdir(parents=True, exist_ok=True)
+    if subprocess.run(['cp', '-cR', str(folder), str(local)]).returncode:
+        shutil.rmtree(local, ignore_errors=True)
+        shutil.copytree(folder, local)
+    say('the %s run uses %s from %s (the harness takes them inside the checkout only)' % (label, name, local))
+    return local
+
+
 def harness_run(modules, pack, cfg, hooks_hint, seconds, hooks, wait, code_hooks, label):
     """Run the game through tools/play_skyrim_dev.sh (xrizer dev host, scripted pad input that leaves the intro) with SKSE preloaded."""
     core = next(d['path'] for d in cfg['dlls'] if Path(d['path']).name == CORE_NAME)
@@ -303,7 +324,7 @@ def harness_run(modules, pack, cfg, hooks_hint, seconds, hooks, wait, code_hooks
             '--mods-config', pack / 'mods.json']
     for h in code_hooks:
         args += ['--code-hook', h]
-    env = dict(os.environ, SKYRIM_AOT_DIR=str(modules), SKYRIM_REDIST_DIR=str(device_redist()))
+    env = dict(os.environ, SKYRIM_AOT_DIR=str(repo_local(modules, label, 'modules')), SKYRIM_REDIST_DIR=str(repo_local(device_redist(), label, 'redist')))
     log = work_dir() / ('run-%s.log' % label)
     say('%s run: the game runs for %d s on the Mac' % (label, seconds))
     r = subprocess.run([str(REPO / 'tools' / 'play_skyrim_dev.sh')] + [str(a) for a in args], env=env, stdout=open(log, 'wb'), stderr=subprocess.STDOUT)

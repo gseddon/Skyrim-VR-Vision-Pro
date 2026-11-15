@@ -41,3 +41,19 @@ run by hand are not repeated.
 - Saved games: AVP Play backs up `Documents/android-files` only. The game writes under
   `Documents/root/overlay_skyrimvr` (`targets.py` names it as `saves` for a later change in AVP Play).
 - Free Apple teams cannot sign the app (extended virtual addressing); `run.sh` says so.
+
+## Mods
+
+AVP Play's switch is `KLEPTON_GAME_MODS`, a comma-separated list of the sets in `visionos/mods.json`: `core` (SKSE VR,
+SkyrimVRTools, HIGGS, PLANCK, VRIK, SkyUI VR) and `skyland` (Skyland AIO). They are groups of entries of the project's
+own list, `mods/default.json`; `visionos/vx_mods.py` writes the list the stages use.
+
+- `visionos/mods_fetch.py` runs before the build (AVP Play starts it): `tools/mods.py fetch` for the chosen sets. Without
+  a key it opens each Nexus page in the browser and takes the archive from the Downloads folder by its md5; with
+  `NEXUS_API_KEY` (a Premium account's key, which AVP Play keeps in the keychain) the project's client downloads them.
+- `visionos/run.sh` then runs the stages `mods` and, for `core`, `skse-capture` (the game runs on the Mac for about five
+  minutes, muted) before `app`. Without mods the pack of an earlier build is set aside, so the plain modules are embedded.
+- `visionos/stage_sync.py` copies the pack beside the game tree and a list of the pack's files (`mods-files.txt`). The
+  app removes, at its next start, files an earlier list named and this one does not, so switching mods off leaves
+  nothing of them in the game's overlay.
+

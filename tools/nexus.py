@@ -357,7 +357,7 @@ def check_file(path, size=None, md5=None):
     return None
 
 
-def download(game, mod_id, file_id, nxm=None, md5=None, wait=0, progress=None):
+def download(game, mod_id, file_id, nxm=None, md5=None, wait=0, progress=None, name=None):
     """Fetch one file; returns dict(path, md5, size, verified_by). Skips the transfer when the file is already there and verifies."""
     key = api_key()
     if nxm:
@@ -377,6 +377,7 @@ def download(game, mod_id, file_id, nxm=None, md5=None, wait=0, progress=None):
         why = check_file(dest, size, want_md5)
         if why is None:
             print('nexus: %s is already here (checked: %s)' % (dest.name, how), file=sys.stderr)
+            event('have', name or dest.name, 'kept from before')
             return dict(path=str(dest), md5=md5_file(dest), size=dest.stat().st_size, verified_by=how)
         print('nexus: %s is there but %s; fetching again' % (dest.name, why), file=sys.stderr)
     try:
@@ -394,9 +395,14 @@ def download(game, mod_id, file_id, nxm=None, md5=None, wait=0, progress=None):
     h = hashlib.md5(); got = 0
     try:
         _, _, r = request(link, None)          # the CDN link is signed: the API key is not sent to it
+        said = time.monotonic()
+        event('progress', name or dest.name, '0 %d' % (size or 0))
         with r, open(part, 'wb') as f:
-            for b in iter(lambda: r.read(1 << 20), b''):
+            for b in iter(lambda: r.read(1 << 16), b''):       # (small reads: the progress lines come once a second on a slow line too)
                 f.write(b); h.update(b); got += len(b)
+                if time.monotonic() - said >= 1:
+                    said = time.monotonic()
+                    event('progress', name or dest.name, '%d %d' % (got, size or 0))
     except HttpFail as e:
         part.unlink(missing_ok=True)
         raise NexusError('the download server answered %s' % scrub(e))
@@ -414,6 +420,7 @@ def download(game, mod_id, file_id, nxm=None, md5=None, wait=0, progress=None):
         raise NexusError('download of %s failed verification: %s. The file was discarded.' % (dest.name, '; '.join(problems)))
     os.replace(part, dest)
     print('nexus: downloaded %s (%d bytes, md5 %s; checked: %s)' % (dest.name, got, digest, how), file=sys.stderr)
+    event('have', name or dest.name, 'downloaded with the Nexus key')
     return dict(path=str(dest), md5=digest, size=got, verified_by=how)
 
 
@@ -511,6 +518,7 @@ def manual_fetch(game, mod_id, file_id, name=None, md5=None, wait=0, progress=No
     hit = cache_lookup(want_md5)
     if hit:
         e('Using %s from the build\'s download cache (md5 %s).' % (hit, want_md5))
+        event('have', label, 'kept from before')
         return dict(path=str(hit), md5=want_md5, size=hit.stat().st_size, verified_by='pinned md5')
 
     def finish(src, st):
@@ -526,6 +534,7 @@ def manual_fetch(game, mod_id, file_id, name=None, md5=None, wait=0, progress=No
         finally:
             part.unlink(missing_ok=True)
         e('Picked up %s from %s (copied, the original is untouched; md5 %s).' % (src.name, folder, got))
+        event('have', label, 'from the Downloads folder')
         return dict(path=str(dest), md5=got, size=dest.stat().st_size, verified_by='pinned md5' if want_md5 else 'file name and your confirmation')
 
     def scan():
@@ -571,8 +580,12 @@ def manual_fetch(game, mod_id, file_id, name=None, md5=None, wait=0, progress=No
     e('  2. Click "Manual download", then "Slow download".')
     e("  3. I'll pick the file up from your Downloads folder (%s)." % folder)
     e('Waiting up to %d s. Press Ctrl-C to skip this mod.' % wait)
+    if wait:
+        event('need', label, files_page(game, mod_id, file_id))
     try:
         if tty and input('Open the page now with `open`? [y/N] ').strip().lower() in ('y', 'yes'):
+            subprocess.run(['open', files_page(game, mod_id, file_id)])
+        elif not tty and wait and auto_open():
             subprocess.run(['open', files_page(game, mod_id, file_id)])
         deadline = time.time() + wait
         while time.time() < deadline:
@@ -607,6 +620,7 @@ def external_fetch(name, url, file_name, md5, wait=0, folders=None, page=None):
     if not r and sizes.get('unstable'):
         _poll_sleep(STABLE + 0.1); r = scan()
     if r:
+        event('have', name, 'kept from before')
         return r
     e('%s is not on Nexus. Download it in your browser (no account needed):' % name)
     e('  %s' % url)
@@ -615,17 +629,36 @@ def external_fetch(name, url, file_name, md5, wait=0, folders=None, page=None):
     e('and keep the file name (%s). I check the md5 (%s) and pick it up from your Downloads folder (%s).' % (file_name, want, folders[-1]))
     if wait:
         e('Waiting up to %d s. Press Ctrl-C to skip.' % wait)
+        event('need', name, url)
     try:
+        if wait and auto_open() and not (sys.stdin is not None and sys.stdin.isatty()):
+            subprocess.run(['open', url])
         deadline = time.time() + wait
         while time.time() < deadline:
             _poll_sleep(POLL)
             r = scan()
             if r:
                 e('Found %s (md5 %s).' % (r, want))
+                event('have', name, 'from the Downloads folder')
                 return r
     except KeyboardInterrupt:
         raise Skipped('skipped %s by request' % name)
     raise Skipped('no archive with md5 %s appeared in %s for %s' % (want, ', '.join(str(f) for f in folders), name))
+
+
+def event(kind, name, detail=''):
+    """VXRT_NEXUS_EVENTS=1: one line per step for a program that shows the progress in its own words (an installer app):
+    "@@nexus need|<name>|<page to open>" before a wait for the user's download, "@@nexus have|<name>|<how>" when a file is there,
+    "@@nexus progress|<name>|<bytes here> <bytes in all, 0 unknown>" about once a second while the key's download runs.
+    Never holds the key."""
+    if os.environ.get('VXRT_NEXUS_EVENTS') == '1':
+        print('@@nexus %s|%s|%s' % (kind, str(name).replace('|', '/').replace('\n', ' '), str(detail).replace('|', '/').replace('\n', ' ')), file=sys.stderr, flush=True)
+
+
+def auto_open():
+    """VXRT_NEXUS_OPEN=1: a caller without a terminal (an installer app running the stages) wants each download page opened in the
+    browser as its turn comes, instead of the question a terminal gets."""
+    return os.environ.get('VXRT_NEXUS_OPEN') == '1'
 
 
 def fetch_file(game, mod_id, file_id, nxm=None, md5=None, wait=0, progress=None, name=None, manual=False, accept_name=False):
@@ -645,7 +678,8 @@ def fetch_file(game, mod_id, file_id, nxm=None, md5=None, wait=0, progress=None,
             print('nexus: an nxm link cannot be used without an API key (the download-link call needs the key); using the Downloads folder instead.', file=sys.stderr)
         return manual_fetch(game, mod_id, file_id, name=name, md5=md5, wait=wait, progress=progress, accept_name=accept_name)
     try:
-        return download(game, mod_id, file_id, nxm=nxm, md5=md5, wait=wait, progress=('%d of %d done' % progress) if isinstance(progress, tuple) else progress)
+        # (with auto_open the page is opened for the user anyway: no wait for an nxm link first, straight to the browser path below)
+        return download(game, mod_id, file_id, nxm=nxm, md5=md5, wait=0 if auto_open() else wait, progress=('%d of %d done' % progress) if isinstance(progress, tuple) else progress, name=name)
     except NotPremium:
         print("nexus: %s: this is a free account, so Nexus gives no direct download link (403) without the website's nxm key.\n"
               'nexus: falling back to your browser: open %s, download the file there; I pick it up from your Downloads folder by its md5.'

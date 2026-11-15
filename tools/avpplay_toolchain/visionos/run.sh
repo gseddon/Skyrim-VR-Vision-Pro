@@ -14,13 +14,17 @@
 #     KL_LX_SYSROOT      SteamVR's bin/vrwebhelper/win64 folder, or SteamVR's bin (the recipe's tree `sysroot`;
 #                        read only; msvcp140.dll)
 #     KL_SKIP_STAGE=1    AVP Play copies the game data itself afterwards (stage_sync.py); without it this script does
+#     KLEPTON_GAME_MODS  the mod sets to build with (mods.json: "core", "skyland"; comma-separated), empty for none.
+#                        Their files are on this Mac already: AVP Play ran mods_fetch.py first
 #   and it takes exit status 0 together with the line BUILD SUCCEEDED as success. A line starting with
 #   `!! install FAILED:` means built but not installed; `!! signing:` a signing problem; anything else a build failure.
 #   It then reads the built app's Info.plist and embedded.mobileprovision from
 #   visionos/build/dd-device-<target>/Build/Products/Debug-xros/*.app.
 #
 # What this script does with that: the project's own stages (tools/vxrt_build.py; docs/SETUP_SKYRIM.md), in order:
-#   toolchain (Rust, Steamless and a private .NET SDK; downloads on the first run), prepare, aot, shaders, app.
+#   toolchain (Rust, Steamless and a private .NET SDK; downloads on the first run), prepare, aot, shaders,
+#   with mods: mods (the pack) and, for mods that change the game's code, skse-capture (the game runs on this Mac for
+#   about five minutes, muted and without taking the keyboard, and the game is compiled again with their changes); app.
 # Each stage skips itself when its result is already there, so a second run only rebuilds and installs the app.
 # Nothing of the game leaves this Mac except to the player's own headset.
 set -u
@@ -117,6 +121,30 @@ stage toolchain --with-steamless
 stage prepare
 stage aot
 stage shaders
+
+# Mods (vx_mods.py, mods.json). The project's stages look for the pack at one place, <private root>/mods-pack, and the
+# app stage embeds the game modules that match it: so the pack is there exactly when this build is one with mods.
+MODS=$("$PY" "$HERE/vx_mods.py" sets) || die "the chosen mods are not ones this toolchain has (KLEPTON_GAME_MODS='${KLEPTON_GAME_MODS:-}')"
+MODS=$(printf '%s' "$MODS" | tr '\n' ',' | sed 's/,$//')
+PACK="$VXRT_PRIVATE_ROOT/mods-pack"
+STATE="$VXRT_PRIVATE_ROOT/avpplay/mods-state.json"
+if [ -n "$MODS" ]; then
+  say "== skyrimvr: mods: $MODS"
+  LIST=$(KLEPTON_GAME_MODS="$MODS" "$PY" "$HERE/vx_mods.py" list) || die "cannot write the mods list"
+  # (the pack is small to make again: clones of the fetched files; a pack of another choice must not stay)
+  rm -rf "$VXRT_PRIVATE_ROOT/mods-pack.off"
+  stage mods --list "$LIST" --force
+  case ",$MODS," in *,core,*)
+    say "== skyrimvr: the game now runs on this Mac for a few minutes (muted), so that the mods' changes to it can be built in ..."
+    stage skse-capture
+    stage mods --list "$LIST" --force ;;
+  esac
+  printf '{\n "sets": ["%s"]\n}\n' "$(printf '%s' "$MODS" | sed 's/,/", "/g')" > "$STATE" || die "cannot write $STATE"
+else
+  # No mods: the pack of an earlier build is set aside (kept: its files need not be made again), the plain modules are embedded.
+  if [ -d "$PACK" ]; then rm -rf "$PACK.off" && mv "$PACK" "$PACK.off" || die "cannot set the mod pack aside"; fi
+  [ ! -f "$STATE" ] || printf '{\n "sets": []\n}\n' > "$STATE"
+fi
 stage app
 
 APP="$REPO/VXRuntime/build/xros-xrizer-fixture/derived/Build/Products/Debug-xros/VXRuntimeHost.app"
