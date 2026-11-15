@@ -51,7 +51,9 @@ _Static_assert(sizeof(native_controller_state) == 60 && __builtin_offsetof(nativ
                __builtin_offsetof(native_controller_state, axis) == 20, "Apple VRControllerState001_t");
 _Static_assert(sizeof(guest_controller_state) == 64 && __builtin_offsetof(guest_controller_state, pressed) == 8 &&
                __builtin_offsetof(guest_controller_state, axis) == 24, "Windows VRControllerState001_t");
-static void *core_table[7], *system_table[47], *compositor_table[44], *system_fns[47];
+// system_table has 48 slots: the 47 of IVRSystem_019 and the one more of IVRSystem_020, which is handed out as the same object
+// (see core_interface).
+static void *core_table[7], *system_table[48], *compositor_table[44], *system_fns[47];
 static guest_object core = {core_table, NULL}, system_object = {system_table, NULL}, compositor = {compositor_table, NULL};
 static void *overlay_table[82];   // IVROverlay_018 (below)
 static guest_object overlay = {overlay_table, NULL};
@@ -123,6 +125,7 @@ static WINAPI void unsupported_system_43(void) { unsupported_slot("IVRSystem_019
 static WINAPI void unsupported_system_44(void) { unsupported_slot("IVRSystem_019", 44); }
 static WINAPI void unsupported_system_45(void) { unsupported_slot("IVRSystem_019", 45); }
 static WINAPI void unsupported_system_46(void) { unsupported_slot("IVRSystem_019", 46); }
+static WINAPI void unsupported_system_47(void) { unsupported_slot("IVRSystem_020", 47); }
 static WINAPI void unsupported_compositor_0(void) { unsupported_slot("IVRCompositor_022", 0); }
 static WINAPI void unsupported_compositor_1(void) { unsupported_slot("IVRCompositor_022", 1); }
 static WINAPI void unsupported_compositor_2(void) { unsupported_slot("IVRCompositor_022", 2); }
@@ -1064,13 +1067,20 @@ static void settings_install(void) {
     settings_table[10] = settings_10;
     settings_table[11] = settings_11;
 }
+// IVRSystem_020 (OpenVR 1.7.15) is IVRSystem_019 with DriverDebugRequest (slot 43) taken out and two methods added at the end: slots
+// 0 to 42 are the same methods with the same arguments, and every slot from 43 on is unsupported here in both layouts. So a caller that
+// asks for IVRSystem_020 gets the IVRSystem_019 object, and the native side is always asked for IVRSystem_019. SKSE VR needs this: its
+// VR_GetGenericInterface hook answers the game's IVRSystem_019 with its own object on top of IVRSystem_020 (Hooks_VR.cpp), and only that
+// object passes controller states on to the plugins registered with SKSE (HIGGS, PLANCK). When IVRSystem_020 is refused, SKSE falls back
+// to the plain interface without a word and those plugins never see a button.
+static const char *native_name(const char *name) { return !strcmp(name, "IVRSystem_020") ? "IVRSystem_019" : name; }
 static int supported(const char *name) {
-    return name && (!strcmp(name, "IVRSystem_019") || !strcmp(name, "IVRCompositor_022") || !strcmp(name, "IVROverlay_018") ||
+    return name && (!strcmp(name, "IVRSystem_019") || !strcmp(name, "IVRSystem_020") || !strcmp(name, "IVRCompositor_022") || !strcmp(name, "IVROverlay_018") ||
                     !strcmp(name, "IVRRenderModels_005") || !strcmp(name, "IVRSettings_002") ||
                     !strcmp(name, "FnTable:IVRSystem_019"));
 }
 static WINAPI int core_version(guest_object *self, const char *name) {
-    require(self == &core && name); if (!supported(name)) return 106; native_version_fn fn = (native_version_fn)native_table(self)[2]; return fn(self->native, name);
+    require(self == &core && name); if (!supported(name)) return 106; native_version_fn fn = (native_version_fn)native_table(self)[2]; return fn(self->native, native_name(name));
 }
 static WINAPI uint8_t core_present(guest_object *self) {
     require(self == &core); native_present_fn fn = (native_present_fn)native_table(self)[4]; return fn(self->native);
@@ -1079,6 +1089,8 @@ static WINAPI void *core_interface(guest_object *self, const char *name, int *er
     require(self == &core && initialized && name);
     if (!supported(name)) { if (error) *error = 106; return NULL; }
     native_interface_fn fn = (native_interface_fn)native_table(self)[3];
+    if (strcmp(name, native_name(name))) vx_log("xrizer_guest_bridge: %s is answered with the %s object", name, native_name(name));
+    name = native_name(name);
     void *p = fn(self->native, name, error);
     vx_log("xrizer_guest_bridge: actual native interface %s pointer %p error %d", name, p, error ? *error : -1);
     if (!p) return NULL;
@@ -1413,6 +1425,7 @@ void *vx_xrizer_guest_core(void *native_core) {
     system_table[44] = unsupported_system_44;
     system_table[45] = unsupported_system_45;
     system_table[46] = unsupported_system_46;
+    system_table[47] = unsupported_system_47;
     compositor_table[0] = unsupported_compositor_0;
     compositor_table[1] = unsupported_compositor_1;
     compositor_table[2] = unsupported_compositor_2;

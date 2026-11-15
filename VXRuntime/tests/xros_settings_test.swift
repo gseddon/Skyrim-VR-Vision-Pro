@@ -38,6 +38,28 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         let p3 = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_SHARPEN": "2", "VXRT_RENDER_QUALITY": "0.5"])
         check(p3.sharpen == 1 && p3.renderQuality == 0.5, "environment wins and is clamped")
 
+        // the edge mask: Standard by default, which exports nothing (the runtime's own mask and shape, as before the setting); Off turns
+        // the mask off, Slight gives its own shape; saved; the Info.plist default counts before a choice; a launch's VXRT_VISMASK wins
+        let md = fresh()
+        let m1 = VXSettings(defaults: md, info: [:], environment: [:])
+        check(m1.edgeMask == .standard && VXEdgeMask.standard.exports.isEmpty && map(m1)["VXRT_VISMASK"] == nil && map(m1)["VXRT_VISMASK_SHAPE"] == nil && md.object(forKey: "vxrt.edgeMask") == nil, "edge mask default exports nothing \(map(m1))")
+        m1.edgeMask = .off
+        check(map(m1)["VXRT_VISMASK"] == "off" && map(m1)["VXRT_VISMASK_SHAPE"] == nil, "edge mask off exports \(map(m1))")
+        m1.edgeMask = .slight
+        check(map(m1)["VXRT_VISMASK"] == "on" && map(m1)["VXRT_VISMASK_SHAPE"] == VXEdgeMask.slightShape, "edge mask slight exports \(map(m1))")
+        check(md.string(forKey: "vxrt.edgeMask") == "slight" && VXSettings(defaults: md, info: [:], environment: [:]).edgeMask == .slight, "edge mask persisted")
+        m1.edgeMask = .standard
+        check(map(m1)["VXRT_VISMASK"] == nil && map(m1)["VXRT_VISMASK_SHAPE"] == nil, "back to standard exports nothing \(map(m1))")
+        m1.edgeMask = .slight
+        check(VXSettings(defaults: fresh(), info: ["VXEdgeMaskDefault": "off"], environment: [:]).edgeMask == .off, "edge mask plist default")
+        check(VXSettings(defaults: md, info: ["VXEdgeMaskDefault": "off"], environment: [:]).edgeMask == .slight, "saved edge mask beats plist")
+        check(VXSettings(defaults: md, info: [:], environment: ["VXRT_VISMASK": "off"]).edgeMask == .off, "env off wins")
+        check(VXSettings(defaults: md, info: [:], environment: ["VXRT_VISMASK": "on"]).edgeMask == .slight, "env on keeps the saved shape choice")
+        check(VXSettings(defaults: fresh(), info: ["VXEdgeMaskDefault": "off"], environment: ["VXRT_VISMASK": "on"]).edgeMask == .standard, "env on over off is the runtime's own")
+        // Slight is a valid shape (l,r,u,d 0...0.45, radius) and smaller at every edge than the runtime's default 0.13,0.05,0.07,0.14 (src/vismask_shape.h)
+        let parts = VXEdgeMask.slightShape.split(separator: ",").compactMap { Float($0) }
+        check(parts.count == 5 && parts[0...3].allSatisfy { $0 >= 0 && $0 <= 0.45 } && zip(parts, [0.13, 0.05, 0.07, 0.14] as [Float]).allSatisfy { $0 < $1 }, "slight shape is a valid, smaller shape")
+
         // gameplay: Skyrim's own settings go out as VXRT_INI_SET only when picked; "game default" writes nothing
         d = fresh()
         s = VXSettings(defaults: d, info: [:], environment: [:])
@@ -67,6 +89,28 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         _ = s.applyEnvironment()
         check(getenv("VXRT_INI_SET").map { String(cString: $0) } == "Display.bUseTAA=0;VRInput.bDirectMovementWithWands=1", "applyEnvironment merges VXRT_INI_SET")
         for n in ["VXRT_INI_SET", "VXRT_RENDER_SCALE", "VXRT_UPSCALE", "VXRT_GATE"] { unsetenv(n) }
+
+        // graphics quality: standard (the default) writes nothing; a level writes the game's own preset keys, before the other ini settings
+        // and after the launch's own (the first match wins in client.c); saved; the Info.plist default counts before a choice; env wins
+        let gd = fresh()
+        let g1 = VXSettings(defaults: gd, info: [:], environment: [:])
+        check(g1.graphics == .standard && VXGraphics.standard.iniSet.isEmpty && map(g1)["VXRT_INI_SET"] == nil && gd.object(forKey: "vxrt.graphics") == nil, "graphics standard writes nothing")
+        g1.graphics = .low
+        let lowSet = map(g1)["VXRT_INI_SET"] ?? ""
+        check(lowSet.hasPrefix("Display.iShadowMapResolution=1024;Display.fShadowDistance=2000;") && lowSet.contains("Display.fMeshLODLevel1FadeDist=4096")
+              && lowSet.contains("Trees.bEnableTreeAnimations=0") && lowSet.hasSuffix("Grass.fGrassStartFadeDistance=1500"), "graphics low keys \(lowSet)")
+        check(!lowSet.contains("DynamicResolution") && !lowSet.contains("fRenderTargetSizeMultiplier"), "graphics leaves the picture size alone")
+        check(VXGraphics.low.iniSet.count == 13 && VXGraphics.medium.iniSet.map(\.key) == VXGraphics.low.iniSet.map(\.key) && VXGraphics.high.iniSet.map(\.key) == VXGraphics.low.iniSet.map(\.key), "graphics levels name the same keys")
+        check(gd.string(forKey: "vxrt.graphics") == "low" && VXSettings(defaults: gd, info: [:], environment: [:]).graphics == .low, "graphics persisted")
+        check(VXSettings(defaults: fresh(), info: ["VXGraphicsDefault": "medium"], environment: [:]).graphics == .medium, "graphics plist default")
+        check(VXSettings(defaults: gd, info: ["VXGraphicsDefault": "medium"], environment: [:]).graphics == .low, "saved graphics beats plist")
+        check(VXSettings(defaults: gd, info: [:], environment: ["VXRT_GRAPHICS": "high"]).graphics == .high, "graphics env wins")
+        let g2 = VXSettings(defaults: gd, info: [:], environment: ["VXRT_INI_SET": "Display.fShadowDistance=7000"])
+        check((map(g2)["VXRT_INI_SET"] ?? "").hasPrefix("Display.fShadowDistance=7000;Display.iShadowMapResolution=1024"), "the launch's own key comes first")
+        g2.turn = .snap
+        check((map(g2)["VXRT_INI_SET"] ?? "").contains("Grass.fGrassStartFadeDistance=1500;VRInput.bGamepadLookAngleSnapping=1;VRInput.bGamepadLookAngleSnapSmoothing=0"), "graphics keys come before the gameplay keys")
+        g1.graphics = .standard
+        check(map(g1)["VXRT_INI_SET"] == nil, "back to standard writes nothing")
 
         // the further settings: all game default (nothing exported) until picked
         d = fresh()
@@ -120,6 +164,95 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         let r = s.applyEnvironment()
         check(getenv("VXRT_RENDER_SCALE").map { String(cString: $0) } == "0.75" && String(cString: getenv("VXRT_GATE")) == "one", "applyEnvironment keeps launch env")
         check(r.kept == ["VXRT_GATE"], "kept list \(r.kept)")
+
+        // the game's language: nothing chosen and nothing installed leaves the game's files alone
+        let packs = { (set: Set<VXGameLanguage>) in { (l: VXGameLanguage) in set.contains(l) } }
+        let texts = { (l: VXGameLanguage) in !l.needsPack }       // no pack of ja/zh here: only the languages of the game's own data can be used
+        func res(_ c: VXGameLanguage, _ preset: String?, _ dev: [String], _ inst: Set<VXGameLanguage>, usable: ((VXGameLanguage) -> Bool)? = nil) -> VXGameLanguage? {
+            VXGameLanguage.resolve(choice: c, preset: preset, deviceLanguages: dev, installed: packs(inst), usable: usable ?? texts)
+        }
+        check(res(.auto, nil, ["de-DE"], []) == nil, "language: nothing chosen")
+        check(res(.auto, "", [], [.en]) == nil, "language: English voices are no choice")
+        // one installed pack is the choice; two are none, then the installer's preset counts; a picked language beats both
+        check(res(.auto, "en", [], [.en, .de]) == .de, "language: the installed voices")
+        check(res(.auto, "fr_FR", [], [.de, .fr]) == .fr, "language: preset among two packs")
+        check(res(.auto, "de_DE", [], []) == .de, "language: preset de_DE")
+        check(res(.auto, "device", ["ko-KR", "pl-PL", "de-DE"], []) == .pl, "language: the headset's first known one")
+        check(res(.auto, "ko_KR", ["de-DE"], []) == nil, "language: a preset the game has not")
+        check(res(.it, "de_DE", [], [.de]) == .it, "language: picked")
+        // Japanese and Chinese exist only with their pack: picked or preset without it is no language; the headset's list moves on
+        check(res(.ja, nil, [], []) == nil && res(.auto, "zh_TW", [], []) == nil, "language: ja/zh without their pack")
+        check(res(.auto, "device", ["ja-JP", "de-DE"], []) == .de, "language: the headset's first usable one")
+        check(res(.auto, nil, [], [.zh], usable: { _ in true }) == .zh && res(.ja, nil, [], [.ja], usable: { _ in true }) == .ja, "language: ja/zh with their pack")
+        // the overrides: the texts always, the voices only when their archive is there, swapped into the game's own list
+        let shipped = VXGameLanguage.shippedArchiveList
+        check(VXGameLanguage.iniSet(.de, hasVoices: false, archiveList: shipped).map { "\($0.key)=\($0.value)" } == ["General.sLanguage=GERMAN"], "language: texts only")
+        let de = VXGameLanguage.iniSet(.de, hasVoices: true, archiveList: nil)
+        check(de.count == 2 && de[1].key == "Archive.sResourceArchiveList2" && de[1].value == shipped.replacingOccurrences(of: "Voices_en0", with: "Voices_de0"), "language: German voices in the shipped list")
+        let own = VXGameLanguage.iniSet(.en, hasVoices: true, archiveList: "Skyrim - Voices_de0.bsa, Mine.bsa")
+        check(own.map(\.value) == ["ENGLISH", "Skyrim - Voices_en0.bsa, Mine.bsa"], "language: back to English in a German game folder")
+        check(VXGameLanguage.iniSet(.fr, hasVoices: true, archiveList: "Mine.bsa")[1].value == "Skyrim - Voices_fr0.bsa, Mine.bsa", "language: a list without a voice archive")
+        check(VXGameLanguage.archiveList(ofIni: "[General]\r\nsLanguage=ENGLISH\r\n[Archive]\r\nsResourceArchiveList=A.bsa\r\n sResourceArchiveList2 = B.bsa, C.bsa \r\n[Other]\r\nsResourceArchiveList2=no\r\n") == "B.bsa, C.bsa", "language: the list of an ini")
+        // what else a language's Skyrim.ini sets: the font table for Polish and Russian; Chinese has no voices of its own
+        check(VXGameLanguage.iniSet(.ru, hasVoices: false, archiveList: nil).map { "\($0.key)=\($0.value)" } == ["General.sLanguage=RUSSIAN", "Fonts.sFontConfigFile=Interface\\FontConfig_ru.txt"], "language: Russian fonts")
+        check(VXGameLanguage.iniSet(.pl, hasVoices: true, archiveList: nil).map(\.key) == ["General.sLanguage", "Fonts.sFontConfigFile", "Archive.sResourceArchiveList2"], "language: Polish keys")
+        check(VXGameLanguage.iniSet(.zh, hasVoices: true, archiveList: nil).map { "\($0.key)=\($0.value)" } == ["General.sLanguage=CHINESE"] && VXGameLanguage.zh.voiceArchive == nil, "language: Chinese keeps the English voices")
+        check(VXGameLanguage.iniSet(.ja, hasVoices: true, archiveList: nil)[1].value.hasPrefix("Skyrim - Voices_ja0.bsa, "), "language: Japanese voices")
+        // the font key's backslash (and a quote) inside the host log's JSON text
+        check(VXSettings.logText("Fonts.sFontConfigFile=Interface\\FontConfig_ru.txt \"x\"") == "Fonts.sFontConfigFile=Interface\\\\FontConfig_ru.txt \\\"x\\\"", "language: log text escaped")
+        // the files of a pack that carry a game file's name: placed in the overlay for the language in use, taken out for another,
+        // a mod's file of the same name left alone, an emptied pack file removed
+        let lr = NSTemporaryDirectory() + "vxrt-langpack-\(UUID().uuidString)"
+        let fm = FileManager.default
+        func put(_ path: String, _ text: String) { try? fm.createDirectory(atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true); fm.createFile(atPath: path, contents: Data(text.utf8)) }
+        func read(_ path: String) -> String? { fm.contents(atPath: path).map { String(decoding: $0, as: UTF8.self) } }
+        for f in VXGameLanguage.ja.replacedFiles { put(lr + "/lang/ja/Data/" + f, "ja " + f); put(lr + "/lang/zh/Data/" + f, "zh " + f) }
+        put(lr + "/lang/pl/Data/Strings/Dawnguard_Polish.DLSTRINGS", "pl")
+        let ov = lr + "/overlay_skyrimvr/Data/"
+        check(VXGameLanguage.activate(.de, root: lr).isEmpty && !fm.fileExists(atPath: ov), "pack: a language without such files places nothing")
+        check(VXGameLanguage.activate(.ja, root: lr).count == 3 && read(ov + "Skyrim - Patch.bsa") == "ja Skyrim - Patch.bsa", "pack: Japanese placed")
+        check(VXGameLanguage.activate(.ja, root: lr).isEmpty, "pack: a second start changes nothing")
+        check(VXGameLanguage.activate(.zh, root: lr).count == 3 && read(ov + "Skyrim_VR - Main.bsa") == "zh Skyrim_VR - Main.bsa", "pack: Chinese replaces Japanese")
+        let toPl = VXGameLanguage.activate(.pl, root: lr)
+        check(toPl.count == 4 && !fm.fileExists(atPath: ov + "Skyrim - Interface.bsa") && read(ov + "Strings/Dawnguard_Polish.DLSTRINGS") == "pl", "pack: Polish takes the archives out and places its strings (\(toPl))")
+        check(VXGameLanguage.activate(nil, root: lr).count == 1 && !fm.fileExists(atPath: ov + "Strings/Dawnguard_Polish.DLSTRINGS") && !fm.fileExists(atPath: lr + "/lang/active.txt"), "pack: no language, nothing in the overlay")
+        put(ov + "Skyrim - Patch.bsa", "a mod's")
+        let withMod = VXGameLanguage.activate(.ja, root: lr)
+        check(read(ov + "Skyrim - Patch.bsa") == "a mod's" && withMod.contains { $0.contains("not placed") } && read(ov + "Skyrim - Interface.bsa") != nil, "pack: a mod's file of the same name stays")
+        _ = VXGameLanguage.activate(nil, root: lr)
+        check(read(ov + "Skyrim - Patch.bsa") == "a mod's", "pack: and is not taken out either")
+        put(lr + "/lang/ja/Data/Skyrim - Interface.bsa", "")
+        check(VXGameLanguage.activate(.ja, root: lr).isEmpty && !fm.fileExists(atPath: lr + "/lang/ja/Data/Skyrim - Interface.bsa") && !fm.fileExists(atPath: ov + "Skyrim - Interface.bsa"), "pack: an emptied pack file is removed and the incomplete pack not used")
+        // the store sees a pack: Chinese by its files, and the game's language follows
+        for f in VXGameLanguage.zh.replacedFiles { put(lr + "/SkyrimVR/Data/" + f, "base"); }
+        let z = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_GAME_ROOT": lr])
+        check(z.hasPack(.zh) && z.canUse(.zh) && !z.canUse(.ja) && z.effectiveGameLanguage == .zh && map(z)["VXRT_INI_SET"] == "General.sLanguage=CHINESE", "pack: the store finds the Chinese pack")
+        check(z.gameLanguageNote.hasPrefix("Automatic: 繁體中文 texts with the English voices"), "pack: the note for Chinese")
+        let j = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_GAME_ROOT": lr, "VXRT_GAME_LANGUAGE": "ja"])
+        check(j.effectiveGameLanguage == nil && j.gameLanguageNote.hasPrefix("日本語 exists only with its language pack") && j.gameLanguageNote.contains("lang/ja/Data"), "pack: the note for a picked language without its pack")
+        try? fm.removeItem(atPath: lr)
+
+        // the store: a game folder with German voices exports both keys; the launch's own VXRT_INI_SET entries stay first
+        let root = NSTemporaryDirectory() + "vxrt-lang-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: root + "/SkyrimVR/Data", withIntermediateDirectories: true)
+        try? "[Archive]\r\nsResourceArchiveList2=\(shipped)\r\n".write(toFile: root + "/SkyrimVR/Skyrim.ini", atomically: true, encoding: .isoLatin1)
+        let l0 = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_GAME_ROOT": root])
+        check(l0.gameLanguage == .auto && l0.effectiveGameLanguage == nil && map(l0)["VXRT_INI_SET"] == nil, "language: default exports nothing")
+        let l1 = VXSettings(defaults: fresh(), info: ["VXGameLanguageDefault": "de_DE"], environment: ["VXRT_GAME_ROOT": root])
+        check(l1.effectiveGameLanguage == .de && map(l1)["VXRT_INI_SET"] == "General.sLanguage=GERMAN", "language: preset, texts only")
+        check(l0.gameLanguageNote.hasPrefix("Nothing is chosen") && l1.gameLanguageNote.hasPrefix("Automatic: Deutsch texts with the English voices") && l1.gameLanguageNote.contains("Skyrim - Voices_de0.bsa"), "language: the note without voices")
+        FileManager.default.createFile(atPath: root + "/SkyrimVR/Data/Skyrim - Voices_de0.bsa", contents: Data())
+        check(VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_GAME_ROOT": root]).effectiveGameLanguage == nil, "language: an emptied voice archive is none")
+        FileManager.default.createFile(atPath: root + "/SkyrimVR/Data/Skyrim - Voices_de0.bsa", contents: Data([1]))
+        let ld = fresh()
+        let l2 = VXSettings(defaults: ld, info: [:], environment: ["VXRT_GAME_ROOT": root, "VXRT_INI_SET": "VR.x=1"])
+        check(l2.effectiveGameLanguage == .de && map(l2)["VXRT_INI_SET"] == "VR.x=1;General.sLanguage=GERMAN;Archive.sResourceArchiveList2=" + shipped.replacingOccurrences(of: "Voices_en0", with: "Voices_de0"), "language: installed voices")
+        check(l2.gameLanguageNote == "Automatic: Deutsch, texts and voices.", "language: the note with voices")
+        l2.gameLanguage = .en
+        let l3 = VXSettings(defaults: ld, info: [:], environment: ["VXRT_GAME_ROOT": root])
+        check(l3.gameLanguage == .en && map(l3)["VXRT_INI_SET"] == "General.sLanguage=ENGLISH", "language: a picked English persists (no English archive in this folder: the list stays)")
+        check(VXSettings(defaults: ld, info: [:], environment: ["VXRT_GAME_ROOT": root, "VXRT_GAME_LANGUAGE": "ru"]).gameLanguage == .ru, "language: environment wins")
+        try? FileManager.default.removeItem(atPath: root)
 
         // the launch gate
         check(VXLaunchGate.enabled(info: ["VXStartWindow": "1"], environment: [:], defaultLaunch: true), "gate on")

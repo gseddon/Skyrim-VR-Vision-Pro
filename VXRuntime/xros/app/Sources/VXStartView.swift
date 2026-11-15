@@ -7,8 +7,14 @@
 // (:1132-1300: title, large Start, Settings, status line, version stamp in the corner), BootView.settingsPage (:1342-1415: NavigationStack, GroupBox
 // sections, grey callout explanations, an Advanced DisclosureGroup, Done), PlayerSettingsView (:719-840: Picture, Your hands, "Changes to the picture
 // apply the next time you start the game"), KleptonTuning.swift TuningView (:106) for the alignment sliders. Reimplemented, English only; the Klepton
-// runtime seams (kl_*) are not used. Branding is text only: no game art.
+// runtime seams (kl_*) are not used. Branding is text only: no game art is part of this project.
+//
+// The start picture is optional and not in the repository: a file bundle/StartHero.png in the app's resources. Whoever builds the app (an
+// installer, with a picture of the player's own) puts StartHero.png into the folder the project copies as "bundle" before xros-app: for the
+// Skyrim app (XROS_XRIZER_GAME=1) that is $(XROS_DIR)/bundle in the Makefile. The front then shows it behind the title: filled, a gradient to
+// black under the text, the text at the bottom. Without the file the front is the plain window: text in the middle, no picture.
 import SwiftUI
+import UIKit
 
 #if XRIZER_XROS_FIXTURE
 private func loadStage() -> Int { Int(vx_xros_load_stage()) }
@@ -27,7 +33,7 @@ final class VXLauncher: ObservableObject {
     func start(openDisplay: () -> Void) {
         guard !started else { return }
         let r = VXSettings.shared.applyEnvironment()
-        vxrt_jlog("settings_applied", "\"set\":\"\(r.set.joined(separator: " "))\",\"kept\":\"\(r.kept.joined(separator: " "))\"")
+        vxrt_jlog("settings_applied", "\"set\":\"\(VXSettings.logText(r.set.joined(separator: " ")))\",\"kept\":\"\(r.kept.joined(separator: " "))\"")
         phase = .started
         startedAt = Date()
         openDisplay()
@@ -43,6 +49,8 @@ struct VXStartView: View {
     @State private var showSettings = ProcessInfo.processInfo.environment["VXRT_START_SETTINGS"] == "1"   // (a scripted launch can show the settings page)
 
     private static let title = (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String) ?? "Skyrim VR"
+    /// The start picture, when the app was built with one (see the note on top).
+    static let hero: UIImage? = Bundle.main.resourcePath.flatMap { UIImage(contentsOfFile: $0 + "/bundle/StartHero.png") }
     private static let versionStamp: String? = {
         let info = Bundle.main.infoDictionary
         guard let short = info?["CFBundleShortVersionString"] as? String, !short.isEmpty else { return nil }
@@ -77,9 +85,28 @@ struct VXStartView: View {
     }
 
     private var front: some View {
+        ZStack(alignment: .bottom) {
+            if let hero = Self.hero {
+                Image(uiImage: hero).resizable().scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
+                    .overlay(LinearGradient(colors: [.clear, .black.opacity(0.8)], startPoint: .center, endPoint: .bottom))
+                    .accessibilityHidden(true)
+            }
+            frontContent
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottomTrailing) {
+            if let stamp = Self.versionStamp {
+                Text(stamp).font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize().padding(.trailing, 48).padding(.bottom, 20)
+            }
+        }
+    }
+
+    // With a picture the text sits at the bottom, on the dark end of the gradient; without one it stays in the middle of the window.
+    private var frontContent: some View {
         VStack(spacing: 22) {
             Spacer()
-            Text(Self.title).font(.extraLargeTitle.bold())
+            Text(Self.title).font(.extraLargeTitle.bold()).shadow(color: Self.hero == nil ? .clear : .black.opacity(0.33), radius: 10)
             Text("Skyrim VR on Apple Vision Pro, running natively with Sense controllers.")
                 .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
             statusLine
@@ -102,15 +129,11 @@ struct VXStartView: View {
                 Text("The game is in the immersive space. Resolution applies the next time you open the app.")
                     .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 520)
             }
-            Spacer()
+            if Self.hero == nil { Spacer() }
         }
         .padding(40)
+        .padding(.bottom, Self.hero == nil ? 0 : 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(alignment: .bottomTrailing) {
-            if let stamp = Self.versionStamp {
-                Text(stamp).font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize().padding(.trailing, 48).padding(.bottom, 20)
-            }
-        }
     }
 
     @ViewBuilder private var statusLine: some View {
@@ -183,6 +206,12 @@ struct VXSettingsPage: View {
                                 Text(String(format: "%.0f%%", settings.renderScale * 100)).font(.system(.body, design: .monospaced)).frame(width: 70)
                             }
                             note("The size the game draws each eye at, as a share of the display's. Lower is smoother on a busy scene; higher is sharper. 65% with MetalFX is the default.")
+                            Picker("Unseen edge", selection: $settings.edgeMask) {
+                                Text("Draw everything").tag(VXEdgeMask.off)
+                                Text("Skip a little").tag(VXEdgeMask.slight)
+                                Text("Skip more").tag(VXEdgeMask.standard)
+                            }.pickerStyle(.segmented)
+                            note("The game can leave out the edge of the picture that the lenses do not show, which makes it run more smoothly. “Skip more” is the default. If you see a black bar or black corners in the game, choose less here; “Draw everything” never shows one. Next launch.")
                             Picker("Upscaling", selection: $settings.upscale) {
                                 Text("MetalFX").tag(VXUpscale.metalfx)
                                 Text("Bilinear").tag(VXUpscale.bilinear)
@@ -230,6 +259,24 @@ struct VXSettingsPage: View {
                             note("Off by default: the game draws its own controllers, and your real hands would be a second pair in the same place. Takes effect at once.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    GroupBox("Graphics quality") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Graphics quality", selection: $settings.graphics) {
+                                Text("Standard").tag(VXGraphics.standard)
+                                Text("Low").tag(VXGraphics.low)
+                                Text("Medium").tag(VXGraphics.medium)
+                                Text("High").tag(VXGraphics.high)
+                            }.pickerStyle(.segmented).labelsHidden()
+                            note(settings.graphics == .standard
+                                 ? "The default: the balanced values this app starts the game with. Nothing more is written."
+                                 : settings.graphics == .low
+                                 ? "The game's own “Low”: shorter shadows, distant objects and trees in their simpler forms sooner, less grass, no tree animation. The one to try when the game stutters."
+                                 : settings.graphics == .medium
+                                 ? "The game's own “Medium”: full detail in the distance, shadows to a middle distance."
+                                 : "The game's own “High”: finer shadows than Low, shadows on trees, more grass. The heaviest of the three.")
+                            note("Low, Medium and High write the scene-detail values of the game's own presets over its settings; the size of the picture stays as set under Picture. Applies the next time you start.")
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     GroupBox("Turning") {
                         VStack(alignment: .leading, spacing: 10) {
                             Picker("Turning", selection: $settings.turn) {
@@ -271,6 +318,15 @@ struct VXSettingsPage: View {
                                  : settings.move == .teleport
                                  ? "Push the left stick forward to aim and release to jump there."
                                  : "The left stick walks you around directly.")
+                            note("Applies the next time you start.")
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    GroupBox("Game language") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Game language", selection: $settings.gameLanguage) {
+                                ForEach([VXGameLanguage.auto] + VXGameLanguage.named) { Text($0.ownName).tag($0) }
+                            }.pickerStyle(.menu).labelsHidden()
+                            note(settings.gameLanguageNote)
                             note("Applies the next time you start.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }

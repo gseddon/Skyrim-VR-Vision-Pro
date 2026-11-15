@@ -5,6 +5,7 @@
 // the drawable for the system's own late reprojection, the drawable's device anchor the pose the eyes were made for.
 // The game renders at its own rate; its sync-interval presents are paced by these frames (vx_xros_vr_begin_frame).
 import ARKit
+import AVFAudio
 import CompositorServices
 import Metal
 import QuartzCore
@@ -83,6 +84,14 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         guard let q = layerRenderer.device.makeCommandQueue() else {
             vxrt_jlog("vr_error", "\"what\":\"no command queue\"")
             return
+        }
+        if vx_xros_immersive_enabled() != 0 {
+            do {
+                try AVAudioSession.sharedInstance().setIntendedSpatialExperience(.bypassed)
+                vxrt_jlog("audio_spatial_experience", "\"mode\":\"bypassed\",\"ok\":true")
+            } catch {
+                vxrt_jlog("audio_spatial_experience", "\"mode\":\"bypassed\",\"ok\":false,\"error\":\(String(reflecting: error.localizedDescription))")
+            }
         }
         let prior = previous
 #if XRIZER_XROS_FIXTURE

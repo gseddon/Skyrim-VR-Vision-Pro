@@ -28,6 +28,8 @@
 	<string>Bluetooth connects spatial controllers that are paired with the headset.</string>
 	<key>VXStartWindow</key>
 	<string>$(VXRT_START_WINDOW)</string>
+	<key>VXGameLanguageDefault</key>
+	<string>$(VXRT_GAME_LANGUAGE)</string>
 	<key>KLHandMattingDefault</key>
 	<string>0</string>
 	<key>KLAutoBootDefault</key>

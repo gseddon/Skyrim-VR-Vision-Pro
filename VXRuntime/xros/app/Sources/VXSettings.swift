@@ -21,6 +21,25 @@ import Foundation
 // Environment as a dictionary so tests can inject one.
 typealias VXEnvironment = [String: String]
 
+// How much of each eye image the game leaves undrawn because the lenses do not show it (the hidden-area mesh the game asks for,
+// VXRT_VISMASK and VXRT_VISMASK_SHAPE: src/vismask_shape.h). "Standard" is the runtime's own shape and the default: it exports nothing,
+// so the runtime decides as it did before this was a setting (the mask on, its measured default shape, Documents/vxrt_vismask.txt
+// still read). That shape was measured on one wearer's headset and hides about 38 % of the picture
+// (research/2026-11-10-hidden-area-mask.md); on another headset its bottom edge showed as a black bar in the game. "Slight" hides
+// about half as much at every edge, "Off" nothing (the game then draws the whole picture, which costs graphics time).
+enum VXEdgeMask: String, CaseIterable, Identifiable {
+    case off, slight, standard
+    var id: String { rawValue }
+    static let slightShape = "0.07,0.03,0.04,0.06,0.4"
+    var exports: [(String, String)] {
+        switch self {
+        case .off: return [("VXRT_VISMASK", "off")]
+        case .slight: return [("VXRT_VISMASK", "on"), ("VXRT_VISMASK_SHAPE", Self.slightShape)]
+        case .standard: return []
+        }
+    }
+}
+
 struct VXHandsBlob: Codable, Equatable {
     var handMatting: Bool
     private enum CodingKeys: String, CodingKey { case handMatting }
@@ -78,6 +97,36 @@ enum VXMove: String, CaseIterable, Identifiable {
     }
 }
 
+// Graphics quality: the scene-detail keys of the game's own quality presets (its Low.ini, Medium.ini and High.ini: shadow map size and
+// distance, the distances at which meshes and trees go to their simpler forms, grass distance, tree animation), written over the
+// ini values through VXRT_INI_SET like the settings above. "Standard" writes nothing: the runtime's own balanced preset stays as it
+// is (VXRT_SKYRIM_PRESET, src/client.c), and so do the keys it does not name. The presets' render-size and dynamic-resolution keys are
+// left out on purpose: the size of the game's picture is this app's (Resolution).
+// Low is the one meant to take work off the game's main thread: fewer and simpler objects in the distance are fewer draw calls.
+enum VXGraphics: String, CaseIterable, Identifiable {
+    case standard, low, medium, high
+    var id: String { rawValue }
+    var iniSet: [(key: String, value: String)] {
+        func keys(shadowMap: String, shadowDistance: String, rain: String, treeShadows: String, focus: String, mesh1: String, mesh2: String,
+                  tree1: String, tree2: String, treeMid: String, skinned: String, animated: String, grass: String) -> [(String, String)] {
+            [("Display.iShadowMapResolution", shadowMap), ("Display.fShadowDistance", shadowDistance), ("Display.bUsePrecipitationOcclusion", rain),
+             ("Display.bTreesReceiveShadows", treeShadows), ("Display.iNumFocusShadow", focus), ("Display.fMeshLODLevel1FadeDist", mesh1),
+             ("Display.fMeshLODLevel2FadeDist", mesh2), ("Display.fMeshLODLevel1FadeTreeDistance", tree1), ("Display.fMeshLODLevel2FadeTreeDistance", tree2),
+             ("Display.fTreesMidLODSwitchDist", treeMid), ("Trees.bRenderSkinnedTrees", skinned), ("Trees.bEnableTreeAnimations", animated),
+             ("Grass.fGrassStartFadeDistance", grass)]
+        }
+        switch self {
+        case .standard: return []
+        case .low: return keys(shadowMap: "1024", shadowDistance: "2000", rain: "0", treeShadows: "0", focus: "0", mesh1: "4096", mesh2: "3072",
+                               tree1: "2000", tree2: "1500", treeMid: "2500", skinned: "0", animated: "0", grass: "1500")
+        case .medium: return keys(shadowMap: "2048", shadowDistance: "3000", rain: "0", treeShadows: "0", focus: "0", mesh1: "9999999", mesh2: "9999999",
+                                  tree1: "16896", tree2: "16896", treeMid: "3600", skinned: "1", animated: "1", grass: "3500")
+        case .high: return keys(shadowMap: "2048", shadowDistance: "4000", rain: "1", treeShadows: "1", focus: "2", mesh1: "9999999", mesh2: "9999999",
+                                tree1: "16896", tree2: "16896", treeMid: "5000", skinned: "1", animated: "1", grass: "5000")
+        }
+    }
+}
+
 // More of the game's own settings, each "Game default" (nothing written) until the player picks a value. A yes/no is on, off or default; a number is
 // default or a value in a range. Keys are strings of the game's exe (research/2026-11-11-skyrim-vr-gameplay-settings.md). Number ranges: the
 // game's own Min/Max keys exist only for the snap angle and turn speed; the rest are conservative bounds, defaults and units NOT verified.
@@ -123,6 +172,160 @@ struct VXIniSetting: Identifiable {
     }
 }
 
+// The game's language. Skyrim VR has no menu for it: it reads sLanguage and the list of its archives from Skyrim.ini, and Steam installs a
+// language by replacing that file and adding the language's files. Here the keys are overridden instead (VXRT_INI_SET, as the settings above),
+// so one set of game files serves every language. What each of Steam's language depots holds (all nine seen 2026-11-14):
+//   de fr it es   "Skyrim - Voices_<code>0.bsa", and a Skyrim.ini that differs in sLanguage and in the voice archive of sResourceArchiveList2
+//   pl ru         the same, plus [Fonts] sFontConfigFile=Interface\FontConfig_<code>.txt (pl: also one strings file that differs from the game's)
+//   ja            its voices, plus three archives that carry the names of the game's own (Interface, Patch, Skyrim_VR - Main): its texts and fonts
+//   zh            those three archives only (traditional Chinese texts; the voices stay English)
+// The texts of en, de, fr, it, es, pl and ru are part of the game's data: without its voice archive such a language goes with the English
+// voices. ja and zh exist only with their pack. An installer puts a voice archive into the game's Data folder and the files that carry a
+// game file's name under <root>/lang/<code>/Data; `activate` puts those of the language in use into the game's overlay and takes them out again.
+enum VXGameLanguage: String, CaseIterable, Identifiable {
+    case auto, en, de, fr, it, es, pl, ru, ja, zh
+    var id: String { rawValue }
+    /// The languages a player can pick (auto aside).
+    static let named: [VXGameLanguage] = [.en, .de, .fr, .it, .es, .pl, .ru, .ja, .zh]
+    /// sLanguage as the game's string files are named (Data/Strings/Skyrim_GERMAN.STRINGS).
+    var skyrimName: String? {
+        switch self {
+        case .auto: return nil
+        case .en: return "ENGLISH"
+        case .de: return "GERMAN"
+        case .fr: return "FRENCH"
+        case .it: return "ITALIAN"
+        case .es: return "SPANISH"
+        case .pl: return "POLISH"
+        case .ru: return "RUSSIAN"
+        case .ja: return "JAPANESE"
+        case .zh: return "CHINESE"
+        }
+    }
+    /// The language's own name, for the picker.
+    var ownName: String {
+        switch self {
+        case .auto: return "Automatic"
+        case .en: return "English"
+        case .de: return "Deutsch"
+        case .fr: return "Français"
+        case .it: return "Italiano"
+        case .es: return "Español"
+        case .pl: return "Polski"
+        case .ru: return "Русский"
+        case .ja: return "日本語"
+        case .zh: return "繁體中文"
+        }
+    }
+    /// The voice archive in the game's Data folder; Chinese has none.
+    var voiceArchive: String? { self == .auto || self == .zh ? nil : "Skyrim - Voices_\(rawValue)0.bsa" }
+    /// The files of the language's depot that carry the name of one of the game's own files, relative to Data.
+    var replacedFiles: [String] {
+        switch self {
+        case .ja, .zh: return ["Skyrim - Interface.bsa", "Skyrim - Patch.bsa", "Skyrim_VR - Main.bsa"]
+        case .pl: return ["Strings/Dawnguard_Polish.DLSTRINGS"]
+        default: return []
+        }
+    }
+    /// Its texts are not in the game's own data: without the pack the language cannot be used.
+    var needsPack: Bool { self == .ja || self == .zh }
+    /// What its Skyrim.ini sets beside the language and the voices.
+    var extraIni: [(key: String, value: String)] {
+        switch self {
+        case .pl, .ru: return [("Fonts.sFontConfigFile", "Interface\\FontConfig_\(rawValue).txt")]
+        default: return []
+        }
+    }
+    /// From what an installer presets ("device", "en", or a language with region like "de_DE", as AVP Play names a game's language) or a
+    /// system language identifier ("de-DE"): the language, when it is one of the game's.
+    static func from(code: String) -> VXGameLanguage? {
+        let head = code.lowercased().split(whereSeparator: { $0 == "_" || $0 == "-" }).first.map(String.init) ?? ""
+        return named.first { $0.rawValue == head }
+    }
+    /// What the game is started with. A picked language is that language. Automatic: the one language other than English whose pack is
+    /// installed (installing it is the player's choice of language); else what the installer preset ("device": the first of the
+    /// headset's languages the game has); else nothing, and the game's own files decide (English, as shipped). A language that exists
+    /// only with its pack (`needsPack`) and has none is no language to start in.
+    static func resolve(choice: VXGameLanguage, preset: String?, deviceLanguages: [String],
+                        installed: (VXGameLanguage) -> Bool, usable: (VXGameLanguage) -> Bool) -> VXGameLanguage? {
+        if choice != .auto { return usable(choice) ? choice : nil }
+        let packs = named.filter { $0 != .en && installed($0) && usable($0) }
+        if packs.count == 1 { return packs[0] }
+        guard let preset, !preset.isEmpty else { return nil }
+        let wished = preset == "device" ? deviceLanguages.lazy.compactMap(from(code:)).first(where: usable) : from(code: preset)
+        return wished.flatMap { usable($0) ? $0 : nil }
+    }
+    /// The archive list the game ships (Skyrim.ini, [Archive] sResourceArchiveList2), for a game folder whose file cannot be read.
+    static let shippedArchiveList = "Skyrim - Voices_en0.bsa, Skyrim - Textures0.bsa, Skyrim - Textures1.bsa, Skyrim - Textures2.bsa, Skyrim - Textures3.bsa, Skyrim - Textures4.bsa, Skyrim - Textures5.bsa, Skyrim - Textures6.bsa, Skyrim - Textures7.bsa, Skyrim - Textures8.bsa, Skyrim - Patch.bsa"
+    /// The overrides for a language: its texts always; its voices only when their archive is installed, by naming it in the game's own
+    /// archive list in place of whichever voice archive stands there (`archiveList`: the list from the game's Skyrim.ini, nil when unread).
+    static func iniSet(_ language: VXGameLanguage, hasVoices: Bool, archiveList: String?) -> [(key: String, value: String)] {
+        guard let name = language.skyrimName else { return [] }
+        var out = [("General.sLanguage", name)] + language.extraIni
+        if hasVoices, let archive = language.voiceArchive {
+            let list = (archiveList?.isEmpty == false ? archiveList! : shippedArchiveList)
+            let swapped = list.replacingOccurrences(of: "Skyrim - Voices_[A-Za-z]{2}0\\.bsa", with: archive, options: [.regularExpression, .caseInsensitive])
+            out.append(("Archive.sResourceArchiveList2", swapped.contains(archive) ? swapped : archive + ", " + swapped))
+        }
+        return out
+    }
+    /// Where an installer puts the files of a language that carry a game file's name.
+    static func packFolder(_ language: VXGameLanguage, root: String) -> String { root + "/lang/" + language.rawValue + "/Data" }
+    /// Before the game starts: the replaced files of the language in use are put into the game's overlay (a hard link: no space, no
+    /// copying; a copy where linking fails), and those an earlier start put there for another language are taken out. What this placed
+    /// is remembered in <root>/lang/active.txt, so a file of the same name that something else put into the overlay (a mod's) is never
+    /// touched. A pack file an installer emptied (its way of taking a file back) is removed. Returns what it did, for the log.
+    @discardableResult
+    static func activate(_ language: VXGameLanguage?, root: String) -> [String] {
+        let fm = FileManager.default
+        let overlay = root + "/overlay_skyrimvr/Data", state = root + "/lang/active.txt"
+        func size(_ p: String) -> Int64 { ((try? fm.attributesOfItem(atPath: p))?[.size] as? NSNumber)?.int64Value ?? -1 }
+        func node(_ p: String) -> UInt64? { ((try? fm.attributesOfItem(atPath: p))?[.systemFileNumber] as? NSNumber)?.uint64Value }
+        var notes: [String] = []
+        for l in named { for f in l.replacedFiles where size(packFolder(l, root: root) + "/" + f) == 0 { try? fm.removeItem(atPath: packFolder(l, root: root) + "/" + f) } }
+        let before = Set(((try? String(contentsOfFile: state, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init))
+        var wanted: [String: String] = [:]
+        if let language, !language.replacedFiles.isEmpty {
+            let files = language.replacedFiles.map { ($0, packFolder(language, root: root) + "/" + $0) }
+            if files.allSatisfy({ size($0.1) > 0 }) { for (f, src) in files { wanted[f] = src } }
+        }
+        var now: [String] = []
+        for f in before.sorted() where wanted[f] == nil {
+            try? fm.removeItem(atPath: overlay + "/" + f)
+            notes.append("language: \(f) taken out of the overlay")
+        }
+        for (f, src) in wanted.sorted(by: { $0.key < $1.key }) {
+            let dst = overlay + "/" + f
+            if fm.fileExists(atPath: dst) {
+                if let a = node(src), a == node(dst) { now.append(f); continue }
+                guard before.contains(f) else { notes.append("language: \(f) not placed, the overlay has another file of that name"); continue }
+                try? fm.removeItem(atPath: dst)
+            }
+            try? fm.createDirectory(atPath: (dst as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            do { try fm.linkItem(atPath: src, toPath: dst) } catch {
+                do { try fm.copyItem(atPath: src, toPath: dst) } catch { notes.append("language: \(f) could not be placed (\(error.localizedDescription))"); continue }
+            }
+            now.append(f); notes.append("language: \(f) placed in the overlay")
+        }
+        if now.isEmpty { if !before.isEmpty { try? fm.removeItem(atPath: state) } }
+        else { try? fm.createDirectory(atPath: root + "/lang", withIntermediateDirectories: true); try? now.joined(separator: "\n").write(toFile: state, atomically: true, encoding: .utf8) }
+        return notes
+    }
+    /// [Archive] sResourceArchiveList2 of a Skyrim.ini's text.
+    static func archiveList(ofIni text: String) -> String? {
+        var inArchive = false
+        for raw in text.split(whereSeparator: { $0 == "\n" || $0 == "\r\n" || $0 == "\r" }) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") { inArchive = line.lowercased().hasPrefix("[archive]"); continue }
+            guard inArchive, let eq = line.firstIndex(of: "=") else { continue }
+            if line[..<eq].trimmingCharacters(in: .whitespaces).lowercased() == "sresourcearchivelist2" {
+                return line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
+    }
+}
+
 final class VXSettings: ObservableObject {
     static let shared = VXSettings()
     // Called when the latency choice changes, so a running game's gate follows at once (VXApp.swift sets it in the xrizer build).
@@ -134,10 +337,13 @@ final class VXSettings: ObservableObject {
     static let latencyKey = "vxrt.latency"
     static let upscaleKey = "vxrt.upscale"
     static let autoStartKey = "vxrt.startAutomatically"
+    static let edgeMaskKey = "vxrt.edgeMask"
     static let predictKey = "vxrt.predictMs"
     static let eyeHeightKey = "vxrt.stageEyeHeight"
+    static let graphicsKey = "vxrt.graphics"
     static let turnKey = "vxrt.turn"
     static let snapAngleKey = "vxrt.snapAngle"
+    static let gameLanguageKey = "vxrt.gameLanguage"
     static let turnSpeedKey = "vxrt.turnSpeed"
     static let moveKey = "vxrt.move"
     static let sharpenKey = "vxrt.sharpen"
@@ -163,6 +369,8 @@ final class VXSettings: ObservableObject {
     @Published var renderScale: Double { didSet { if !suppress { defaults.set(renderScale, forKey: Self.renderScaleKey) } } }
     // Upscaling of the game's eye to the display (next launch).
     @Published var upscale: VXUpscale { didSet { if !suppress { defaults.set(upscale.rawValue, forKey: Self.upscaleKey) } } }
+    // How much of the picture's unseen edge the game skips (VXRT_VISMASK, VXRT_VISMASK_SHAPE; next launch).
+    @Published var edgeMask: VXEdgeMask { didSet { if !suppress { defaults.set(edgeMask.rawValue, forKey: Self.edgeMaskKey) } } }
     // Sharpening of the final picture (VXRT_SHARPEN, 0...1); nil = off (next launch).
     @Published var sharpen: Double? {
         didSet {
@@ -202,6 +410,8 @@ final class VXSettings: ObservableObject {
             if let v = stageEyeHeight { defaults.set(v, forKey: Self.eyeHeightKey) } else { defaults.removeObject(forKey: Self.eyeHeightKey) }
         }
     }
+    // Graphics quality: the game's own Low/Medium/High scene detail (.standard: nothing written). Next launch.
+    @Published var graphics: VXGraphics { didSet { if !suppress { defaults.set(graphics.rawValue, forKey: Self.graphicsKey) } } }
     // Gameplay (Skyrim VR's own settings; .game / nil = leave the game's own value alone).
     @Published var turn: VXTurn { didSet { if !suppress { defaults.set(turn.rawValue, forKey: Self.turnKey) } } }
     @Published var move: VXMove { didSet { if !suppress { defaults.set(move.rawValue, forKey: Self.moveKey) } } }
@@ -219,6 +429,8 @@ final class VXSettings: ObservableObject {
             if let v = turnSpeed { defaults.set(v, forKey: Self.turnSpeedKey) } else { defaults.removeObject(forKey: Self.turnSpeedKey) }
         }
     }
+    // The game's language (VXGameLanguage): env VXRT_GAME_LANGUAGE, then the saved choice, else automatic. Next launch.
+    @Published var gameLanguage: VXGameLanguage { didSet { if !suppress { defaults.set(gameLanguage.rawValue, forKey: Self.gameLanguageKey) } } }
     // The extra settings above: id -> "1"/"0"/number text; absent = game default.
     @Published var iniValues: [String: String] {
         didSet {
@@ -266,6 +478,12 @@ final class VXSettings: ObservableObject {
         if let s = defaults.string(forKey: Self.upscaleKey), let u = VXUpscale(rawValue: s) { up = u }
         if let u = environment["VXRT_UPSCALE"].flatMap(VXUpscale.init(rawValue:)) { up = u }
         upscale = up
+        // The edge mask: env VXRT_VISMASK=off turns it off (a shape given by the launch stays the launch's: exports never replace it),
+        // then the saved choice, then the Info.plist default (VXEdgeMaskDefault), then Standard (the runtime's own).
+        var mask: VXEdgeMask = (info["VXEdgeMaskDefault"] as? String).flatMap(VXEdgeMask.init(rawValue:)) ?? .standard
+        if let st = defaults.string(forKey: Self.edgeMaskKey), let v = VXEdgeMask(rawValue: st) { mask = v }
+        if let e = environment["VXRT_VISMASK"] { mask = (e == "off" || e == "0") ? .off : (mask == .off ? .standard : mask) }
+        edgeMask = mask
 
         var auto = (info["KLAutoBootDefault"] as? String).map { $0 == "1" } ?? false
         if let v = defaults.object(forKey: Self.autoStartKey) as? Bool { auto = v }
@@ -282,12 +500,21 @@ final class VXSettings: ObservableObject {
         if let s = defaults.string(forKey: Self.turnKey), let v = VXTurn(rawValue: s) { t = v }
         if let v = environment["VXRT_TURN"].flatMap(VXTurn.init(rawValue:)) { t = v }
         turn = t
+        // Graphics quality: env VXRT_GRAPHICS, then the saved choice, then the Info.plist default (VXGraphicsDefault), then .standard.
+        var gfx: VXGraphics = (info["VXGraphicsDefault"] as? String).flatMap(VXGraphics.init(rawValue:)) ?? .standard
+        if let st = defaults.string(forKey: Self.graphicsKey), let v = VXGraphics(rawValue: st) { gfx = v }
+        if let v = environment["VXRT_GRAPHICS"].flatMap(VXGraphics.init(rawValue:)) { gfx = v }
+        graphics = gfx
         var m: VXMove = (info["VXMoveDefault"] as? String).flatMap(VXMove.init(rawValue:)) ?? .game
         if let s = defaults.string(forKey: Self.moveKey), let v = VXMove(rawValue: s) { m = v }
         if let v = environment["VXRT_MOVE"].flatMap(VXMove.init(rawValue:)) { m = v }
         move = m
         snapAngle = environment["VXRT_SNAP_ANGLE"].flatMap(Double.init) ?? (defaults.object(forKey: Self.snapAngleKey) as? Double)
         turnSpeed = environment["VXRT_TURN_SPEED"].flatMap(Double.init) ?? (defaults.object(forKey: Self.turnSpeedKey) as? Double)
+        var lang: VXGameLanguage = .auto
+        if let st = defaults.string(forKey: Self.gameLanguageKey), let v = VXGameLanguage(rawValue: st) { lang = v }
+        if let v = environment["VXRT_GAME_LANGUAGE"].flatMap(VXGameLanguage.init(rawValue:)) { lang = v }
+        gameLanguage = lang
         // The extra settings: env (VXRT_*; "game" = default), then saved, then Info.plist "VXIni.<id>", else game default.
         var vals: [String: String] = [:]
         for s in VXIniSetting.all {
@@ -300,6 +527,62 @@ final class VXSettings: ObservableObject {
         suppress = false
     }
 
+    /// What the installer preset for a game in which nothing is chosen (Info.plist VXGameLanguageDefault; empty: nothing).
+    var gameLanguagePreset: String? { (info["VXGameLanguageDefault"] as? String).flatMap { $0.isEmpty ? nil : $0 } }
+    /// The game's folder on this device (the runtime's root, main.m), where its Skyrim.ini and Data/ are.
+    var gameFolder: String {
+        let root = environment["VXRT_GAME_ROOT"].flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory() + "/Documents/root"
+        return root + "/SkyrimVR"
+    }
+    /// The runtime's root on this device (main.m): the game's folder, its overlay and the language packs' folder are in it.
+    var gameRoot: String { (gameFolder as NSString).deletingLastPathComponent }
+    private static func size(_ path: String) -> Int64 {
+        ((try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber)?.int64Value ?? -1
+    }
+    /// Whether a language's voice archive is installed. An empty file counts as absent: an installer that cannot delete in the app's
+    /// data empties a file the player no longer wants.
+    func hasVoices(_ language: VXGameLanguage) -> Bool {
+        language.voiceArchive.map { Self.size(gameFolder + "/Data/" + $0) > 0 } ?? false
+    }
+    /// Whether the files of a language that replace the game's own are all here (true for a language that has none).
+    func hasReplacedFiles(_ language: VXGameLanguage) -> Bool {
+        language.replacedFiles.allSatisfy { Self.size(VXGameLanguage.packFolder(language, root: gameRoot) + "/" + $0) > 0 }
+    }
+    /// A language's pack is installed: its voices, or for a language without voices its files.
+    func hasPack(_ language: VXGameLanguage) -> Bool {
+        language.voiceArchive != nil ? hasVoices(language) : (!language.replacedFiles.isEmpty && hasReplacedFiles(language))
+    }
+    /// The game can be started in this language: its texts are in the game's data, or its pack brings them.
+    func canUse(_ language: VXGameLanguage) -> Bool { !language.needsPack || hasReplacedFiles(language) }
+    /// The language the game starts in with the current choice; nil: the game's own files decide.
+    var effectiveGameLanguage: VXGameLanguage? {
+        VXGameLanguage.resolve(choice: gameLanguage, preset: gameLanguagePreset, deviceLanguages: Locale.preferredLanguages, installed: hasPack, usable: canUse)
+    }
+    func gameLanguageIniSet() -> [(key: String, value: String)] {
+        guard let language = effectiveGameLanguage else { return [] }
+        let list = (try? String(contentsOfFile: gameFolder + "/Skyrim.ini", encoding: .isoLatin1)).flatMap(VXGameLanguage.archiveList(ofIni:))
+        return VXGameLanguage.iniSet(language, hasVoices: hasVoices(language), archiveList: list)
+    }
+    /// The settings page's note under the picker: what the next start will be in, and whether that language's voices or pack are installed.
+    var gameLanguageNote: String {
+        let picked = gameLanguage
+        if picked != .auto, !canUse(picked) {
+            return "\(picked.ownName) exists only with its language pack, which is not installed: the game's own files decide (English, as shipped). The pack is the three archives of that language's Steam depot that carry the names of the game's own (\(picked.replacedFiles.joined(separator: ", "))), in lang/\(picked.rawValue)/Data beside the game's folder."
+        }
+        guard let language = effectiveGameLanguage else {
+            return "Nothing is chosen: the game's own files decide (English, as shipped). The voices of another language are that language's Steam depot file “Skyrim - Voices_<code>0.bsa” (German: “Skyrim - Voices_de0.bsa”) in the game's Data folder; with exactly one such file there, Automatic starts the game in that language. \(VXGameLanguage.ja.ownName) and \(VXGameLanguage.zh.ownName) need a language pack of their own."
+        }
+        let chosen = picked == .auto ? "Automatic: " : ""
+        if language == .zh {
+            return chosen + "\(language.ownName) texts with the English voices (the game has no Chinese voices)."
+        }
+        if language == .en || hasVoices(language) {
+            return chosen + "\(language.ownName), texts and voices."
+        }
+        return chosen + "\(language.ownName) texts with the English voices: this language's voices are not installed. They are the language's Steam depot file “\(language.voiceArchive ?? "")” in the game's Data folder."
+    }
+    /// A value as it may stand inside a JSON string of the host log (the font key's value has a backslash).
+    static func logText(_ s: String) -> String { s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") }
     static func num(_ v: Double, _ r: ClosedRange<Double>) -> String {
         let c = min(max(v, r.lowerBound), r.upperBound)
         return c == c.rounded() ? String(Int(c)) : String(format: "%.2f", c)
@@ -309,9 +592,11 @@ final class VXSettings: ObservableObject {
     func iniOverrides() -> [String] {
         var out = environment["VXRT_INI_SET"].map { $0.split(separator: ";").map(String.init) } ?? []
         var mine = turn.iniSet + move.iniSet
+        mine = graphics.iniSet + mine
         if let a = snapAngle { mine.append(("VRInput.fGamepadLookAngleSnapAmount", Self.num(a, Self.snapAngleRange))) }
         if let v = turnSpeed { mine.append(("VRInput.fGamepadLookAngleSnapSmoothingSpeed", Self.num(v, Self.turnSpeedRange))) }
         for s in VXIniSetting.all { if let v = iniValues[s.id].flatMap(s.normalize) { mine.append((s.iniName, v)) } }
+        mine += gameLanguageIniSet()
         out += mine.map { "\($0.key)=\($0.value)" }
         return out
     }
@@ -324,6 +609,7 @@ final class VXSettings: ObservableObject {
             ("VXRT_UPSCALE", upscale.rawValue),
             ("VXRT_GATE", latency.gate),
         ]
+        out += edgeMask.exports
         if let p = predictMs { out.append(("VXRT_PREDICT_MS", String(format: "%.0f", min(max(p, Self.predictRange.lowerBound), Self.predictRange.upperBound)))) }
         if let v = sharpen, v > 0 { out.append(("VXRT_SHARPEN", String(format: "%.2f", min(max(v, 0), 1)))) }
         if let v = renderQuality { out.append(("VXRT_RENDER_QUALITY", String(format: "%.2f", min(max(v, 0), 1)))) }
@@ -337,6 +623,7 @@ final class VXSettings: ObservableObject {
     @discardableResult
     func applyEnvironment() -> (set: [String], kept: [String]) {
         var set: [String] = [], kept: [String] = []
+        set += VXGameLanguage.activate(effectiveGameLanguage, root: gameRoot)      // the language's own files, before the game looks for them
         for (k, v) in exports() {
             // VXRT_INI_SET already carries the launch's own entries first (iniOverrides), so it is the one variable that is replaced.
             if getenv(k) != nil && k != "VXRT_INI_SET" { kept.append(k); continue }

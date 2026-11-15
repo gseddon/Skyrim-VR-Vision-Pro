@@ -731,8 +731,14 @@ static const char *const profile_names[] = { NULL, "/interaction_profiles/oculus
     "/interaction_profiles/valve/index_controller", "/interaction_profiles/htc/vive_controller",
     "/interaction_profiles/khr/simple_controller" };
 static const char *const hand_names[2] = { "/user/hand/left", "/user/hand/right" };
+static int vector_finite(XrVector3f v) { return isfinite(v.x) && isfinite(v.y) && isfinite(v.z); }
+static int vector_zero(XrVector3f v) { return v.x == 0 && v.y == 0 && v.z == 0; }
 static int hand3_ok(const KlNativeInputHand3 *hand) {
     if (!hand2_ok(&hand->controls)) return 0;
+    if (hand->velocity_valid != XR_TRUE && hand->velocity_valid != XR_FALSE) return 0;
+    /* a velocity only with a connected hand; finite when given, all zero when not */
+    if (hand->velocity_valid ? !hand->controls.connected || !vector_finite(hand->linear_velocity) || !vector_finite(hand->angular_velocity)
+                             : !vector_zero(hand->linear_velocity) || !vector_zero(hand->angular_velocity)) return 0;
     if (!hand->controls.connected) {
         static const XrPosef zero;
         return hand->profile == KL_NATIVE_INPUT_PROFILE_NONE && !memcmp(&hand->local_from_grip, &zero, sizeof zero) && !memcmp(&hand->local_from_aim, &zero, sizeof zero);
@@ -1325,10 +1331,10 @@ static XrResult XRAPI_CALL klxr_CreateActionSpace(XrSession session, const XrAct
     }
     return XR_ERROR_LIMIT_REACHED;
 }
-static int local_from_action_space(XrSpace space, XrPosef *out, XrSpaceLocationFlags *flags) {
+/* The connected hand an action space is bound to under that hand's current profile, and which of its poses (grip or aim). */
+static const KlNativeInputHand3 *action_space_hand(XrSpace space, int *is_grip) {
     XrSession s = space->owner;
-    *flags = 0;
-    if (input_configured != 3 || !s->input_valid || !s->has_input3 || !valid_action_for(s->owner, space->action)) return 0;
+    if (input_configured != 3 || !s->input_valid || !s->has_input3 || !valid_action_for(s->owner, space->action)) return NULL;
     const char *sub = space->subaction ? owned_path(s->owner, space->subaction) : NULL;
     for (unsigned h = 0; h < 2; ++h) {
         if (sub && strcmp(sub, hand_names[h])) continue;
@@ -1340,14 +1346,39 @@ static int local_from_action_space(XrSpace space, XrPosef *out, XrSpaceLocationF
             const char *c = hand_component(s->owner, b->path, h);
             int grip = c && !strcmp(c, "input/grip/pose"), aim = c && !strcmp(c, "input/aim/pose");
             if (!grip && !aim) continue;
-            XrBool32 tracked = grip ? hand->controls.grip_position_tracked : hand->controls.aim_position_tracked;
-            *flags = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT |
-                (tracked ? XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT : 0);
-            *out = kl_native_pose_compose(grip ? hand->local_from_grip : hand->local_from_aim, space->offset);
-            return 1;
+            *is_grip = grip;
+            return hand;
         }
     }
-    return 0;
+    return NULL;
+}
+static int local_from_action_space(XrSpace space, XrPosef *out, XrSpaceLocationFlags *flags) {
+    int grip = 0;
+    *flags = 0;
+    const KlNativeInputHand3 *hand = action_space_hand(space, &grip);
+    if (!hand) return 0;
+    XrBool32 tracked = grip ? hand->controls.grip_position_tracked : hand->controls.aim_position_tracked;
+    *flags = XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT |
+        (tracked ? XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT : 0);
+    *out = kl_native_pose_compose(grip ? hand->local_from_grip : hand->local_from_aim, space->offset);
+    return 1;
+}
+/* The measured motion of an action space, in the axes of a base space that stands still in LOCAL (local_from_base).
+ * The host gives the grip's motion; any other point of the same rigid controller (the aim pose, a space's offset)
+ * moves with the grip plus the turning times its lever arm. Left untouched when the host measured nothing. */
+static void action_space_velocity(XrSpace space, XrPosef local_from_base, XrSpaceVelocity *out) {
+    int grip = 0;
+    const KlNativeInputHand3 *hand = action_space_hand(space, &grip);
+    if (!hand || !hand->velocity_valid) return;
+    XrPosef at = kl_native_pose_compose(grip ? hand->local_from_grip : hand->local_from_aim, space->offset);
+    XrVector3f w = hand->angular_velocity, v = hand->linear_velocity, o = hand->local_from_grip.position;
+    XrVector3f r = { at.position.x - o.x, at.position.y - o.y, at.position.z - o.z };
+    v.x += w.y * r.z - w.z * r.y; v.y += w.z * r.x - w.x * r.z; v.z += w.x * r.y - w.y * r.x;
+    const XrPosef axes = { .orientation = local_from_base.orientation }, unit = { .orientation = { 0, 0, 0, 1 } };
+    XrPosef lv = unit, av = unit; lv.position = v; av.position = w;
+    out->linearVelocity = kl_native_pose_relative(axes, lv).position;
+    out->angularVelocity = kl_native_pose_relative(axes, av).position;
+    out->velocityFlags = XR_SPACE_VELOCITY_LINEAR_VALID_BIT | XR_SPACE_VELOCITY_ANGULAR_VALID_BIT;
 }
 static XrResult XRAPI_CALL klxr_DestroySpace(XrSpace space) {
     if (!valid_space(space)) return XR_ERROR_HANDLE_INVALID;
@@ -1379,8 +1410,9 @@ static XrResult XRAPI_CALL klxr_LocateSpace(XrSpace space, XrSpace base_space, X
     if (velocity && (velocity->type != XR_TYPE_SPACE_VELOCITY || velocity->next)) return XR_ERROR_VALIDATION_FAILURE;
     XrSession session = space->owner;
     if (!session->frame_ticket || session->frame_poison || time != session->sample.predicted_display_time) return XR_ERROR_TIME_INVALID;
-    /* No measured velocity in the frame host contract. Never infer it from
-     * neighboring snapshots or claim a valid zero-velocity observation. */
+    /* No measured velocity in the frame host contract (head, reference spaces). Never infer it from
+     * neighboring snapshots or claim a valid zero-velocity observation. A hand's action space gets the
+     * velocity the input host measured, when it gave one (below). */
     if (velocity) {
         velocity->velocityFlags = 0;
         velocity->linearVelocity = (XrVector3f){0};
@@ -1390,6 +1422,9 @@ static XrResult XRAPI_CALL klxr_LocateSpace(XrSpace space, XrSpace base_space, X
     if (!local_from_space(space, &session->sample, &a, &fa) || !local_from_space(base_space, &session->sample, &b, &fb)) { location->locationFlags = 0; return XR_SUCCESS; }
     location->pose = kl_native_pose_relative(b, a);
     location->locationFlags = fa & fb;
+    if (velocity && space->type == KL_ACTION_SPACE &&
+        (base_space->type == XR_REFERENCE_SPACE_TYPE_LOCAL || base_space->type == XR_REFERENCE_SPACE_TYPE_STAGE))
+        action_space_velocity(space, b, velocity);
     return XR_SUCCESS;
 }
 static int valid_sample(const KlNativeFrameSample *sample, XrSession session) {

@@ -204,7 +204,10 @@ static const ini_set ini_watch[] = {
     { "VRTeleport", "bTeleportFade", "" }, { "VRTeleport", "fMaxTeleportDistance", "" },
     { "VR", "fGamepadLookAngleSnapAmountMin", "" }, { "VR", "fGamepadLookAngleSnapAmountMax", "" },
     { "VR", "fGamepadLookAngleSnapSmoothingSpeedMin", "" }, { "VR", "fGamepadLookAngleSnapSmoothingSpeedMax", "" },
+    // the game's language (VXGameLanguage in VXSettings.swift): its texts and its voice archive
+    { "General", "sLanguage", "" }, { "Archive", "sResourceArchiveList2", "" },
 };
+_Static_assert(sizeof preset_p2 / sizeof preset_p2[0] + sizeof ini_watch / sizeof ini_watch[0] <= 64, "ini_report keeps one bit per key in 64");
 static const char *ini_preset_name(void) {
     static const char *name = (const char *)-1;
     if (name == (const char *)-1) { const char *e = getenv("VXRT_SKYRIM_PRESET"); name = e && !strcasecmp(e, "p2") ? "p2" : NULL; vx_log("skyrim_ini: preset %s (VXRT_SKYRIM_PRESET=%s)%s", name ? name : "off", e ? e : "unset", name ? "; its keys replace the files' values" : ""); }
@@ -247,7 +250,7 @@ static void ini_report(const char *file, const char *app, const char *key, const
 }
 // The value of [app] key as the game gets it: an override, else the file's, else none. *source: "VXRT_INI_SET", "preset p2", "file" or "default".
 static int ini_lookup(const char *text, const char *file, const char *app, const char *key, char *value, size_t cap, const char **source) {
-    char ov[256]; const char *src = NULL, *o = ini_override(file, app, key, &src, ov, sizeof ov);
+    char ov[1024]; const char *src = NULL, *o = ini_override(file, app, key, &src, ov, sizeof ov);   // the archive list is about 260 characters
     if (o) { snprintf(value, cap, "%s", o); *source = src; return 1; }
     if (text && ini_find(text, app, key, value, cap)) { *source = "file"; return 1; }
     *source = "default";

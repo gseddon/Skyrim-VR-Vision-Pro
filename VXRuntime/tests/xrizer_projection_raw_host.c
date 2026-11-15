@@ -59,10 +59,15 @@ int main(void) {
     void (*raw_c)(int, float *, float *, float *, float *) = fns[2];
     raw_c(1, &left, &right, &top, &bottom);
     if (raw_calls != 2 || !close_to(left, -0.25f) || !close_to(right, 1.75f) || !close_to(top, -1.5f) || !close_to(bottom, 0.5f)) return 5;
+    // IVRSystem_020 (what SKSE VR asks for) is the IVRSystem_019 object; this fake native side refuses the name itself, so an answer
+    // proves the bridge asked it for IVRSystem_019. The table reaches slot 47, the last of the newer layout.
+    error = -1;
+    if (vx_xrizer_guest_version("IVRSystem_020") != 0 || vx_xrizer_guest_version("IVRSystem_021") != 106) return 8;
+    if (vx_xrizer_guest_interface("IVRSystem_020", &error) != system || error != 0 || !table[47]) return 9;
     void *compositor = vx_xrizer_guest_interface("IVRCompositor_022", &error);
     if (!compositor || error != 0) return 6;
     unsigned char (*can)(void *) = (*(void ***)compositor)[24];
     if (can(compositor) != 1 || can_calls != 1) return 7;
-    puts("xrizer_projection_raw: bridge slot 2, FnTable slot 2, compositor CanRenderScene -> ok");
+    puts("xrizer_projection_raw: bridge slot 2, FnTable slot 2, IVRSystem_020 as IVRSystem_019, compositor CanRenderScene -> ok");
     return 0;
 }

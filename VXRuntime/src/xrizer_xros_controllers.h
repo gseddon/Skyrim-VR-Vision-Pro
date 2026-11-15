@@ -17,6 +17,10 @@ typedef struct vx_xros_controller_hand {
     float grip[7], aim[7];              /* x y z, then quaternion x y z w; provider LOCAL space (ARKit origin) */
     float trigger, stick_x, stick_y;    /* 0..1, -1..1; NAN = not observed */
     int primary, secondary, grip_pressed, menu, stick_pressed;
+    /* The grip's motion as the tracker measured it, in the same LOCAL space (m/s, rad/s), when velocity_valid;
+     * never a difference of two poses. A game reads it as the controller's velocity (a flick, a throw). */
+    float linear_velocity[3], angular_velocity[3];
+    int velocity_valid;
 } vx_xros_controller_hand;
 /* Both hands (left, right) observed at time_ns on the Mach-uptime clock the provider's frame prediction uses.
  * A hand with connected == 0, or without valid grip and aim poses, is stored as fully disconnected. */
