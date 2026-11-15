@@ -28,13 +28,14 @@ void vx_log(const char *fmt, ...);
  * sample); _sRGB formats sample as linear, so "linear" mode. Output has the input's pixel format. */
 static uint32_t g_up_target_w, g_up_target_h;
 void vx_xros_host_set_upscale_target(uint32_t w, uint32_t h) { g_up_target_w=w; g_up_target_h=h; }
-static int upscale_requested(void) {
+/* (unused attribute: the simulator build has no MetalFX and does not call these two; -Werror would stop it) */
+__attribute__((unused)) static int upscale_requested(void) {
     static int v=-1;
     if (v<0) { const char *e=getenv("VXRT_UPSCALE"); v = (!e || !*e) ? 1 : !strcmp(e,"metalfx");   /* default metalfx (2026-11-10) */
         if (e && *e && strcmp(e,"metalfx") && strcmp(e,"bilinear")) vx_log("upscale: VXRT_UPSCALE=%s is not a mode (metalfx|bilinear): bilinear",e); }
     return v;
 }
-static float upscale_out_factor(void) {
+__attribute__((unused)) static float upscale_out_factor(void) {
     static float f=-1;
     if (f<0) { const char *e=getenv("VXRT_UPSCALE_OUT"); char *end=NULL; float v=e&&*e?strtof(e,&end):1.f; f=(e&&*e&&(!end||*end||v<0.5f||v>2.f))?1.f:v; }
     return f;
