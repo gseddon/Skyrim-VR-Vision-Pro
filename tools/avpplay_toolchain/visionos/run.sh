@@ -101,7 +101,10 @@ export VXRT_LOCAL_ENV=/dev/null
 EXTRA=
 [ -z "${KLEPTON_APP_VERSION:-}" ] || EXTRA="MARKETING_VERSION=$KLEPTON_APP_VERSION"
 [ -z "${KLEPTON_APP_BUILD:-}" ] || EXTRA="$EXTRA CURRENT_PROJECT_VERSION=$KLEPTON_APP_BUILD"
-case "$EXTRA" in *[!A-Za-z0-9._=\ -]*) die "the app version or build stamp has characters a build setting cannot carry";; esac
+# The language a game starts in while nothing is chosen in it: "device", "en" or a language with region (de_DE). The app keeps
+# the first part and knows which languages the game has (VXGameLanguage in VXSettings.swift); another value changes nothing.
+[ -z "${KLEPTON_GAME_LANGUAGE:-}" ] || EXTRA="$EXTRA VXRT_GAME_LANGUAGE=$KLEPTON_GAME_LANGUAGE"
+case "$EXTRA" in *[!A-Za-z0-9._=\ -]*) die "the app version, build stamp or game language has characters a build setting cannot carry";; esac
 export XROS_EXTRA_APP_FLAGS="$EXTRA"
 
 say "== skyrimvr: bundle $BUNDLE, team $TEAM, build folder $VXRT_PRIVATE_ROOT"
@@ -145,6 +148,14 @@ else
   if [ -d "$PACK" ]; then rm -rf "$PACK.off" && mv "$PACK" "$PACK.off" || die "cannot set the mod pack aside"; fi
   [ ! -f "$STATE" ] || printf '{\n "sets": []\n}\n' > "$STATE"
 fi
+# The start picture AVP Play chose for the game (the player's own: a custom image, or the art of their Steam library) goes into the
+# app's resource folder under one name; the start window shows it behind the title (VXStartView.hero). Written anew each time, so
+# that a changed or withdrawn picture reaches the app (the folder is copied when its own date changes). No picture: none in the app.
+HERO="$HERE/Assets.xcassets/StartHero-$TARGET.imageset/hero.png"
+RES="$REPO/VXRuntime/build/xros-xrizer-fixture/bundle"
+mkdir -p "$RES" && rm -f "$RES/StartHero.png" || die "cannot prepare $RES"
+if [ -f "$HERO" ]; then cp "$HERO" "$RES/StartHero.png" || die "cannot copy the start picture"; say "== skyrimvr: start picture from AVP Play"; fi
+touch "$RES"
 stage app
 
 APP="$REPO/VXRuntime/build/xros-xrizer-fixture/derived/Build/Products/Debug-xros/VXRuntimeHost.app"

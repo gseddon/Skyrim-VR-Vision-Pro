@@ -9,13 +9,16 @@ file (Toolchain.swift, supports...). So this file names exactly the variables ru
     KLEPTON_APP_BUILD          CFBundleVersion (AVP Play's stamp: <game build>.<toolchain number>)
     KLEPTON_DISPLAY_OVERRIDE   the app's name on the Home View
     KLEPTON_DISPLAY_SUFFIX     added to the name
+    KLEPTON_GAME_LANGUAGE      the language the game starts in while nothing is chosen in it ("device", "en", "de_DE", ...;
+                               the app's Info.plist VXGameLanguageDefault; the voices of a language other than English are a
+                               file the installer copies into the game's Data folder)
     KLEPTON_GAME_MODS          the mod sets to build with (mods.json describes them; mods_fetch.py gets their files,
                                run.sh builds them in, stage_sync.py puts them on the headset)
 
 Deliberately absent, because this app cannot do them (AVP Play then refuses or leaves the option out instead of
 building something that does not work): the free-team switch (the app needs the extended-virtual-addressing
 entitlement, which Apple grants to paid teams only), Surreal Touch controllers, test switches, the render-scale
-preset, the room-measuring default and the game-language preset. Add a name here only together with the code in
+preset and the room-measuring default. Add a name here only together with the code in
 run.sh that honours it.
 """
 import sys
