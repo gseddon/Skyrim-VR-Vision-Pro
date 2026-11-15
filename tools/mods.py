@@ -423,7 +423,9 @@ def build(a):
             subprocess.run(['cp', '-c', str(src), str(out / 'overlay_root' / name)], check=True)
             root_files.append(dict(name=name, sha256=sha256(out / 'overlay_root' / name), size=src.stat().st_size))
     ptxt = ''.join(f'*{p}\r\n' for p in plugins)
-    (out / 'Plugins.txt').write_text(ptxt, newline=''); (out / 'merged' / 'Plugins.txt').write_text(ptxt, newline='')
+    for dest in (out / 'Plugins.txt', out / 'merged' / 'Plugins.txt'):       # (write_text(newline=) needs Python 3.10; Xcode's is 3.9)
+        with open(dest, 'w', newline='') as f:
+            f.write(ptxt)
     act = [r for r in res if r['active']]
     doc = dict(version=1, profile=cfg.get('profile', 'default'), merged='merged', plugins_txt='Plugins.txt', plugins=plugins, mods=res,
                skse_plugins=skse_plugins, skse_plugin_set=skse_plugin_set(skse_plugins, next((f['sha256'] for f in root_files if f['name'] == 'sksevr_1_4_15.dll'), '')) if skse_plugins else None, shadow_install=shadow, overlay_root_files=root_files,
