@@ -131,6 +131,7 @@ final class VXSettings: ObservableObject {
     // UserDefaults keys. The first two are Klepton's.
     static let renderScaleKey = "klepton.renderScale"
     static let statsPanelKey = "vxrt.statsCard"       // (this app's own, not one of Klepton's two)
+    static let statsButtonsKey = "vxrt.statsCardButtons"
     static let handsKey = "klepton.chroma"
     static let latencyKey = "vxrt.latency"
     static let upscaleKey = "vxrt.upscale"
@@ -189,9 +190,18 @@ final class VXSettings: ObservableObject {
         didSet { if !suppress, let d = try? JSONEncoder().encode(VXHandsBlob(handMatting: showHands)) { defaults.set(d, forKey: Self.handsKey) } }
     }
     @Published var startAutomatically: Bool { didSet { if !suppress { defaults.set(startAutomatically, forKey: Self.autoStartKey) } } }
-    // Whether the performance panel is in the view from the start. Create + Options held for a second shows and hides it at any time
-    // (VXStatsPanel.swift); this is only where it begins.
+    // Whether the performance panel is in the view from the start. Create + Options held for a second shows and hides it
+    // (VXStatsPanel.swift) while `statsChordActive`; this is only where it begins.
     @Published var statsPanel: Bool { didSet { if !suppress { defaults.set(statsPanel, forKey: Self.statsPanelKey) } } }
+    // Whether Create + Options held together switch the panel. Off by default: watching for both delays a menu press by a quarter of a
+    // second and replays a short tap afterwards, so a player who never uses the panel keeps the game's menu buttons exactly as they are.
+    @Published var statsButtons: Bool { didSet { if !suppress { defaults.set(statsButtons, forKey: Self.statsButtonsKey) } } }
+    // The two buttons' logic runs when asked for, or when the panel is shown from the start (so that it can be hidden again), unless the
+    // launch says otherwise (VXRT_STATS_CARD_BUTTONS, or Klepton's KL_STATS_CARD_BUTTONS; =0 hands both buttons to the game untouched).
+    var statsChordActive: Bool { Self.chordFromEnvironment(environment) ?? (statsButtons || statsPanel) }
+    static func chordFromEnvironment(_ environment: VXEnvironment) -> Bool? {
+        flag(environment["VXRT_STATS_CARD_BUTTONS"] ?? environment["KL_STATS_CARD_BUTTONS"])
+    }
     // Head-pose prediction horizon in ms; nil = follow the measured delay (the runtime's default).
     @Published var predictMs: Double? {
         didSet {
@@ -266,6 +276,12 @@ final class VXSettings: ObservableObject {
         if let v = defaults.object(forKey: Self.statsPanelKey) as? Bool { stats = v }
         if let v = Self.flag(environment["VXRT_STATS_CARD"] ?? environment["KL_STATS_CARD"]) { stats = v }
         statsPanel = stats
+        // Create + Options switching the panel: env VXRT_STATS_CARD_BUTTONS (or KL_STATS_CARD_BUTTONS), then the saved choice, then the
+        // Info.plist default (VXStatsCardButtonsDefault), then off.
+        var buttons = (info["VXStatsCardButtonsDefault"] as? String).map { $0 == "1" } ?? false
+        if let v = defaults.object(forKey: Self.statsButtonsKey) as? Bool { buttons = v }
+        if let v = Self.chordFromEnvironment(environment) { buttons = v }
+        statsButtons = buttons
 
         var lat: VXLatency = (info["VXLatencyDefault"] as? String).flatMap(VXLatency.init(stored:)) ?? .smart
         if let s = defaults.string(forKey: Self.latencyKey), let l = VXLatency(stored: s) { lat = l }

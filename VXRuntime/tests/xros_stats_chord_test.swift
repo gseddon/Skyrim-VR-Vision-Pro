@@ -8,8 +8,9 @@ func check(_ ok: Bool, _ what: String) { if !ok { failures += 1; print("FAIL: \(
 
 // Runs a script of (time, left down, right down) at 100 polls a second; returns what was passed to the game for each button as the
 // spans it was down, and when the panel switched.
-func run(_ script: [(Double, Bool, Bool)], until end: Double) -> (left: [(Double, Double)], right: [(Double, Double)], switches: [Double]) {
+func run(_ script: [(Double, Bool, Bool)], until end: Double, on: Bool = true) -> (left: [(Double, Double)], right: [(Double, Double)], switches: [Double]) {
     var chord = VXMenuChord()
+    chord.setOn(on)
     var left: [(Double, Double)] = [], right: [(Double, Double)] = [], switches: [Double] = []
     var downL: Double?, downR: Double?
     var i = 0, l = false, r = false
@@ -30,8 +31,27 @@ func near(_ a: Double, _ b: Double) -> Bool { abs(a - b) < 0.025 }
 
 @main enum T {
     static func main() {
-        // a long press of one button reaches the game a quarter of a second late and ends with the button
-        var r = run([(0.10, true, false), (0.80, false, false)], until: 1.5)
+        // off (the default): every press and tap reaches the game at once and unchanged, and both held never switch anything
+        check(!VXMenuChord().on, "off by default")
+        var off = VXMenuChord()
+        for (t, l, rr) in [(0.0, true, false), (0.01, false, false), (0.5, false, true), (0.5, true, true), (3.0, true, true), (3.01, false, false)] {
+            let o = off.poll(left: l, right: rr, now: t)
+            check(o.passLeft == l && o.passRight == rr && !o.switched, "off passes through at \(t)")
+        }
+        var r = run([(0.10, true, false), (0.80, false, false)], until: 1.5, on: false)
+        check(r.left.count == 1 && near(r.left[0].0, 0.10) && near(r.left[0].1, 0.80) && r.right.isEmpty, "off: long press at once \(r)")
+        r = run([(0.10, false, true), (0.18, false, false)], until: 1.0, on: false)
+        check(r.right.count == 1 && near(r.right[0].0, 0.10) && near(r.right[0].1, 0.18) && r.left.isEmpty, "off: tap as it is, not replayed \(r)")
+        r = run([(0.0, true, true), (2.0, false, false)], until: 3.0, on: false)
+        check(r.switches.isEmpty && r.left.count == 1 && r.right.count == 1 && near(r.left[0].0, 0.0) && near(r.right[0].1, 2.0), "off: both held reach the game \(r)")
+        // turned off while a press waits: that press reaches the game at once
+        var c = VXMenuChord(); c.setOn(true)
+        check(!c.poll(left: true, right: false, now: 0).passLeft, "on: a press waits")
+        c.setOn(false)
+        check(c.poll(left: true, right: false, now: 0.01).passLeft, "turned off: passes at once")
+
+        // on: a long press of one button reaches the game a quarter of a second late and ends with the button
+        r = run([(0.10, true, false), (0.80, false, false)], until: 1.5)
         check(r.left.count == 1 && near(r.left[0].0, 0.35) && near(r.left[0].1, 0.80) && r.right.isEmpty && r.switches.isEmpty, "long press \(r)")
         // a tap is played afterwards, for a tenth of a second
         r = run([(0.10, false, true), (0.18, false, false)], until: 1.0)

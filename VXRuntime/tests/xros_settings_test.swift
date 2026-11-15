@@ -122,6 +122,25 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         check(VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_STATS_CARD": "1"]).statsPanel, "stats panel env on")
         check(VXSettings(defaults: fresh(), info: [:], environment: ["KL_STATS_CARD": "1"]).statsPanel, "stats panel Klepton's env name")
 
+        // the two menu buttons switching the panel: off by default, so a menu press reaches the game untouched; on when asked for or
+        // when the panel is shown from the start; VXRT_STATS_CARD_BUTTONS wins either way
+        let bd = fresh()
+        let b1 = VXSettings(defaults: bd, info: [:], environment: [:])
+        check(!b1.statsButtons && !b1.statsChordActive, "menu buttons logic off by default")
+        b1.statsButtons = true
+        check(b1.statsChordActive && bd.object(forKey: "vxrt.statsCardButtons") as? Bool == true, "menu buttons on and stored")
+        check(VXSettings(defaults: bd, info: [:], environment: [:]).statsChordActive, "menu buttons persisted")
+        check(VXSettings(defaults: fresh(), info: ["VXStatsCardButtonsDefault": "1"], environment: [:]).statsChordActive, "menu buttons plist default")
+        b1.statsButtons = false
+        check(!VXSettings(defaults: bd, info: ["VXStatsCardButtonsDefault": "1"], environment: [:]).statsChordActive, "menu buttons saved off beats plist")
+        let b2 = VXSettings(defaults: fresh(), info: [:], environment: [:]); b2.statsPanel = true
+        check(!b2.statsButtons && b2.statsChordActive, "panel from the start turns the buttons on, so it can be hidden")
+        check(!VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_STATS_CARD": "1", "VXRT_STATS_CARD_BUTTONS": "0"]).statsChordActive, "VXRT_STATS_CARD_BUTTONS=0 wins over the panel")
+        check(!VXSettings(defaults: bd, info: ["VXStatsCardButtonsDefault": "1"], environment: ["KL_STATS_CARD_BUTTONS": "0"]).statsChordActive, "Klepton's env name off")
+        check(VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_STATS_CARD_BUTTONS": "1"]).statsChordActive, "env on")
+        check(VXSettings.chordFromEnvironment([:]) == nil && VXSettings.chordFromEnvironment(["VXRT_STATS_CARD_BUTTONS": "0"]) == false, "env unset is no opinion")
+        check(map(VXSettings(defaults: bd, info: [:], environment: [:])) == ["VXRT_RENDER_SCALE": "0.75", "VXRT_UPSCALE": "metalfx", "VXRT_GATE": "smart"], "menu buttons export nothing")
+
         // a blob written by Klepton (more fields) is understood; a broken one falls back
         d = fresh(); d.set(Data("{\"enabled\":true,\"distMin\":0.4,\"handMatting\":true,\"colorR\":0.1}".utf8), forKey: "klepton.chroma")
         check(VXSettings(defaults: d, info: [:], environment: [:]).showHands, "Klepton-written blob read")

@@ -23,6 +23,7 @@ import simd
 // of "both together" is only known a moment later, and a game that has been told "menu" has already opened it. A press that ends while
 // it waits was a tap and is played afterwards (tap). Both down is chord for both, and stays that until both are up: letting one go must
 // not turn the other into a press of its own.
+// Off (the default, VXSettings.statsChordActive), none of that happens: each button reaches the game as it is, at once.
 struct VXMenuChord {
     static let wait = 0.25      // how long a press waits for the other button
     static let tap = 0.10       // how long a tap is played once it is known to be one
@@ -32,10 +33,19 @@ struct VXMenuChord {
     private var since: [Double] = [0, 0]
     private var chordSince = 0.0
     private var chordSpent = false          // switched already, or one of the two was let go
+    private(set) var on = false
+
+    /// Turning it on or off starts it afresh.
+    mutating func setOn(_ v: Bool) {
+        guard v != on else { return }
+        self = VXMenuChord()
+        on = v
+    }
 
     /// One poll: which of the two buttons is down now. Returns whether each is passed on to the game, and whether this poll switched
     /// the panel (both held for `hold` without a gap).
     mutating func poll(left: Bool, right: Bool, now: Double) -> (passLeft: Bool, passRight: Bool, switched: Bool) {
+        guard on else { return (left, right, false) }
         let down = [left, right]
         var switched = false
         if left && right {
@@ -68,11 +78,6 @@ struct VXMenuChord {
 #if !VX_CHORD_TEST
 final class VXStatsPanel {
     static let shared = VXStatsPanel()
-    /// VXRT_STATS_CARD_BUTTONS=0 (or Klepton's KL_STATS_CARD_BUTTONS) hands the two buttons to the game untouched.
-    static let buttons: Bool = {
-        let env = ProcessInfo.processInfo.environment
-        return (env["VXRT_STATS_CARD_BUTTONS"] ?? env["KL_STATS_CARD_BUTTONS"]) != "0"
-    }()
     /// The panel's size and place in the view, exactly Klepton's (KLMetricsPanel.panelSize and the pose in KleptonCompositor.swift, "the
     /// owner's place for it, found in three tries on the headset"): 0.338 m wide at 1.2 m, just left of the middle, its lower edge a
     /// little above it.
@@ -80,7 +85,12 @@ final class VXStatsPanel {
     static let offsetMeters = SIMD2<Float>(-0.05, 0.101)
 
     private let lock = NSLock()
-    private var chord = VXMenuChord()
+    // Until Start applies the settings (VXLauncher.start), only a launch's own VXRT_STATS_CARD_BUTTONS=1 turns the two buttons' logic on.
+    private var chord: VXMenuChord = {
+        var c = VXMenuChord()
+        c.setOn(VXSettings.chordFromEnvironment(ProcessInfo.processInfo.environment) == true)
+        return c
+    }()
     private var shown = false
     private var samples: [KLMetricsSample] = []
     private var front: MTLTexture?, back: MTLTexture?   // two, swapped when the new picture is complete: a frame never samples the one being written
@@ -108,9 +118,14 @@ final class VXStatsPanel {
         if on { redraw() }
     }
 
+    /// Whether holding both menu buttons switches the panel (VXSettings.statsChordActive). Off, the game gets both buttons untouched.
+    func setButtons(_ on: Bool) {
+        lock.lock(); chord.setOn(on); lock.unlock()
+        vxrt_jlog("stats_panel_buttons", "\"on\":\(on)")
+    }
+
     /// The two menu buttons as read this poll; returns what the game is told of each.
     func buttons(left: Bool, right: Bool, now: Double) -> (left: Bool, right: Bool) {
-        guard Self.buttons else { return (left, right) }
         lock.lock()
         let r = chord.poll(left: left, right: right, now: now)
         let next = r.switched ? !shown : shown

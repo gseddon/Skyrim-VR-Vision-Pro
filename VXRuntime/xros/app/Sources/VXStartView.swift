@@ -30,6 +30,7 @@ final class VXLauncher: ObservableObject {
         vxrt_jlog("settings_applied", "\"set\":\"\(r.set.joined(separator: " "))\",\"kept\":\"\(r.kept.joined(separator: " "))\"")
         phase = .started
         startedAt = Date()
+        VXStatsPanel.shared.setButtons(VXSettings.shared.statsChordActive)
         VXStatsPanel.shared.setVisible(VXSettings.shared.statsPanel, why: "setting")
         openDisplay()
         vxrt_boot_fallback()      // (the program still starts after a few seconds if the display view never appears)
@@ -291,7 +292,8 @@ struct VXSettingsPage: View {
                     GroupBox("Performance panel") {
                         VStack(alignment: .leading, spacing: 10) {
                             Toggle("Show from the start", isOn: $settings.statsPanel)
-                            note("Frame rate, graphics and processor time, memory and heat, above the middle of the view. Off by default. In the game, hold Create and Options (the two menu buttons of the controllers) together for a second to show it or hide it.")
+                            Toggle("Hold both menu buttons to show or hide it", isOn: $settings.statsButtons)
+                            note("Frame rate, graphics and processor time, memory and heat, above the middle of the view. Both off by default. With either on, hold Create and Options (the two menu buttons of the controllers) together for a second in the game to show or hide the panel; a single menu press then reaches the game a quarter of a second late. Applies when you press Start.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                     GroupBox("Start") {
