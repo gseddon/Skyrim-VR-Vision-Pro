@@ -44,7 +44,40 @@ static WAVEFORMATEX format(WORD tag, WORD channels, DWORD rate, WORD bits) {
 }
 static UINT64 played(IXAudio2SourceVoice *v) { XAUDIO2_VOICE_STATE st; IXAudio2SourceVoice_GetState(v, &st, 0); return st.SamplesPlayed; }
 
+static int center_tone_probe(int audible) {
+    IXAudio2 *xa = NULL;
+    CHECK(SUCCEEDED(XAudio2Create(&xa, 0, XAUDIO2_DEFAULT_PROCESSOR)));
+    if (!xa) return 1;
+    IXAudio2MasteringVoice *master = NULL;
+    CHECK(SUCCEEDED(IXAudio2_CreateMasteringVoice(xa, &master, 6, 48000, 0, NULL, NULL, AudioCategory_GameEffects)));
+    if (!master) { IXAudio2_Release(xa); return 1; }
+    DWORD mask = 0;
+    IXAudio2MasteringVoice_GetChannelMask(master, &mask);
+    CHECK(mask == 0x3f || mask == 0x60f); // Both XAudio2 5.1 side/back speaker-mask variants include centre.
+
+    WAVEFORMATEX wf = format(WAVE_FORMAT_IEEE_FLOAT, 6, 48000, 32);
+    IXAudio2SourceVoice *src = NULL;
+    callback cb; init_callback(&cb);
+    CHECK(SUCCEEDED(IXAudio2_CreateSourceVoice(xa, &src, &wf, 0, 2.0f, &cb.iface, NULL, NULL)));
+    if (src) {
+        static float pcm[48000 * 6];
+        for (int i = 0; i < 48000; ++i)
+            pcm[i * 6 + 2] = audible ? (float)(0.18 * sin(2.0 * 3.14159265358979 * 523.25 * i / 48000.0)) : 0.0f;
+        XAUDIO2_BUFFER b = { XAUDIO2_END_OF_STREAM, sizeof pcm, (const BYTE *)pcm, 0, 0, 0, 0, 0, NULL };
+        CHECK(SUCCEEDED(IXAudio2SourceVoice_SubmitSourceBuffer(src, &b, NULL)));
+        CHECK(SUCCEEDED(IXAudio2SourceVoice_Start(src, 0, XAUDIO2_COMMIT_NOW)));
+        CHECK(WaitForSingleObject(cb.done, 3000) == WAIT_OBJECT_0);
+        IXAudio2SourceVoice_DestroyVoice(src);
+    }
+    CloseHandle(cb.done);
+    IXAudio2MasteringVoice_DestroyVoice(master);
+    IXAudio2_Release(xa);
+    printf("xaudio2: center-only 5.1 buffer %s\n", failures ? "FAILED" : audible ? "played" : "silent check passed");
+    return failures != 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--center-tone")) return center_tone_probe(1);
     int tone = argc > 1 && !strcmp(argv[1], "--tone");
     IXAudio2 *xa = NULL;
     CHECK(SUCCEEDED(XAudio2Create(&xa, 0, XAUDIO2_DEFAULT_PROCESSOR)));
@@ -153,6 +186,7 @@ int main(int argc, char **argv) {
     IXAudio2_UnregisterForCallbacks(xa, &ec.iface);
     IXAudio2MasteringVoice_DestroyVoice(master);
     IXAudio2_Release(xa);
+    CHECK(center_tone_probe(0) == 0);
     printf("xaudio2: %s\n", failures ? "FAILED" : "all checks passed");
     return failures != 0;
 }
