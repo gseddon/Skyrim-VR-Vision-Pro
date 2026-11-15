@@ -51,6 +51,8 @@ typedef struct {
     int d3d12;
     struct { uint8_t cls, kind, comp, counter; uint32_t reg, stride; } slots[64];   // cls: DXBC_SLOT_*; kind/comp: DXIL's
     int nslots;
+    int reads_position;             // a pixel shader that reads SV_Position
+    int fove_slot[2];               // dxbc_translate_fove: the buffer slots of the tables and of the VxFove constants
     char error[256];
 } dxbc_shader;
 enum { DXBC_SLOT_SRV, DXBC_SLOT_UAV, DXBC_SLOT_CBV, DXBC_SLOT_SAMPLER };
@@ -81,6 +83,22 @@ typedef struct { uint32_t sizes[48]; uint64_t counters[8]; } dxbc_aux;
 
 // Translates a DXBC container. Returns 0 and fills *out, or -1 with out->error set.
 int  dxbc_translate(const void *code, size_t size, dxbc_shader *out);
+// A pixel shader's variant for foveated rendering (d3d11_draw.m, "foveated rendering"): the same translation with two
+// more constant buffers, tables of floats (out->fove_slot[0]) and
+//   struct VxFove { uint mask0, mask1, pos, pad; uint sw, sh, pw, ph; }   (fove_slot[1]).
+// The tables say where the rasterization rate map stores a place on the screen (sw x sh) in its physical layout (pw x ph)
+// and back, per axis, entry k for the pixel middle k + 0.5: sw floats screen-to-physical x, sh for y, pw floats
+// physical-to-screen x, ph for y. Bit i of mask0/mask1: 2D texture t<i> is bound as its twin in the physical layout in
+// place of the texture itself: samples, gathers and loads of it go to where that place on the screen is stored, and its
+// size reads as sw x sh. Two variants:
+//   near (far 0), for passes whose targets have the eyes' size. A sample's coordinate is moved along the map's slope at the
+//     fragment's own place (one multiply-add: exact where the rate is constant, within a fraction of a pixel on the ramp
+//     for the samples of a filter). pos != 0: the pass is drawn under the map, the shader's SV_Position is the physical
+//     place and is turned into the screen's for the shader's own code; pos 0: the position is the screen's already.
+//   far (far 1), for passes of any other size (a downsample reading the eyes' picture): every sample goes through the
+//     tables. The position is left alone (pos must be 0).
+// With mask and pos 0 either behaves as the plain translation.
+int  dxbc_translate_fove(const void *code, size_t size, dxbc_shader *out, int far);
 // The same for a Direct3D 12 pipeline (vertex, pixel, geometry and compute shaders): resources through out->slots.
 int  dxbc_translate_d3d12(const void *code, size_t size, dxbc_shader *out);
 void dxbc_free(dxbc_shader *s);

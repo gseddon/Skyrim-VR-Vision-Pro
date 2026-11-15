@@ -219,6 +219,13 @@ struct VXSettingsPage: View {
                             note(settings.upscale == .metalfx
                                  ? "Apple's MetalFX spatial upscaler brings the game's picture up to the display's size: sharper than plain scaling."
                                  : "The display's own sampler stretches the picture: softer, with no extra work.")
+                            Picker("Foveated Rendering", selection: $settings.foveatedRendering) {
+                                Text("Off").tag(VXFoveatedRendering.off)
+                                Text("Low").tag(VXFoveatedRendering.low)
+                                Text("Medium").tag(VXFoveatedRendering.medium)
+                                Text("High").tag(VXFoveatedRendering.high)
+                            }.pickerStyle(.segmented)
+                            note("The game draws the middle of the picture at full sharpness and the edge with fewer pixels, which makes it run more smoothly. The stronger, the more you may notice a soft edge when you look sideways. Off by default. Next launch.")
                             Toggle("Sharpening off", isOn: Binding(get: { settings.sharpen == nil }, set: { settings.sharpen = $0 ? nil : 0.35 }))
                             if let v = settings.sharpen {
                                 HStack {

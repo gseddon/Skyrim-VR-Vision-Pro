@@ -1,5 +1,6 @@
 // Translates a DXBC file to Metal Shading Language and compiles it with Metal, to check the translator:
 //   build/dxbc2msl [-d3d12] shader.dxbc      (-d3d12: resources through Direct3D 12's root argument buffer)
+//   build/dxbc2msl -fove|-fove-far shader.dxbc   (a pixel shader's variants for foveated rendering: dxbc_translate_fove)
 #import <Metal/Metal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,6 +9,8 @@
 int main(int argc, char **argv) {
     int d3d12 = argc > 2 && !strcmp(argv[1], "-d3d12");
     if (d3d12) argv++, argc--;
+    int fove = argc > 2 && (!strcmp(argv[1], "-fove") || !strcmp(argv[1], "-fove-far")) ? 1 + !strcmp(argv[1], "-fove-far") : 0;
+    if (fove) argv++, argc--;
     if (argc < 2) { fprintf(stderr, "usage: dxbc2msl [-d3d12] file.dxbc\n"); return 2; }
     FILE *f = fopen(argv[1], "rb");
     if (!f) { perror(argv[1]); return 1; }
@@ -15,7 +18,7 @@ int main(int argc, char **argv) {
     size_t n = fread(buf, 1, sizeof buf, f);
     fclose(f);
     dxbc_shader sh;
-    if ((d3d12 ? dxbc_translate_d3d12 : dxbc_translate)(buf, n, &sh)) { fprintf(stderr, "%s: %s\n", argv[1], sh.error); return 1; }
+    if (fove ? dxbc_translate_fove(buf, n, &sh, fove == 2) : (d3d12 ? dxbc_translate_d3d12 : dxbc_translate)(buf, n, &sh)) { fprintf(stderr, "%s: %s\n", argv[1], sh.error); return 1; }
     printf("%s", sh.msl);
     NSError *err = nil;
     id<MTLLibrary> lib = [MTLCreateSystemDefaultDevice() newLibraryWithSource:@(sh.msl) options:nil error:&err];

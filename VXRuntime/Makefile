@@ -944,6 +944,23 @@ build/dxbc2msl: tools/dxbc2msl.m src/dxbc.c src/dxbc.h
 	@mkdir -p build
 	$(CC) $(CFLAGS) -fobjc-arc -o $@ tools/dxbc2msl.m src/dxbc.c -framework Metal
 
+# The pixel shader variant for foveated rendering (dxbc_translate_fove): every pixel shader fixture translates to it and
+# Metal compiles the result (gathers, loads, size queries and samples of 2D textures all go through its coordinate
+# mapping); the plain translation of the same shader is byte for byte what it was; a vertex shader has no such variant.
+.PHONY: fove-variant-check
+fove-variant-check: build/dxbc2msl
+	@for s in color_ps features_ps math_ps tex_ps unbound_ps; do \
+	  build/dxbc2msl tests/shaders/$$s.dxbc > build/fove-check.base.msl 2>/dev/null || { echo "fove-variant-check: $$s does not translate" >&2; exit 1; }; \
+	  build/dxbc2msl -fove tests/shaders/$$s.dxbc > build/fove-check.fove.msl 2> build/fove-check.err || { cat build/fove-check.err >&2; echo "fove-variant-check: $$s has no compiling variant" >&2; exit 1; }; \
+	  build/dxbc2msl -fove-far tests/shaders/$$s.dxbc > /dev/null 2> build/fove-check.err || { cat build/fove-check.err >&2; echo "fove-variant-check: $$s has no compiling far variant" >&2; exit 1; }; \
+	  grep -q 'constant VxFove &vx_fove' build/fove-check.fove.msl || { echo "fove-variant-check: $$s: the variant takes no VxFove" >&2; exit 1; }; \
+	  ! grep -q 'vx_fove' build/fove-check.base.msl || { echo "fove-variant-check: $$s: the plain translation mentions vx_fove" >&2; exit 1; }; \
+	done
+	@build/dxbc2msl -fove tests/shaders/tex_ps.dxbc 2>/dev/null | grep -q 'VX_FOVE_UV(0, ' || { echo 'fove-variant-check: tex_ps samples t0 without the mapping' >&2; exit 1; }
+	@! build/dxbc2msl -fove tests/shaders/color_vs.dxbc > /dev/null 2>&1 || { echo 'fove-variant-check: a vertex shader got a variant' >&2; exit 1; }
+	@echo 'fove variant: ok'
+check: fove-variant-check
+
 # The Direct3D 11 replayer (tools/d3d11_replay.m): plays a VXRT_D3D11_CAPTURE stream on this checkout's Direct3D 11
 # (linked in, native ARM64, no program and no translator; the thunk includes are empty here).
 REPLAY_D3D_SRC = src/shader_cache.m src/dither_source.m src/d3d11.m src/d3d11_draw.m src/d3d11_shared.m src/d3d11_capture.m src/d3d11on12.m src/dxgi.m src/dxbc.c src/d3d_format.c src/gpu_ir.c src/gpu_ir_msl.c src/gpu_ir_metal.m

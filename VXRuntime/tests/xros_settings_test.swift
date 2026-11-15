@@ -129,6 +129,21 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         // every key is distinct and names a section.key
         check(Set(VXIniSetting.all.map { $0.iniName }).count == VXIniSetting.all.count && Set(VXIniSetting.all.map { $0.env }).count == VXIniSetting.all.count, "extra keys distinct")
 
+        // foveated rendering in the game's passes: off by default, the choice persists and is exported, the launch's VXRT_FOVE wins,
+        // the Info.plist default counts before a choice
+        let fd = fresh()
+        let f1 = VXSettings(defaults: fd, info: [:], environment: [:])
+        check(f1.foveatedRendering == .off && map(f1)["VXRT_FOVE"] == nil, "foveated rendering off by default")
+        f1.foveatedRendering = .medium
+        check(map(f1)["VXRT_FOVE"] == "medium", "foveated rendering exported \(map(f1))")
+        check(VXSettings(defaults: fd, info: [:], environment: [:]).foveatedRendering == .medium, "foveated rendering persisted")
+        check(VXSettings(defaults: fd, info: [:], environment: ["VXRT_FOVE": "high"]).foveatedRendering == .high, "foveated rendering env wins")
+        check(VXSettings(defaults: fd, info: ["VXFoveatedRenderingDefault": "low"], environment: ["VXRT_FOVE": "off"]).foveatedRendering == .off, "foveated rendering env off wins")
+        check(VXSettings(defaults: fd, info: ["VXFoveatedRenderingDefault": "low"], environment: [:]).foveatedRendering == .medium, "foveated rendering saved beats plist")
+        check(VXSettings(defaults: fresh(), info: ["VXFoveatedRenderingDefault": "low"], environment: [:]).foveatedRendering == .low, "foveated rendering plist default")
+        f1.foveatedRendering = .off
+        check(map(VXSettings(defaults: fd, info: [:], environment: [:]))["VXRT_FOVE"] == nil, "foveated rendering off again exports nothing")
+
         // clamping and steps
         check(VXSettings.clampScale(0.1) == 0.5 && VXSettings.clampScale(3) == 1.0 && abs(VXSettings.clampScale(0.73) - 0.75) < 1e-9, "clamp")
         d = fresh(); d.set(0.2, forKey: "klepton.renderScale")

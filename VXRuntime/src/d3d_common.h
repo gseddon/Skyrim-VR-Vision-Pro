@@ -111,7 +111,16 @@ typedef struct d3d_texture {
     int shared;                      // shared between processes: its slot in the shared-resource table + 1
     void **keyed_vtbl;               // IDXGIKeyedMutex (shared textures)
     struct d3d_texture *native_next; // live-handle lookup, private to d3d11.m
+    void *fove;                      // foveated rendering: its twin in the rate map's layout (d3d11_draw.m), or NULL
 } d3d_texture;
+
+// Foveated rendering of the eye passes (d3d11_draw.m, "foveated rendering"; VXRT_FOVE=low|medium|high). A texture the
+// eye passes draw to has a twin laid out as the rasterization rate map stores it; whichever of the two was written last
+// is the current one. Whoever reads the texture itself, or writes it other than through a foveated pass, says so first.
+int  d3d_fove_on(void);                                                  // the level asked for (0: off)
+void d3d_fove_note_eyes(uint32_t width, uint32_t height);                // the size of the texture the program hands over as its eyes (both, side by side)
+void d3d_fove_note_frustum(int eye, float left, float right, float up, float down);   // an eye's frustum tangents, all positive outwards
+void d3d_fove_drop(d3d_texture *t);                                      // the texture goes away, or gets another Metal texture
 
 // Validates an opaque native texture handle without dereferencing untrusted memory, and retains it.
 // Release the returned object with d3d_release after taking the required Metal-resource references.
@@ -176,6 +185,10 @@ void d3d_clears_into_pass(d3d_context *c, void *render_pass_descriptor, d3d_view
 void d3d_vtable_override(void **vt, const char *const *names, int count, const d3d_method *impl);
 #define D3D_VTABLE_OVERRIDE(vt, iface, impl) d3d_vtable_override(vt, vt_##iface, VT_COUNT_##iface, impl)
 void d3d_end_render(d3d_context *c);                                     // closes the open render encoder
+void d3d_fove_use(d3d_context *c, d3d_texture *t, int write);         // t itself is about to be read (write: or written); c NULL: the device's own context
+int  d3d_fove_copy(d3d_context *c, d3d_texture *dst, d3d_texture *src);  // CopyResource done between the twins (1), or not such a copy (0)
+void d3d_fove_wake(d3d_texture *t);                                     // t itself is about to be written whole (a clear): its memory, if it was given back
+void d3d_fove_cleared(d3d_context *c, d3d_view *v, void *descriptor);  // a clear pass of v was recorded (descriptor): the same for its twin
 void *d3d_context_cmd(d3d_context *c);                                   // id<MTLCommandBuffer>, created on demand
 extern const d3d_method d3d_draw_device_methods[], d3d_draw_context_methods[];   // d3d11_draw.m
 void d3d_draw_init(void);

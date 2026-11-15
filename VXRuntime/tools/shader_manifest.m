@@ -82,6 +82,17 @@ int main(int argc, char **argv) {
                 else if (![kind compare:@"dither"]) source = vx_d3d11_dither_source(sh->msl);
                 else if (![kind compare:@"pass-through"]) source = sh->msl_passthrough ? @(sh->msl_passthrough) : nil;
                 else if (![kind compare:@"vs-kernel"]) source = sh->msl_kernel ? vx_d3d11_vs_kernel_source(sh->msl_kernel, params.UTF8String) : nil;
+                else if ([kind hasPrefix:@"fove"]) {           // a pixel shader's variants for foveated rendering (dxbc_translate_fove), each in its three forms
+                    dxbc_shader v;
+                    int far = [kind hasPrefix:@"fove-far"];
+                    NSString *form = [kind substringFromIndex:far ? 8 : 4];
+                    if (!dxbc_translate_fove(code.bytes, code.length, &v, far)) {
+                        if (!form.length) source = @(v.msl);
+                        else if (![form compare:@"-dual-source"]) source = vx_d3d11_dual_source(v.msl);
+                        else if (![form compare:@"-dither"]) source = vx_d3d11_dither_source(v.msl);
+                        dxbc_free(&v);
+                    }
+                }
                 if (!source) { status = "no-such-variant"; failed++; goto report; }
                 int std32, min_lod, safe;
                 key = vx_shader_cache_key(source, options, &std32, &min_lod, &safe);

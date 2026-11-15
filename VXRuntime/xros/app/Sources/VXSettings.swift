@@ -69,6 +69,13 @@ enum VXUpscale: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+// Foveated rendering in the game's own passes (VXRT_FOVE; src/d3d11_draw.m, "foveated rendering"): the game draws the middle of each
+// eye's picture at full resolution and the edge, which the lenses blur anyway, with fewer pixels. Off unless chosen.
+enum VXFoveatedRendering: String, CaseIterable, Identifiable {
+    case off, low, medium, high
+    var id: String { rawValue }
+}
+
 // Skyrim VR's own gameplay choices, written over its SkyrimPrefs.ini values through VXRT_INI_SET (client.c). "Game default" writes nothing, so the
 // game's own value stays: a key is only overridden when the player picked one here. Keys are strings of the game's exe, section [VRInput]
 // (research/2026-11-11-skyrim-vr-gameplay-settings.md).
@@ -346,6 +353,7 @@ final class VXSettings: ObservableObject {
     static let gameLanguageKey = "vxrt.gameLanguage"
     static let turnSpeedKey = "vxrt.turnSpeed"
     static let moveKey = "vxrt.move"
+    static let foveatedRenderingKey = "vxrt.foveatedRendering"
     static let sharpenKey = "vxrt.sharpen"
     static let renderQualityKey = "vxrt.renderQuality"
 
@@ -367,6 +375,8 @@ final class VXSettings: ObservableObject {
 
     // Picture: the size the game renders at, as a fraction of the drawable (next launch).
     @Published var renderScale: Double { didSet { if !suppress { defaults.set(renderScale, forKey: Self.renderScaleKey) } } }
+    // Foveated rendering in the game's passes: off unless chosen (env VXRT_FOVE, the saved choice, Info.plist VXFoveatedRenderingDefault). Next launch.
+    @Published var foveatedRendering: VXFoveatedRendering { didSet { if !suppress { defaults.set(foveatedRendering.rawValue, forKey: Self.foveatedRenderingKey) } } }
     // Upscaling of the game's eye to the display (next launch).
     @Published var upscale: VXUpscale { didSet { if !suppress { defaults.set(upscale.rawValue, forKey: Self.upscaleKey) } } }
     // How much of the picture's unseen edge the game skips (VXRT_VISMASK, VXRT_VISMASK_SHAPE; next launch).
@@ -461,6 +471,10 @@ final class VXSettings: ObservableObject {
         let envScale = (environment["VXRT_RENDER_SCALE"] ?? environment["KL_OVRP_RENDER_SCALE"]).flatMap(Double.init)
         let scale = envScale ?? (defaults.object(forKey: Self.renderScaleKey) as? Double) ?? plistScale ?? Self.renderScaleBuiltIn
         renderScale = Self.clampScale(scale)
+        var fr: VXFoveatedRendering = (info["VXFoveatedRenderingDefault"] as? String).flatMap(VXFoveatedRendering.init(rawValue:)) ?? .off
+        if let st = defaults.string(forKey: Self.foveatedRenderingKey), let v = VXFoveatedRendering(rawValue: st) { fr = v }
+        if let e = environment["VXRT_FOVE"] { fr = VXFoveatedRendering(rawValue: e) ?? .off }
+        foveatedRendering = fr
 
         let plistHands = (info["KLHandMattingDefault"] as? String).map { $0 != "0" } ?? false
         var hands = plistHands
@@ -614,6 +628,7 @@ final class VXSettings: ObservableObject {
         if let v = sharpen, v > 0 { out.append(("VXRT_SHARPEN", String(format: "%.2f", min(max(v, 0), 1)))) }
         if let v = renderQuality { out.append(("VXRT_RENDER_QUALITY", String(format: "%.2f", min(max(v, 0), 1)))) }
         if let h = stageEyeHeight { out.append(("VXRT_STAGE_EYE_HEIGHT", String(format: "%.2f", min(max(h, Self.eyeHeightRange.lowerBound), Self.eyeHeightRange.upperBound)))) }
+        if foveatedRendering != .off { out.append(("VXRT_FOVE", foveatedRendering.rawValue)) }
         let ini = iniOverrides()
         if !ini.isEmpty { out.append(("VXRT_INI_SET", ini.joined(separator: ";"))) }
         return out

@@ -208,6 +208,7 @@ typedef struct {
     int gs;                                   // a geometry shader
     uint32_t gs_inprim, gs_topology, gs_maxout, gs_instances;
     char why[200];
+    int fove;                                 // the pixel shader's variant for foveated rendering (dxbc_translate_fove)
 } gen;
 
 // a buffer SRV's rank (its slot and size index) from its t#
@@ -441,15 +442,25 @@ static void in_bounds(char *out, size_t cap, const char *tex, int dim, const cha
     else k += (size_t)snprintf(out + k, cap - k, "all(uint%d(%s) < %s)", n, xy, size);
     if (slice[0]) snprintf(out + k, cap - k, " && %s < %s.get_array_size()", slice, tex);
 }
+// Foveated rendering (dxbc_translate_fove): a 2D texture's coordinate goes through VX_FOVE_UV, which leaves it as it is
+// unless the texture is bound as its twin in the rate map's layout (a bit per t# in vx_fove), then moves it to where
+// that place on the screen is stored in the twin.
+static void fove_uv(gen *g, uint32_t t, int dim, char *xy, size_t cap) {
+    if (!g->fove || dim != DIM_2D || t >= 64) return;
+    char moved[1000];
+    snprintf(moved, sizeof moved, "VX_FOVE_UV(%u, %s)", t, xy);
+    snprintf(xy, cap, "%s", moved);
+}
 static void sample(gen *g, const instr *in) {
     const operand *dst = &in->ops[0], *addr = &in->ops[1], *res = &in->ops[2], *smp = in->nops > 3 ? &in->ops[3] : NULL;
     uint32_t t = res->index[0];
     int dim = t < 128 ? g->tex_dim[t] : DIM_2D;
-    char xy[700], slice[720], extra[1600] = "", a[700], b[700];
+    char xy[1000], slice[720], extra[1600] = "", a[700], b[700];
     int c0 = 0, c4[4] = { 0, 1, 2, 3 };
     char tn[16];
     snprintf(tn, sizeof tn, "t%u", t);
     coords(g, addr, dim, K_FLOAT, xy, sizeof xy, slice, sizeof slice, tn);
+    fove_uv(g, t, dim, xy, sizeof xy);
     // Metal's texture1d and texture1d_array have one sample(sampler, coord[, array]) and nothing else: no level(), bias(),
     // gradient or offset argument. The runtime makes every Direct3D 1D texture with a single mip level (d3d11.m,
     // "Metal's 1D textures have one mip level"), and Direct3D clamps an explicit or biased level, or one from gradients,
@@ -461,7 +472,7 @@ static void sample(gen *g, const instr *in) {
         snprintf(moved, sizeof moved, "(%s + float(%d) / float(%s.get_width()))", xy, in->offset[0], tn);
         snprintf(xy, sizeof xy, "%s", moved);
     }
-    char args[2400];
+    char args[2700];
     snprintf(args, sizeof args, "s%u, %s%s%s", smp ? smp->index[0] : 0, xy, slice[0] ? ", " : "", slice);
     int gn = dim == DIM_3D || dim == DIM_CUBE || dim == DIM_CUBEARRAY ? 3 : 2;
     const char *grad = dim == DIM_3D ? "gradient3d" : dim == DIM_CUBE || dim == DIM_CUBEARRAY ? "gradientcube" : "gradient2d";
@@ -485,7 +496,7 @@ static void sample(gen *g, const instr *in) {
         if (dim == DIM_3D) snprintf(extra + k, sizeof extra - k, ", int3(%d, %d, %d)", in->offset[0], in->offset[1], in->offset[2]);
         else snprintf(extra + k, sizeof extra - k, ", int2(%d, %d)", in->offset[0], in->offset[1]);
     }
-    char call[4200];
+    char call[4500];
     if (compare) snprintf(call, sizeof call, "float4(t%u.sample_compare(%s%s))", t, args, extra);
     else if (g->tex_cmp[t]) snprintf(call, sizeof call, "float4(t%u.sample(%s%s), 0, 0, 1)", t, args, extra);   // a depth texture
     else snprintf(call, sizeof call, "t%u.sample(%s%s)", t, args, extra);
@@ -494,7 +505,7 @@ static void sample(gen *g, const instr *in) {
     char sw[5];
     for (int i = 0; i < n; i++) sw[i] = CH[res->swz[comps[i]]];
     sw[n] = 0;
-    char expr[4300];
+    char expr[4600];
     int kind = g->tex_ret[t] == 3 ? K_INT : g->tex_ret[t] == 4 ? K_UINT : K_FLOAT;
     snprintf(expr, sizeof expr, "%s.%s", call, sw);
     assign(g, dst, expr, kind, n, in->saturate);
@@ -503,7 +514,7 @@ static void load(gen *g, const instr *in) {
     const operand *dst = &in->ops[0], *addr = &in->ops[1], *res = &in->ops[2];
     uint32_t t = res->index[0];
     int dim = t < 128 ? g->tex_dim[t] : DIM_2D;
-    char xy[700], slice[720], mip[700] = "0", call[2400];
+    char xy[1000], slice[720], mip[700] = "0", call[2700];
     coords(g, addr, dim, K_INT, xy, sizeof xy, slice, sizeof slice, NULL);
     int c3 = 3, has_mip = dim != DIM_BUFFER && dim != DIM_2DMS && dim != DIM_2DMSARRAY;
     if (has_mip) src(g, addr, &c3, 1, K_INT, mip, sizeof mip);
@@ -512,6 +523,11 @@ static void load(gen *g, const instr *in) {
         if (dim == DIM_3D) snprintf(moved, sizeof moved, "(%s + int3(%d, %d, %d))", xy, in->offset[0], in->offset[1], in->offset[2]);
         else if (dim == DIM_1D || dim == DIM_1DARRAY) snprintf(moved, sizeof moved, "(%s + %d)", xy, in->offset[0]);
         else snprintf(moved, sizeof moved, "(%s + int2(%d, %d))", xy, in->offset[0], in->offset[1]);
+        snprintf(xy, sizeof xy, "%s", moved);
+    }
+    if (g->fove && dim == DIM_2D && t < 64) {              // foveated rendering: the texel's place in a texture bound as its twin
+        char moved[1000];
+        snprintf(moved, sizeof moved, "VX_FOVE_PX(%u, %s)", t, xy);
         snprintf(xy, sizeof xy, "%s", moved);
     }
     const char *ut = dim == DIM_1D || dim == DIM_1DARRAY || dim == DIM_BUFFER ? "uint" : dim == DIM_3D ? "uint3" : "uint2";
@@ -556,6 +572,10 @@ static void resinfo(gen *g, const instr *in) {
     else snprintf(v[2], 300, "0u");
     snprintf(v[3], 300, dim == DIM_BUFFER || dim == DIM_2DMS || dim == DIM_2DMSARRAY || uav ? "1u" : "%s.get_num_mip_levels()", name);
     if (dim == DIM_BUFFER) snprintf(v[0], 300, "%s.get_width()", name);
+    if (g->fove && !uav && dim == DIM_2D && t < 64) {       // foveated rendering: a texture bound as its twin has the size of the texture itself
+        snprintf(v[0], 300, "(VX_FOVE_IS(%u) ? vx_fove.sw : %s.get_width(%s))", t, name, lod);
+        snprintf(v[1], 300, "(VX_FOVE_IS(%u) ? vx_fove.sh : %s.get_height(%s))", t, name, lod);
+    }
     line(g, "{ uint4 vx_info = uint4(%s, %s, %s, %s);", v[0], v[1], v[2], v[3]);
     int comps[4], n = dest_comps(dst, comps);
     char sw[5];
@@ -800,11 +820,12 @@ static void gather(gen *g, const instr *in) {
     uint32_t t = res->index[0];
     int dim = t < 128 ? g->tex_dim[t] : DIM_2D;
     int cube = dim == DIM_CUBE || dim == DIM_CUBEARRAY;
-    char xy[700], slice[720], args[2400], extra[800] = "", ref[700] = "";
+    char xy[1000], slice[720], args[2700], extra[800] = "", ref[700] = "";
     int c0 = 0, c4[4] = { 0, 1, 2, 3 };
     char tn[16];
     snprintf(tn, sizeof tn, "t%u", t);
     coords(g, addr, dim, K_FLOAT, xy, sizeof xy, slice, sizeof slice, tn);
+    fove_uv(g, t, dim, xy, sizeof xy);
     if (po && !cube) {
         char off[700], moved[1600];
         src(g, &in->ops[2], c4, 2, K_INT, off, sizeof off);
@@ -1395,6 +1416,24 @@ static void locals(gen *g, text *t) {
 
 static void preamble(gen *g, text *t) {
     put(t, "#include <metal_stdlib>\nusing namespace metal;\n\n");
+    if (g->fove) {                                          // foveated rendering (d3d11_draw.m): see dxbc_translate_fove
+        put(t, "struct VxFove { uint mask0, mask1, pos, pad; uint sw, sh, pw, ph; };\n"
+               // a table's value at x (entry k is the value at k + 0.5, a pixel's middle) and its slope there
+               "static inline float2 vx_ftab(constant float *t, float x, uint n) {\n"
+               "    float f = clamp(x - 0.5f, 0.0f, float(n - 1u));\n"
+               "    uint i = min(uint(f), n - 2u);\n"
+               "    float a = t[i], b = t[i + 1u];\n"
+               "    return float2(a + (b - a) * (f - float(i)), b - a);\n"
+               "}\n"
+               "#define VX_FOVE_IS(i) ((((i) < 32 ? vx_fove.mask0 >> ((i) & 31) : vx_fove.mask1 >> ((i) & 31)) & 1u) != 0u)\n");
+        if (g->fove == 1)                                   // near the fragment's own place: one multiply-add a sample
+            put(t, "#define VX_FOVE_UV(i, uv) (VX_FOVE_IS(i) ? (uv) * vx_fa + vx_fb : (uv))\n"
+                   "#define VX_FOVE_PX(i, xy) (VX_FOVE_IS(i) ? int2((float2(xy) + 0.5f) * vx_fc + vx_fd) : int2(xy))\n\n");
+        else                                                // anywhere: the screen-to-physical tables, each sample
+            put(t, "static inline float2 vx_fove_far(float2 s, constant float *t, constant VxFove &f) { return float2(vx_ftab(t, s.x, f.sw).x, vx_ftab(t + f.sw, s.y, f.sh).x); }\n"
+                   "#define VX_FOVE_UV(i, uv) (VX_FOVE_IS(i) ? vx_fove_far((uv) * float2(vx_fove.sw, vx_fove.sh), vx_ft, vx_fove) / float2(vx_fove.pw, vx_fove.ph) : (uv))\n"
+                   "#define VX_FOVE_PX(i, xy) (VX_FOVE_IS(i) ? int2(vx_fove_far(float2(xy) + 0.5f, vx_ft, vx_fove)) : int2(xy))\n\n");
+    }
     if (g->sh->d3d12) {
         d3d12_types(g, t);
         if (g->sh->uav_counters) put(t, "#define vx_counter(u) (vx_ctr[u])\n\n");
@@ -1515,6 +1554,17 @@ static char *compose(gen *g) {
     dxbc_shader *sh = g->sh;
     text t = { 0 };
     int vs = sh->type == DXBC_VERTEX, ps = sh->type == DXBC_PIXEL, cs = sh->type == DXBC_COMPUTE;
+    sh->fove_slot[0] = sh->fove_slot[1] = -1;
+    if (g->fove) {                                          // the two highest buffer slots the shader does not use
+        uint32_t used = sh->cbuffers & 0xffffu;
+        for (int i = 0; i < 8; i++) if ((sh->uavs & (1u << i)) && sh->uav_kind[i] != DXBC_UAV_TYPED) used |= 1u << (DXBC_UAV_BUFFER_BASE + i);
+        for (int i = 0; i < 64; i++) if ((sh->srv_buffers & (1ull << i)) && sh->srv_rank[i]) used |= 1u << (DXBC_SRV_BUFFER_BASE + sh->srv_rank[i] - 1);
+        if (sh->uses_sizes) used |= 1u << DXBC_SIZES_BUFFER;
+        int n = 0;
+        for (int i = 30; i >= 0 && n < 2; i--) if (!(used & (1u << i))) sh->fove_slot[n++] = i;
+        if (n < 2) { sh->fove_slot[0] = sh->fove_slot[1] = -1; snprintf(g->why, sizeof g->why, "no two buffer slots free for foveated rendering"); }
+    }
+    if (ps) for (int r = 0; r < 32; r++) if (g->in_decl[r] && g->in_sv[r] == 1) sh->reads_position = 1;
     preamble(g, &t);
     if (cs) {
         put(&t, "#define VX_RETURN return\n\n");
@@ -1543,6 +1593,11 @@ static char *compose(gen *g) {
             put(&t, "    interpolant<float4, interpolation::%s> v%d [[user(r%d)]];\n", m == 4 || m == 5 || m == 7 ? "no_perspective" : "perspective", r, r);
             has_in = 1;
         } else if (ps && !g->in_sv[r]) { put(&t, "    float4 v%d [[user(r%d)]]%s;\n", r, r, interp_qualifier(g->in_interp[r])); has_in = 1; }
+    }
+    int fove_pos = -1;                                       // foveated rendering: the register holding the position, or one more input for it
+    if (g->fove) {
+        for (int r = 0; r < 32; r++) if (g->in_decl[r] && g->in_sv[r] == 1) fove_pos = r;
+        if (fove_pos < 0) { put(&t, "    float4 vx_fpos [[position]];\n"); has_in = 1; }
     }
     put(&t, "};\n");
     // Stage outputs.
@@ -1599,6 +1654,7 @@ static char *compose(gen *g) {
         if (!n && !has_in) put(&t, "bool vx_front_facing [[front_facing]]");   // (something before the resources' \", \"")
     }
     resource_params(g, &t);
+    if (g->fove) put(&t, ", constant float *vx_ft [[buffer(%d)]], constant VxFove &vx_fove [[buffer(%d)]]", sh->fove_slot[0], sh->fove_slot[1]);
     put(&t, ") {\n");
     locals(g, &t);
     for (int r = 0; r < 32; r++) {
@@ -1618,6 +1674,28 @@ static char *compose(gen *g) {
         }
         else put(&t, "    float4 v%d = as_type<float4>(vin.v%d);\n", r, r);
     }
+    if (g->fove == 1) {
+        // Foveated rendering, the variant for passes of the eyes' size. Near this fragment a place on the screen s is
+        // stored at s * vx_fc + vx_fd in the map's physical layout (vx_fa, vx_fb: the same for normalized coordinates of
+        // a twin). Under a map (pos) the position input is the physical one: its place on the screen and the slope there
+        // come from the physical-to-screen tables, and the shader's own code gets the screen's. In a pass that is not
+        // under a map but reads a twin, the position is the screen's and the screen-to-physical tables give the rest.
+        char pos[24];
+        if (fove_pos >= 0) snprintf(pos, sizeof pos, "v%d", fove_pos); else snprintf(pos, sizeof pos, "vin.vx_fpos");
+        put(&t, "    float2 vx_fc = float2(1), vx_fd = float2(0);\n"
+                "    {\n"
+                "        float2 vx_p = %s.xy;\n"
+                "        bool vx_under = vx_fove.pos != 0u;\n"
+                "        constant float *vx_t = vx_ft + (vx_under ? vx_fove.sw + vx_fove.sh : 0u);\n"
+                "        uint vx_nx = vx_under ? vx_fove.pw : vx_fove.sw, vx_ny = vx_under ? vx_fove.ph : vx_fove.sh;\n"
+                "        float2 vx_x = vx_ftab(vx_t, vx_p.x, vx_nx), vx_y = vx_ftab(vx_t + vx_nx, vx_p.y, vx_ny);\n"
+                "        float2 vx_v = float2(vx_x.x, vx_y.x), vx_k = max(float2(vx_x.y, vx_y.y), float2(0.0001f));\n"
+                "        vx_fc = vx_under ? 1.0f / vx_k : vx_k;\n"
+                "        vx_fd = vx_under ? vx_p - vx_v * vx_fc : vx_v - vx_p * vx_fc;\n", pos);
+        if (fove_pos >= 0) put(&t, "        if (vx_under) v%d.xy = vx_v;\n", fove_pos);
+        put(&t, "    }\n"
+                "    float2 vx_fa = vx_fc * float2(vx_fove.sw, vx_fove.sh) / float2(vx_fove.pw, vx_fove.ph), vx_fb = vx_fd / float2(vx_fove.pw, vx_fove.ph);\n");
+    }
     if (g->out_depth) put(&t, "    float oDepth = 0;\n");
     if (g->out_coverage) put(&t, "    uint oMask = 0xffffffffu;\n");
     if (g->in_primid) put(&t, "    float vPrim = as_type<float>(vx_primitive);\n");
@@ -1626,6 +1704,7 @@ static char *compose(gen *g) {
     return t.s;
 }
 
+static __thread int t_fove;                   // dxbc_translate_fove: which variant the translation in progress makes (1 near, 2 far)
 // Translates instructions from `p` to the end of the function they belong to (the program's end, or the next
 // label). A call inlines the subroutine's body (Direct3D has no recursion) in a one-pass loop, its returns
 // becoming breaks. Returns nonzero for a truncated program.
@@ -1715,6 +1794,7 @@ static int translate_container(const void *code, size_t size, dxbc_shader *out, 
     memset(&g, 0, sizeof g);
     g.vp_reg = g.rt_reg = g.clip_reg = -1;
     g.sh = out;
+    g.fove = out->type == DXBC_PIXEL ? t_fove : 0;
     g.gs = out->type == DXBC_GEOMETRY;
     // First pass: textures sampled or gathered with a comparison are depth textures in Metal.
     for (reader q = { tok + 2, tok + count, 0 }; q.p < q.end && !q.bad;) {
@@ -1779,6 +1859,17 @@ static int translate_container(const void *code, size_t size, dxbc_shader *out, 
     return 0;
 }
 int dxbc_translate(const void *code, size_t size, dxbc_shader *out) { return translate_container(code, size, out, 0); }
+int dxbc_translate_fove(const void *code, size_t size, dxbc_shader *out, int far) {
+    t_fove = far ? 2 : 1;
+    int r = translate_container(code, size, out, 0);
+    t_fove = 0;
+    if (!r && (out->type != DXBC_PIXEL || out->fove_slot[1] < 0)) {
+        dxbc_free(out);
+        snprintf(out->error, sizeof out->error, "no variant for foveated rendering (not a pixel shader, or no two buffer slots free)");
+        return -1;
+    }
+    return r;
+}
 int dxbc_translate_d3d12(const void *code, size_t size, dxbc_shader *out) { return translate_container(code, size, out, 1); }
 void dxbc_free(dxbc_shader *s) {
     free(s->msl); free(s->msl_kernel); free(s->msl_passthrough);

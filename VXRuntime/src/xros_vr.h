@@ -53,6 +53,10 @@ int vx_xros_native_set_render_size(uint32_t width, uint32_t height);
 // The exchange uses zero for successful acquisition.
 static inline int vx_xros_native_acquire_succeeded(int result) { return result == 0; }
 
+// Foveated rendering in the program's own passes (d3d11_draw.m): the level in use (0 none, 1 low, 2 medium, 3 high) and the share of
+// the eyes' pixels its map keeps, in percent. For a status display in the app.
+int vx_d3d_fove_status(unsigned *percent);
+
 #ifdef __cplusplus
 }
 #endif

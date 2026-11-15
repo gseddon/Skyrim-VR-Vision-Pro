@@ -64,6 +64,15 @@ See `git log -- VXRuntime/xros/app` on the branch `worktree-agent-af19bef3afdccd
 `xr_controllers` and `xr_controller_state` log events, `VXLifecycle`, `VXDefaultLaunch`, and the `-controllers` mode of the owned
 guest are ours.
 
+## Foveated rendering in the game's own passes (2026-11-13)
+
+Read in the fork `https://github.com/myMartek/Klepton` at tag `toolchain-890` (MIT, the fork's own work on top of Klepton):
+`runtime/gfx/kl_fove.m` and `docs/FOVEATION.md`.
+
+| Piece | Klepton origin | Local form |
+| --- | --- | --- |
+| Foveated rendering in the game's own passes: the profile per level (box 1216, 1024, 768 of 2016, ramp 384 of 2016, floor 1/3, 0.22, 0.125 of the eye's height), each eye's map peaking at its own straight-ahead point and at the other eye's, the seam clamp when the picture is expanded, and the measured rate-map facts the design rests on | `runtime/gfx/kl_fove.m` (`kf_profile`, `kl_fove_curves_env2`, the expand shader) and `docs/FOVEATION.md` at tag `toolchain-890` | `VXRuntime/src/d3d11_draw.m`, "foveated rendering" (`VXRT_FOVE`): the profile functions **ported** (`fove_profile`, `fove_profile2`, `fove_map`); the method is its own (the Direct3D layer makes the passes itself, so nothing is swizzled; targets get twins in the map's layout, and pixel shaders a variant that reads twins in place: `dxbc_translate_fove`) |
+
 ## Frame-loop discipline ported after device run 2 (2026-11-10)
 
 Device run 2 was SIGKILLed by the system 2.7 s in (termination namespace `0x28`, no app fault, no jetsam). Compared with the fork
