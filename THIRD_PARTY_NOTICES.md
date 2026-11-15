@@ -77,6 +77,15 @@ The AVP Play fork (`klepton-toolchain-866-e65c433`, no full git pin) has equival
 where upstream is equivalent. Klepton's game-specific default offsets are not carried over. Both files carry the
 attribution in their headers; the MIT notice is `third_party/klepton_openxr/LICENSE`.
 
+### Klepton performance panel (2026-11-13)
+
+`VXRuntime/xros/app/Sources/KleptonMetrics.swift` is a copy of `visionos/Sources/KleptonMetrics.swift` from the fork
+`https://github.com/myMartek/Klepton` at tag `toolchain-890` (MIT, Copyright (c) 2026 Max Thomas and contributors), with two marked
+changes, and `VXRuntime/xros/app/Sources/VXGpuBusy.m` a copy of its `runtime/gfx/kl_mtl_busy.m` without the logic-operation part.
+`VXRuntime/xros/app/Sources/VXStatsPanel.swift` reimplements the fork's `kl_metrics_chord` (`runtime/diag/kl_metrics.c`) and
+follows its panel in `KleptonCompositor.swift`. All three files carry the attribution in their headers; the MIT notice is
+`third_party/klepton_openxr/LICENSE`; details in `third_party/klepton_host/SOURCE.md`.
+
 ### Klepton visionOS host conventions (2026-11-10)
 
 The fork `https://github.com/myMartek/Klepton` at `a7bad301c10b03e7d615ae8d51033146c373bcb5` (MIT, Copyright (c) 2026 Max Thomas;

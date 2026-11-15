@@ -541,6 +541,17 @@ final class VXImmersiveRenderer: @unchecked Sendable {
 #if XRIZER_XROS_FIXTURE
             if Self.ctrlMarker { drawControllerMarkers(cb, d, head: head) }
 #endif
+            // The performance panel (Create + Options held for a second, VXStatsPanel.swift): over the finished eye images.
+            if VXStatsPanel.shared.visible {
+                for i in d.views.indices {
+                    let color = d.colorTextures[min(i, d.colorTextures.count - 1)]
+                    statsDrawable = (color.width, color.height)
+                    let raster = VXDisplay.raster(d, view: i)
+                    VXStatsPanel.shared.encode(cb: cb, color: color, view: d.views[i].transform,
+                                               projection: d.computeProjection(convention: .rightUpBack, viewIndex: i),
+                                               map: raster.map, viewport: raster.viewport)
+                }
+            }
             captureOutput(cb, d)
             d.encodePresent(commandBuffer: cb)
         }
@@ -555,6 +566,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         report()
     }
 
+    private var statsDrawable = (w: 0, h: 0)
     private func captureOutput(_ cb: MTLCommandBuffer, _ d: LayerRenderer.Drawable) {
         guard Self.shotEvery > 0 else { return }
         let now = CACurrentMediaTime()
@@ -755,6 +767,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         }
 #endif
         cleared = 0
+        let framesNow = framesSecond
         fields += ",\"predict_horizon_ms\":\(String(format: "%.1f", horizon * 1000)),\"predict_nil\":\(predNil),\"age_ema_ms\":\(String(format: "%.1f", vx_xros_immersive_age_ema() * 1000))"
         fields += ",\"presentation_interval_ms\":\(String(format: "%.2f", presentationIntervalCount > 0 ? presentationIntervalSum / Double(presentationIntervalCount) * 1000 : 0)),\"frame_total_ms_max\":\(String(format: "%.2f", fixtureMsMax))"
         presentationIntervalSum = 0; presentationIntervalCount = 0; fixtureMsMax = 0
@@ -773,6 +786,7 @@ final class VXImmersiveRenderer: @unchecked Sendable {
             var first = true
             repeat {
                 if vx_xros_timing_drain(&tb, UInt32(tb.count), Self.timingEpoch, first ? 1 : 0, 8, &left) > 0 {
+                    if first { VXStatsPanel.shared.sample(vr: fields, timing: String(cString: gb) + "," + String(cString: tb), frames: framesNow, drawable: statsDrawable) }
                     vxrt_jlog(first ? "mtp" : "mtp_pairs", first ? "\"epoch\":\(Self.timingEpoch),\(String(cString: gb)),\(String(cString: tb))" : String(cString: tb))
                 }
                 first = false
