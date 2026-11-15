@@ -627,6 +627,12 @@ static void __attribute__((noreturn)) dispatch(EXCEPTION_RECORD *rec, CONTEXT *c
         RtlVirtualUnwind(0, base, walk.rip, fn, &walk, &data, &frame, NULL);
         if (!walk.rip) break;
     }
+    if (!vx_image_at(ctx->rip)) {                  // a call through a bad pointer: nothing to unwind from; who called is still on the stack
+        uint8_t *teb = vx_teb();
+        uint64_t top = teb ? *(uint64_t *)(teb + TEB_STACK_BASE) : 0;
+        uint64_t sp = ctx->gpr[4];
+        if (sp && sp < top && top - sp < (256ull << 20)) vx_log_stack_scan((const uint64_t *)(uintptr_t)sp, top, 12);
+    }
     vx_jobs_process_exit();
     fflush(stdout);
     _exit((int)rec->code);

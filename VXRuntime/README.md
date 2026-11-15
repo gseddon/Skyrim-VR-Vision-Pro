@@ -39,6 +39,7 @@ VXRT_STATS=1 ...                           # keyed mutex waits and hold times, M
 VXRT_LOG_TIME=1 ...                        # log lines carry the time of day (the same clock in every process)
 VXRT_TRACE_KEYED=1 VXRT_TRACE_MAPS=1 ...   # every AcquireSync/ReleaseSync (and waits made while holding one); staging Maps
 VXRT_PROFILE=report.txt ...                # sampling profiler through Rosetta: hottest functions (Windows ones by .pdata), every 10 s
+VXRT_PEEK='name=ADDR:N;name=ADDR>OFF:N;name=strmap@ADDR' ...   # diagnostic: log places in the program's memory when they change (src/codehooks.c): N bytes at ADDR, N bytes at OFF past the pointer at ADDR, or the true keys of an MSVC unordered_map<string,bool>; VXRT_PEEK_MS sets the interval (20)
 VXRT_GPU_TIMESTAMPS=1 ...                  # timestamp queries are the GPU's end times (default: the CPU's, on the same clock)
 VXRT_FLUSH_DRAWS=100 ...                   # send recorded work to the GPU every 100 draws, between render passes (default: off)
 VXRT_EAGER_CLEARS=1 ...                    # clears as passes of their own (default: folded into the next render pass's load action)

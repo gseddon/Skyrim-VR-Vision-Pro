@@ -411,7 +411,8 @@ void xa_trace_null_target(const x86_ctx *c) {
     vx_log("aot-null-target: candidates rcx=%#llx object-word=%s%#llx rax=%#llx caller=%s%#llx",
         (unsigned long long)object, object_ok ? "" : "unreadable:", (unsigned long long)(object_ok ? v : 0),
         (unsigned long long)table, caller_ok ? "" : "unreadable:", (unsigned long long)(caller_ok ? caller : 0));
-    for (unsigned i = 0; i < 8; i++) {
+    for (unsigned k = 0; k < 14; k++) {             // the first slots, and the ones around 34 (IVRSystem::GetControllerState)
+        unsigned i = k < 8 ? k : 24 + k;
         uint64_t offset = (uint64_t)i * 8, entry = 0;
         if (table > UINT64_MAX - offset || !null_read_word(table + offset, &entry)) {
             vx_log("aot-null-target: candidate table slot %u unreadable", i); break;
