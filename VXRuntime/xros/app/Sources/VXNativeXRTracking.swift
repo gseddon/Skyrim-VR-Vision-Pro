@@ -49,6 +49,8 @@ struct VXSpatialObservation {
     let inputEventTime: TimeInterval
     let canonical: VXSpatialCanonicalSnapshot
     let controller: GCController
+    // The grip's motion as ARKit measured it (m/s, rad/s) in the origin's axes; nil when it gave no finite values.
+    var motion: (linear: SIMD3<Float>, angular: SIMD3<Float>)? = nil
 }
 
 // ARKit's world query is documented not thread safe. Reconfiguring the shared
@@ -216,10 +218,19 @@ actor VXNativeXRTracking {
                 predictionTime: presentation, inputEventTimeOpaque: input.lastEventTimestamp,
                 captureBeforeTicks: before, captureAfterTicks: after, tracking: state,
                 originFromGrip: grip, originFromAim: aim, raw: raw) else { continue }
+            // The tracker's own velocity, for a game that reads the controller's speed (HIGGS pulls an object on a flick toward the hand, and
+            // throws with it). Rotated out of the accessory's frame by the grip's orientation, as Klepton and ALVR do: Apple documents neither
+            // frame, the two readings differ in direction only (VXRT_SENSE_VEL_FRAME=world takes it as already in the origin's axes).
+            var motion: (linear: SIMD3<Float>, angular: SIMD3<Float>)?
+            if let grip {
+                var v = predicted.velocity, w = predicted.angularVelocity
+                if VXSenseTune.velocityIsLocal { let q = simd_normalize(simd_quatf(grip)); v = q.act(v); w = q.act(w) }
+                if v.x.isFinite, v.y.isFinite, v.z.isFinite, w.x.isFinite, w.y.isFinite, w.z.isFinite { motion = (v, w) }
+            }
             output.append(VXSpatialObservation(connectionGeneration: generation, accessoryID: predicted.accessory.id, chirality: hand,
                 anchorTime: predicted.timestamp, predictedTime: presentation, trackingState: predicted.trackingState,
                 originFromGrip: grip, originFromAim: aim, inputCaptureBefore: before, inputCaptureAfter: after,
-                inputEventTime: input.lastEventTimestamp, canonical: canonical, controller: controller))
+                inputEventTime: input.lastEventTimestamp, canonical: canonical, controller: controller, motion: motion))
         }
         let candidates = output.map { observation in
             VXSpatialCandidate(id: observation.accessoryID, hand: observation.chirality == .left ? 0 : 1,
@@ -248,14 +259,20 @@ actor VXNativeXRTracking {
     // grip and aim locations, is published disconnected. Tracked bits follow ARKit's position tracking only.
     // Once a second into host_log.jsonl: what the host publishes for each hand (the console shows the same with -console).
     private var lastStateLog = 0.0
+    private var peakSpeed: [Float] = [0, 0]   // the fastest the hand moved since the last line (a flick is over within a few samples)
     private func logState(_ hands: [vx_xros_controller_hand]) {
+        for (i, h) in hands.enumerated() where h.velocity_valid != 0 {
+            let v = h.linear_velocity
+            peakSpeed[i] = max(peakSpeed[i], (v.0 * v.0 + v.1 * v.1 + v.2 * v.2).squareRoot())
+        }
         let now = CACurrentMediaTime()
         guard now - lastStateLog >= 1 else { return }
         lastStateLog = now
+        defer { peakSpeed = [0, 0] }
         func f(_ v: Float) -> String { v.isFinite ? String(format: "%.3f", v) : "null" }
         for (i, h) in hands.enumerated() {
             let g = h.grip
-            let pose = h.connected != 0 ? "\"pos\":[\(f(g.0)),\(f(g.1)),\(f(g.2))],\"pos_tracked\":\(h.grip_position_tracked)," : ""
+            let pose = h.connected != 0 ? "\"pos\":[\(f(g.0)),\(f(g.1)),\(f(g.2))],\"pos_tracked\":\(h.grip_position_tracked),\"velocity\":\(h.velocity_valid),\"peak_speed\":\(f(peakSpeed[i]))," : ""
             vxrt_jlog("xr_controller_state", "\"hand\":\"\(i == 0 ? "left" : "right")\",\"connected\":\(h.connected),\(pose)\"trigger\":\(f(h.trigger)),\"stick\":[\(f(h.stick_x)),\(f(h.stick_y))],\"primary\":\(h.primary),\"secondary\":\(h.secondary),\"grip_pressed\":\(h.grip_pressed),\"menu\":\(h.menu),\"stick_pressed\":\(h.stick_pressed)")
         }
     }
@@ -285,6 +302,10 @@ actor VXNativeXRTracking {
             h.primary = value(c.controls.primary) ? 1 : 0; h.secondary = value(c.controls.secondary) ? 1 : 0
             h.grip_pressed = value(c.controls.grip) ? 1 : 0; h.menu = value(c.controls.menu) ? 1 : 0
             h.stick_pressed = value(c.controls.stickPress) ? 1 : 0
+            if let m = o.motion {
+                h.linear_velocity = (m.linear.x, m.linear.y, m.linear.z); h.angular_velocity = (m.angular.x, m.angular.y, m.angular.z)
+                h.velocity_valid = 1
+            }
             hands[c.hand] = h
             do {
                 var f = VXPoseAudit.shared.getFull()[c.hand]

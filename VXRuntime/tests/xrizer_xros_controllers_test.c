@@ -58,6 +58,7 @@ int main(int argc, char **argv) {
     assert(r->controls.connected && r->profile == KL_NATIVE_INPUT_PROFILE_OCULUS_TOUCH && r->controls.grip_position_tracked && !r->controls.aim_position_tracked);
     assert(r->controls.trigger == .75f && r->controls.stick_x == -1 && r->controls.stick_y == .5f && r->controls.secondary_pressed && r->controls.stick_pressed && !r->controls.primary_pressed);
     assert(r->local_from_grip.position.x == .2f && r->local_from_aim.position.z == -.4f && r->local_from_grip.orientation.w == 1);
+    assert(!r->velocity_valid && r->linear_velocity.x == 0 && r->angular_velocity.z == 0);   /* none observed: none claimed */
     /* same content again: same id; a time that does not advance still gives a later, ordered time on change */
     vx_xros_controllers_publish(h, at + 5000);
     assert(vx_xros_controllers_sample(NULL, &s) == XR_SUCCESS && s.sample_id == 2 && s.sample_time == at);
@@ -84,6 +85,16 @@ int main(int argc, char **argv) {
         assert(vx_xros_controllers_sample(NULL, &s) == XR_SUCCESS);
         for (int i = 0; i < 2; i++) assert(s.hand[i].controls.connected && s.hand[i].profile == KL_NATIVE_INPUT_PROFILE_OCULUS_TOUCH);
         assert(s.hand[0].controls.stick_x == .3f && s.hand[0].controls.stick_y == -.6f && s.hand[1].controls.stick_x == -1.f && s.hand[1].controls.stick_y == 1.f && s.hand[1].controls.primary_pressed == XR_TRUE);
+    }
+    {   /* a measured velocity passes through; one with a value that is not a number is dropped whole (the hand stays) */
+        vx_xros_controller_hand m[2] = { rest(0), rest(1) };
+        m[1].linear_velocity[2] = -2.f; m[1].angular_velocity[1] = 1.f; m[1].velocity_valid = 1;
+        vx_xros_controllers_publish(m, at + 700);
+        assert(vx_xros_controllers_sample(NULL, &s) == XR_SUCCESS && s.hand[1].velocity_valid == XR_TRUE && s.hand[1].linear_velocity.z == -2.f && s.hand[1].angular_velocity.y == 1.f);
+        assert(!s.hand[0].velocity_valid && s.hand[0].linear_velocity.z == 0);
+        m[1].angular_velocity[0] = NAN;
+        vx_xros_controllers_publish(m, at + 800);
+        assert(vx_xros_controllers_sample(NULL, &s) == XR_SUCCESS && !s.hand[1].velocity_valid && s.hand[1].linear_velocity.z == 0 && s.hand[1].controls.connected);
     }
     /* haptics: logged without a sink, delivered with one; the minimum duration is a short pulse; a bad hand is refused */
     KlNativeHapticVibration hv = { 50000000, 160.f, 0.5f };
