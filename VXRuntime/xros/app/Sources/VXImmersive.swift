@@ -179,8 +179,10 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         self.layerRenderer = layerRenderer
         self.queue = queue
         queue.label = "VX compositor"
-        if #available(visionOS 26.0, *), let e = ProcessInfo.processInfo.environment["VXRT_RENDER_QUALITY"], let q = Float(e), q >= 0, q <= 1 {
-            layerRenderer.renderQuality = .init(q)   // (cannot exceed the configuration's max, which VXApp set to the same value)
+        // The running render quality, only where a ceiling was configured (VXLayerConfiguration: with foveation): asking for a quality
+        // above a ceiling that was never set is a configuration error that ends the app (Klepton, applyRenderQuality).
+        if #available(visionOS 26.0, *), let q = VXDisplay.qualityCeiling {
+            layerRenderer.renderQuality = .init(q)
             vxrt_jlog("render_quality_set", "\"requested\":\(q),\"now\":\(layerRenderer.renderQuality)")
         }
         // the provider keeps its queue across a layer reopen (the host was created with it)
@@ -470,12 +472,23 @@ final class VXImmersiveRenderer: @unchecked Sendable {
                 }
                 if xrizerFixtureStarted && dedicated && d.views.count == 2 {
                     let texture = d.colorTextures[0]
+                    // The size the game's picture is made for: the display's own texture, or the base resolution chosen in the settings
+                    // (always with a foveated display, whose texture says nothing about it). Fixed at the first frame of a run.
+                    if VXDisplay.base == nil {
+                        let foveated = d.rasterizationRateMaps.count == d.views.count && !d.rasterizationRateMaps.isEmpty
+                        let b = VXSettings.baseSize(choice: VXSettings.shared.baseResolution, foveated: foveated, texture: (texture.width, texture.height),
+                                                    fieldOfView: (Double(frustums[1] - frustums[0]), Double(frustums[3] - frustums[2])))
+                        VXDisplay.base = b
+                        let screen = d.rasterizationRateMaps.first.map { "\($0.screenSize.width)x\($0.screenSize.height)" } ?? "none"
+                        vxrt_jlog("base_resolution", "\"w\":\(b.w),\"h\":\(b.h),\"choice\":\(VXSettings.shared.baseResolution),\"foveated\":\(foveated),\"texture\":\"\(texture.width)x\(texture.height)\",\"rate_map_screen\":\"\(screen)\",\"rate_maps\":\(d.rasterizationRateMaps.count)")
+                    }
+                    let base = VXDisplay.base ?? (texture.width, texture.height)
                     let headTracked: Int32 = anchor?.isTracked == true ? 1 : 0
                     let offered = eyes.withUnsafeBufferPointer { e in
                         frustums.withUnsafeBufferPointer { f in
                             withUnsafePointer(to: &predictedHead) { hp in
                                 hp.withMemoryRebound(to: Float.self, capacity: 16) { h in
-                                    vx_xros_fixture_offer(UInt32(texture.width), UInt32(texture.height), e.baseAddress, f.baseAddress, predictedTime, headTracked != 0 ? h : nil, headTracked)
+                                    vx_xros_fixture_offer(UInt32(base.w), UInt32(base.h), e.baseAddress, f.baseAddress, predictedTime, headTracked != 0 ? h : nil, headTracked)
                                 }
                             }
                         }
@@ -529,7 +542,13 @@ final class VXImmersiveRenderer: @unchecked Sendable {
 #if XRIZER_XROS_FIXTURE
                                     if monoAcquired { return vx_xros_fixture_draw_inspection(cbp, Int32(i), colorp, depthp) }
 #endif
-                                    if native { return vx_xros_native_draw_eye(cbp, Int32(i), v, t, colorp, depthp) }
+                                    if native {
+                                        // a foveated drawable: the eye's pass rasterizes through its rate map (VXOverlay.swift, VXDisplay)
+                                        let raster = VXDisplay.raster(d, view: i)
+                                        vx_xros_native_set_eye_raster(Int32(i), raster.map.map { Unmanaged.passUnretained($0 as AnyObject).toOpaque() },
+                                                                      raster.viewport.originX, raster.viewport.originY, raster.viewport.width, raster.viewport.height)
+                                        return vx_xros_native_draw_eye(cbp, Int32(i), v, t, colorp, depthp)
+                                    }
                                     return vx_xros_vr_draw_eye(cbp, Int32(i), v, t, Self.near, colorp, depthp)
                                 }
                             }
@@ -628,8 +647,10 @@ final class VXImmersiveRenderer: @unchecked Sendable {
         cb.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
         cleared += 1
         if black { return }
+        let raster = VXDisplay.raster(d, view: i)
         _ = loadingCard.encode(cb: cb, color: color, eye: i, view: d.views[i].transform,
-                               projection: d.computeProjection(convention: .rightUpBack, viewIndex: i), shown: false)
+                               projection: d.computeProjection(convention: .rightUpBack, viewIndex: i), shown: false,
+                               map: raster.map, viewport: raster.viewport)
     }
 
     // Once a second: the head and both controllers in the SAME frame, in the provider's local space (each from its own ARKit session) and

@@ -355,7 +355,12 @@ final class VXSettings: ObservableObject {
     static let moveKey = "vxrt.move"
     static let foveatedRenderingKey = "vxrt.foveatedRendering"
     static let sharpenKey = "vxrt.sharpen"
-    static let renderQualityKey = "vxrt.renderQuality"
+    static let foveationKey = "vxrt.foveation"
+    static let baseResolutionKey = "vxrt.baseResolution"
+    /// The base resolutions offered: 0 is the standard (the display's own picture without foveation, 2048 with it), the others the width
+    /// of each eye's picture in pixels; its height follows the display's shape.
+    static let baseResolutions = [0, 2048, 2560, 3072, 3584, 4096]
+    static let baseResolutionStandard = 2048
 
     static let renderScaleRange = 0.5...1.0
     static let renderScaleBuiltIn = 0.75
@@ -388,13 +393,13 @@ final class VXSettings: ObservableObject {
             if let v = sharpen { defaults.set(v, forKey: Self.sharpenKey) } else { defaults.removeObject(forKey: Self.sharpenKey) }
         }
     }
-    // The compositor's render quality (VXRT_RENDER_QUALITY, 0...1: the size of the drawable); nil = the system's default (next launch).
-    @Published var renderQuality: Double? {
-        didSet {
-            guard !suppress else { return }
-            if let v = renderQuality { defaults.set(v, forKey: Self.renderQualityKey) } else { defaults.removeObject(forKey: Self.renderQualityKey) }
-        }
-    }
+    // Whether the display's picture is foveated: sharp where the eye looks, coarser at the edge, which is what lets the system give the
+    // app its high-resolution picture at all (CompositorServices accepts a higher render quality only with foveation). Next launch.
+    @Published var foveation: Bool { didSet { if !suppress { defaults.set(foveation, forKey: Self.foveationKey) } } }
+    // The base resolution: the width of the picture each eye is drawn for, of which Resolution is a share and which MetalFX enlarges to
+    // (0 = standard). Independent of the display's own picture, as "Max resolution per eye" is in Klepton's games. Next launch.
+    // The standard is stored like any other choice, so that it also wins over a build's Info.plist default.
+    @Published var baseResolution: Int { didSet { if !suppress { defaults.set(baseResolution, forKey: Self.baseResolutionKey) } } }
     // Latency: the pair gate, read per frame, so it applies at once.
     @Published var latency: VXLatency { didSet { if !suppress { defaults.set(latency.rawValue, forKey: Self.latencyKey); Self.latencyHook?(latency) } } }
     // Whether the wearer's real hands and arms show over the game. Live: the immersive scene observes it (VXApp.swift).
@@ -461,6 +466,16 @@ final class VXSettings: ObservableObject {
         let r = ((v / 0.05).rounded() * 5).rounded() / 100
         return min(max(r, renderScaleRange.lowerBound), renderScaleRange.upperBound)
     }
+    /// The size of the picture each eye is drawn for. Without foveation and without a choice it is the display's own texture, exactly as
+    /// before there was a choice. Otherwise the chosen width (standard: 2048), with the height that gives square pixels over the eye's
+    /// field of view (`fieldOfView`: its width and height in tangents); a foveated display's own texture says nothing about either.
+    static func baseSize(choice: Int, foveated: Bool, texture: (w: Int, h: Int), fieldOfView: (w: Double, h: Double)) -> (w: Int, h: Int) {
+        guard choice > 0 || foveated else { return texture }
+        guard fieldOfView.w > 0, fieldOfView.h > 0 else { return texture }
+        let w = choice > 0 ? choice : baseResolutionStandard
+        let h = Int((Double(w) * fieldOfView.h / fieldOfView.w).rounded())
+        return (w, (h + 1) & ~1)
+    }
     private static func flag(_ v: String?) -> Bool? { v.map { $0 != "0" && !$0.isEmpty } }
 
     // Precedence, as Klepton's: an explicitly set environment variable, then the saved choice, then the Info.plist default, then the built-in.
@@ -503,10 +518,21 @@ final class VXSettings: ObservableObject {
         if let v = defaults.object(forKey: Self.autoStartKey) as? Bool { auto = v }
         if let v = Self.flag(environment["VXRT_START_AUTOMATICALLY"] ?? environment["KL_AUTOBOOT"]) { auto = v }
         startAutomatically = auto
+        // The foveated display: env VXRT_FOVEATION, then the saved choice, then the Info.plist default (VXFoveationDefault = 1), else off:
+        // the display's picture as it was before there was a choice.
+        var fove = (info["VXFoveationDefault"] as? String).map { $0 == "1" } ?? false
+        if let v = defaults.object(forKey: Self.foveationKey) as? Bool { fove = v }
+        if let v = Self.flag(environment["VXRT_FOVEATION"]) { fove = v }
+        foveation = fove
+        // The base resolution: env VXRT_BASE_RESOLUTION, then the saved choice, then the Info.plist default (VXBaseResolutionDefault), else
+        // the standard; a value that is not offered is the standard.
+        var base = (info["VXBaseResolutionDefault"] as? String).flatMap(Int.init) ?? 0
+        if let v = defaults.object(forKey: Self.baseResolutionKey) as? Int { base = v }
+        if let v = environment["VXRT_BASE_RESOLUTION"].flatMap(Int.init) { base = v }
+        baseResolution = Self.baseResolutions.contains(base) ? base : 0
 
         predictMs = environment["VXRT_PREDICT_MS"].flatMap(Double.init) ?? (defaults.object(forKey: Self.predictKey) as? Double)
         sharpen = (environment["VXRT_SHARPEN"].flatMap(Double.init) ?? (defaults.object(forKey: Self.sharpenKey) as? Double)).map { min(max($0, 0), 1) }
-        renderQuality = (environment["VXRT_RENDER_QUALITY"].flatMap(Double.init) ?? (defaults.object(forKey: Self.renderQualityKey) as? Double)).map { min(max($0, 0), 1) }
         stageEyeHeight = environment["VXRT_STAGE_EYE_HEIGHT"].flatMap(Double.init) ?? (defaults.object(forKey: Self.eyeHeightKey) as? Double)
         // Gameplay: env VXRT_TURN / VXRT_SNAP_ANGLE / VXRT_TURN_SPEED / VXRT_MOVE, then the saved choice, then the Info.plist default
         // (VXTurnDefault, VXMoveDefault), then .game.
@@ -626,7 +652,6 @@ final class VXSettings: ObservableObject {
         out += edgeMask.exports
         if let p = predictMs { out.append(("VXRT_PREDICT_MS", String(format: "%.0f", min(max(p, Self.predictRange.lowerBound), Self.predictRange.upperBound)))) }
         if let v = sharpen, v > 0 { out.append(("VXRT_SHARPEN", String(format: "%.2f", min(max(v, 0), 1)))) }
-        if let v = renderQuality { out.append(("VXRT_RENDER_QUALITY", String(format: "%.2f", min(max(v, 0), 1)))) }
         if let h = stageEyeHeight { out.append(("VXRT_STAGE_EYE_HEIGHT", String(format: "%.2f", min(max(h, Self.eyeHeightRange.lowerBound), Self.eyeHeightRange.upperBound)))) }
         if foveatedRendering != .off { out.append(("VXRT_FOVE", foveatedRendering.rawValue)) }
         let ini = iniOverrides()

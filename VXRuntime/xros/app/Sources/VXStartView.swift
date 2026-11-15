@@ -235,15 +235,18 @@ struct VXSettingsPage: View {
                                 }
                             }
                             note("A light sharpening pass on the final picture. Off by default; about 0.35 is a start. Next launch.")
-                            Toggle("Display quality: system default", isOn: Binding(get: { settings.renderQuality == nil }, set: { settings.renderQuality = $0 ? nil : 1.0 }))
-                            if let q = settings.renderQuality {
-                                HStack {
-                                    Text("Display quality")
-                                    Slider(value: Binding(get: { q }, set: { settings.renderQuality = $0 }), in: VXSettings.unitRange, step: 0.05)
-                                    Text(String(format: "%.2f", q)).font(.system(.body, design: .monospaced)).frame(width: 70)
-                                }
+                            HStack {
+                                Text("Base resolution per eye")
+                                Spacer()
+                                Picker("Base resolution per eye", selection: $settings.baseResolution) {
+                                    ForEach(VXSettings.baseResolutions, id: \.self) { v in
+                                        Text(v == 0 ? "Standard" : "\(v)").tag(v)
+                                    }
+                                }.labelsHidden()
                             }
-                            note("The size of the picture the system gives the app to fill. Higher is finer but heavier; the game's own size is a share of it, so lower Resolution to match. Next launch.")
+                            note("The width in pixels of the picture each eye is drawn for; Resolution above is a share of it, and MetalFX enlarges to it. Standard is the display's own picture, or \(VXSettings.baseResolutionStandard) with the high-resolution display. Higher is sharper and costs graphics time: the game draws about as many more pixels as the number grows, squared. Next launch.")
+                            Toggle("High-resolution display", isOn: $settings.foveation)
+                            note("On, the finished picture is handed to the headset foveated: at the display's full sharpness where you look, coarser towards the edge. Off, the default, the headset takes a plain picture at the system's own quality, as before. This is how the picture reaches the display, not what the game draws. Turn it off again if the picture looks warped or the game does not start. Next launch.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                     GroupBox("Latency") {
