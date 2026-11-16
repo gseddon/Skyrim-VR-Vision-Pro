@@ -30,6 +30,9 @@ targets:
       - path: ../../build/xros/bundle
         type: folder
         buildPhase: resources
+      - path: Help              # the settings window's pictures (Help/README.md), found as Help/<name>.jpg
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.example.vxrt.VXRuntimeHost

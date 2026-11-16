@@ -44,7 +44,7 @@ struct VXRuntimeApp: App {
     var body: some Scene {
         // The start window (VXStartView.swift): shown at launch in a gated build, suppressed otherwise.
         WindowGroup(id: "start") { VXStartView() }
-            .defaultSize(width: 900, height: 640)
+            .defaultSize(width: 1280, height: 800)      // room for the settings window's three columns (VXSettingsWindow)
             .defaultLaunchBehavior(Self.gated ? .automatic : .suppressed)
             .restorationBehavior(.disabled)
 
