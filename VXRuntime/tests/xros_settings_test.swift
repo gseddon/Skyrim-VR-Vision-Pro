@@ -208,6 +208,20 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         s = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_RENDER_SCALE": "0.6", "KL_OVRP_RENDER_SCALE": "0.9"])
         check(s.renderScale == 0.6, "VXRT_* wins over its KL_* alias")
 
+        // the performance panel from the start: off by default, saved, the plist default, env wins
+        let sd = fresh()
+        let st1 = VXSettings(defaults: sd, info: [:], environment: [:])
+        check(!st1.statsPanel, "stats panel off by default")
+        st1.statsPanel = true
+        check(VXSettings(defaults: sd, info: [:], environment: [:]).statsPanel, "stats panel persisted")
+        check(VXSettings(defaults: fresh(), info: ["VXStatsCardDefault": "1"], environment: [:]).statsPanel, "stats panel plist default")
+        st1.statsPanel = false
+        check(!VXSettings(defaults: sd, info: ["VXStatsCardDefault": "1"], environment: [:]).statsPanel, "stats panel saved beats plist")
+        st1.statsPanel = true
+        check(!VXSettings(defaults: sd, info: [:], environment: ["VXRT_STATS_CARD": "0"]).statsPanel, "stats panel env off")
+        check(VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_STATS_CARD": "1"]).statsPanel, "stats panel env on")
+        check(VXSettings(defaults: fresh(), info: [:], environment: ["KL_STATS_CARD": "1"]).statsPanel, "stats panel Klepton's env name")
+
         // a blob written by Klepton (more fields) is understood; a broken one falls back
         d = fresh(); d.set(Data("{\"enabled\":true,\"distMin\":0.4,\"handMatting\":true,\"colorR\":0.1}".utf8), forKey: "klepton.chroma")
         check(VXSettings(defaults: d, info: [:], environment: [:]).showHands, "Klepton-written blob read")
@@ -315,6 +329,19 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         check(!VXLaunchGate.enabled(info: ["VXStartWindow": "1"], environment: [:], defaultLaunch: false), "explicit -test/-game: no gate")
         check(!VXLaunchGate.enabled(info: ["VXStartWindow": "1"], environment: ["VXRT_START_WINDOW": "0"], defaultLaunch: true), "env off")
         check(!VXLaunchGate.enabled(info: ["VXStartWindow": "0"], environment: [:], defaultLaunch: true), "plist off")
+
+        // frame rate, Klepton's key and values: 120 by default (the fully immersive space, as before the setting), 100 stored and from the
+        // Info.plist default; anything else is 120; not an export (the app's scene reads it)
+        let rd = fresh()
+        let r1 = VXSettings(defaults: rd, info: [:], environment: [:])
+        check(r1.maxRate == 120 && rd.object(forKey: "klepton.maxRate") == nil, "frame rate default")
+        r1.maxRate = 100
+        check(rd.integer(forKey: "klepton.maxRate") == 100 && VXSettings(defaults: rd, info: [:], environment: [:]).maxRate == 100, "frame rate persisted under Klepton's key")
+        check(VXSettings(defaults: fresh(), info: ["KLMaxRateDefault": "100"], environment: [:]).maxRate == 100, "frame rate plist default")
+        check(VXSettings(defaults: rd, info: ["KLMaxRateDefault": "120"], environment: [:]).maxRate == 100, "saved frame rate beats plist")
+        check(VXSettings(defaults: rd, info: [:], environment: ["VXRT_MAX_RATE": "120"]).maxRate == 120, "frame rate env wins")
+        check(VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_MAX_RATE": "90"]).maxRate == 120, "an unknown rate is 120")
+        check(map(r1)["VXRT_MAX_RATE"] == nil, "frame rate exports nothing \(map(r1))")
 
         // the controller-alignment file
         let v = VXSenseValues.parse("pitch=-12.5 yaw=3 roll=0.25 pos=0.01,-0.02,0.03")

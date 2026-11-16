@@ -21,6 +21,18 @@ import Foundation
 // Environment as a dictionary so tests can inject one.
 typealias VXEnvironment = [String: String]
 
+// The two languages the settings window speaks, as Klepton's does (visionos/Sources/KleptonText.swift): English, and German where the
+// device's first preferred language is German. Both versions of a sentence sit where it is used. VXRT_LANG=en|de (or Klepton's KL_LANG)
+// on a launch line overrides the device's choice.
+enum VXText {
+    static let german: Bool = {
+        let env = ProcessInfo.processInfo.environment
+        if let forced = env["VXRT_LANG"] ?? env["KL_LANG"] { return forced.lowercased().hasPrefix("de") }
+        return Locale.preferredLanguages.first?.lowercased().hasPrefix("de") ?? false
+    }()
+}
+func vxT(_ en: String, _ de: String) -> String { VXText.german ? de : en }
+
 // How much of each eye image the game leaves undrawn because the lenses do not show it (the hidden-area mesh the game asks for,
 // VXRT_VISMASK and VXRT_VISMASK_SHAPE: src/vismask_shape.h). "Standard" is the runtime's own shape and the default: it exports nothing,
 // so the runtime decides as it did before this was a setting (the mask on, its measured default shape, Documents/vxrt_vismask.txt
@@ -138,16 +150,38 @@ enum VXGraphics: String, CaseIterable, Identifiable {
 // default or a value in a range. Keys are strings of the game's exe (research/2026-11-11-skyrim-vr-gameplay-settings.md). Number ranges: the
 // game's own Min/Max keys exist only for the snap angle and turn speed; the rest are conservative bounds, defaults and units NOT verified.
 struct VXIniSetting: Identifiable {
-    enum Group: String, CaseIterable { case controls = "Controls", comfort = "Comfort", body = "Body", interface = "Interface", teleport = "Teleport" }
+    enum Group: String, CaseIterable {
+        case controls = "Controls", comfort = "Comfort", body = "Body", interface = "Interface", teleport = "Teleport"
+        var title: String {
+            switch self {
+            case .controls: return vxT("Controls", "Steuerung")
+            case .comfort: return vxT("Comfort", "Komfort")
+            case .body: return vxT("Body", "Körper")
+            case .interface: return vxT("Interface", "Anzeigen")
+            case .teleport: return vxT("Teleport", "Teleport")
+            }
+        }
+    }
     enum Kind { case flag, number(range: ClosedRange<Double>, step: Double, unit: String) }
     let id: String, env: String, section: String, key: String, title: String, group: Group, kind: Kind
     var iniName: String { "\(section).\(key)" }
+    // The title in the window's language (VXText).
+    var localizedTitle: String { VXText.german ? (Self.german[id] ?? title) : title }
     static func flag(_ id: String, _ env: String, _ section: String, _ key: String, _ title: String, _ group: Group) -> VXIniSetting {
         VXIniSetting(id: id, env: env, section: section, key: key, title: title, group: group, kind: .flag)
     }
     static func number(_ id: String, _ env: String, _ section: String, _ key: String, _ title: String, _ group: Group, _ r: ClosedRange<Double>, _ step: Double, _ unit: String) -> VXIniSetting {
         VXIniSetting(id: id, env: env, section: section, key: key, title: title, group: group, kind: .number(range: r, step: step, unit: unit))
     }
+    private static let german: [String: String] = [
+        "leftHanded": "Linkshänder", "wandDirection": "In Richtung des Controllers gehen", "alwaysRun": "Immer rennen",
+        "comfortTurning": "Komfort-Vignette beim Drehen", "comfortMoving": "Komfort-Vignette beim Bewegen", "comfortSize": "Größe der Komfort-Vignette",
+        "comfortSneak": "Komfort-Schleichen", "heightOffset": "Versatz der Körperhöhe", "eyeHeight": "Standard-Augenhöhe",
+        "handsSheathed": "Hände zeigen, wenn die Waffen weggesteckt sind", "handsAlways": "Hände immer zeigen",
+        "subtitlesGeneral": "Allgemeine Untertitel", "subtitlesDialogue": "Dialog-Untertitel", "subtitlesSpeaker": "Name des Sprechers in Untertiteln",
+        "compass": "Kompass", "crosshair": "Fadenkreuz", "hudMessages": "HUD-Meldungen",
+        "teleportFade": "Bild beim Teleportieren abblenden", "teleportDistance": "Größte Teleport-Entfernung",
+    ]
     static let all: [VXIniSetting] = [
         .flag("leftHanded", "VXRT_LEFT_HANDED", "VRInput", "bLeftHandedMode", "Left-handed", .controls),
         .flag("wandDirection", "VXRT_WAND_DIRECTION", "VRInput", "bUseWandDirectionalMovement", "Walk in the direction of the controller", .controls),
@@ -340,8 +374,10 @@ final class VXSettings: ObservableObject {
 
     // UserDefaults keys. The first two are Klepton's.
     static let renderScaleKey = "klepton.renderScale"
+    static let statsPanelKey = "vxrt.statsCard"       // (this app's own, not one of Klepton's two)
     static let handsKey = "klepton.chroma"
     static let latencyKey = "vxrt.latency"
+    static let maxRateKey = "klepton.maxRate"       // Klepton's key and values (KleptonTuning.swift, KleptonRendering.maxRate)
     static let upscaleKey = "vxrt.upscale"
     static let autoStartKey = "vxrt.startAutomatically"
     static let edgeMaskKey = "vxrt.edgeMask"
@@ -424,6 +460,10 @@ final class VXSettings: ObservableObject {
     @Published var baseResolution: Int { didSet { if !suppress { defaults.set(baseResolution, forKey: Self.baseResolutionKey) } } }
     // Latency: the pair gate, read per frame, so it applies at once.
     @Published var latency: VXLatency { didSet { if !suppress { defaults.set(latency.rawValue, forKey: Self.latencyKey); Self.latencyHook?(latency) } } }
+    // Frame rate, as in Klepton's games: 120 is the fully immersive space, at up to 120 Hz, and the default (what the app did before
+    // this was a setting); 100 is the mixed space with the game's picture opaque over the whole view, where the headset's display runs
+    // at up to 100 Hz. visionOS halves either when the app cannot keep up. The immersive scene's style follows it (VXApp.swift).
+    @Published var maxRate: Int { didSet { if !suppress { defaults.set(maxRate, forKey: Self.maxRateKey) } } }
     // Whether the wearer's real hands and arms show over the game. Live: the immersive scene observes it (VXApp.swift).
     // While the keyboard window is open (VXKeyboard.swift) the wearer's hands are shown whatever the setting says, so the fingers can be
     // seen typing; not saved, and off again when the keyboard closes. The scene shows the hands when `handsVisible`.
@@ -433,6 +473,9 @@ final class VXSettings: ObservableObject {
         didSet { if !suppress, let d = try? JSONEncoder().encode(VXHandsBlob(handMatting: showHands)) { defaults.set(d, forKey: Self.handsKey) } }
     }
     @Published var startAutomatically: Bool { didSet { if !suppress { defaults.set(startAutomatically, forKey: Self.autoStartKey) } } }
+    // Whether the performance panel is in the view from the start. Create + Options held for a second shows and hides it at any time
+    // (VXStatsPanel.swift); this is only where it begins.
+    @Published var statsPanel: Bool { didSet { if !suppress { defaults.set(statsPanel, forKey: Self.statsPanelKey) } } }
     // Head-pose prediction horizon in ms; nil = follow the measured delay (the runtime's default).
     @Published var predictMs: Double? {
         didSet {
@@ -519,11 +562,24 @@ final class VXSettings: ObservableObject {
         if let v = Self.flag(environment["VXRT_SHOW_HANDS"] ?? environment["KL_HAND_MATTING"]) { hands = v }
         showHands = hands
 
+        // The performance panel from the start: env VXRT_STATS_CARD (or Klepton's KL_STATS_CARD), then the saved choice, then the
+        // Info.plist default (VXStatsCardDefault), then off.
+        var stats = (info["VXStatsCardDefault"] as? String).map { $0 == "1" } ?? false
+        if let v = defaults.object(forKey: Self.statsPanelKey) as? Bool { stats = v }
+        if let v = Self.flag(environment["VXRT_STATS_CARD"] ?? environment["KL_STATS_CARD"]) { stats = v }
+        statsPanel = stats
+
         var lat: VXLatency = (info["VXLatencyDefault"] as? String).flatMap(VXLatency.init(stored:)) ?? .smart
         if let s = defaults.string(forKey: Self.latencyKey), let l = VXLatency(stored: s) { lat = l }
         if let p = environment["VXRT_PAIRS_IN_FLIGHT"].flatMap(Int.init) { lat = p == 0 ? .throughput : .lower }
         if let g = environment["VXRT_GATE"] { lat = g == "off" ? .throughput : g == "one" ? .lower : g == "smart" ? .smart : lat }
         latency = lat
+        // Frame rate: env VXRT_MAX_RATE, then the saved choice, then the Info.plist default (KLMaxRateDefault), then 120. Only 100 selects
+        // the mixed space; any other value is 120.
+        var rate = (info["KLMaxRateDefault"] as? String) == "100" ? 100 : 120
+        if let v = defaults.object(forKey: Self.maxRateKey) as? Int { rate = v }
+        if let v = environment["VXRT_MAX_RATE"].flatMap(Int.init) { rate = v }
+        maxRate = rate == 100 ? 100 : 120
 
         var up: VXUpscale = (info["VXUpscaleDefault"] as? String).flatMap(VXUpscale.init(rawValue:)) ?? .metalfx
         if let s = defaults.string(forKey: Self.upscaleKey), let u = VXUpscale(rawValue: s) { up = u }

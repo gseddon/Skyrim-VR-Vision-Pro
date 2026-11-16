@@ -319,6 +319,21 @@ xros-mods-check: tests/xros_mods_test.swift xros/app/Sources/VXMods.swift
 	swiftc -parse-as-library -o build/xros_mods_test xros/app/Sources/VXMods.swift tests/xros_mods_test.swift
 	build/xros_mods_test tests/fixtures/mods_pack_skyland.json
 .PHONY: xros-settings-check xros-mods-check xros-prune-check
+# The settings window's picture presets (xros/app/Sources/VXPresets.swift) over the settings store, on the Mac.
+xros-presets-check: tests/xros_presets_test.swift xros/app/Sources/VXPresets.swift xros/app/Sources/VXSettings.swift
+	@mkdir -p build
+	swiftc -parse-as-library -o build/xros_presets_test xros/app/Sources/VXSettings.swift xros/app/Sources/VXPresets.swift tests/xros_presets_test.swift
+	build/xros_presets_test
+check: xros-presets-check
+.PHONY: xros-presets-check
+# The two menu buttons' logic for the performance panel (xros/app/Sources/VXStatsPanel.swift, VXMenuChord): a single press still reaches
+# the game, both held for a second switch the panel. -D VX_CHORD_TEST leaves the panel itself out.
+xros-stats-chord-check: tests/xros_stats_chord_test.swift xros/app/Sources/VXStatsPanel.swift
+	@mkdir -p build
+	swiftc -D VX_CHORD_TEST -parse-as-library -o build/xros_stats_chord_test xros/app/Sources/VXStatsPanel.swift tests/xros_stats_chord_test.swift
+	build/xros_stats_chord_test
+check: xros-stats-chord-check
+.PHONY: xros-stats-chord-check
 
 native-vr-check: build/vxrt build/vxrt-arm64 build/vxrt-aot build/native_vr_d3d11.exe build/native_vr_test
 	build/native_vr_test
@@ -485,6 +500,7 @@ ifeq ($(XROS_XRIZER_FIXTURE),1)
 	ln -sfn $(abspath xros/app/Sources) $(XROS_DIR)/project/Sources
 	ln -sfn $(abspath xros/app/embed_aot_frameworks.sh) $(XROS_DIR)/project/embed_aot_frameworks.sh
 	ln -sfn $(abspath xros/app/Icon) $(XROS_DIR)/project/Icon
+	ln -sfn $(abspath xros/app/Help) $(XROS_DIR)/project/Help
 	python3 -c 'from pathlib import Path; import sys; s=Path(sys.argv[1]).read_text(); old="../../build/xros/bundle"; assert s.count(old)==1; Path(sys.argv[2]).write_text(s.replace(old,sys.argv[3]))' xros/app/project.yml $(XROS_DIR)/project/project.yml $(abspath $(XROS_DIR)/bundle)
 	cd $(XROS_DIR)/project && xcodegen generate --quiet
 	xcodebuild -project $(XROS_DIR)/project/VXRuntimeHost.xcodeproj -scheme VXRuntimeHost -destination 'generic/platform=$(if $(filter xrsimulator,$(XROS_SDK)),visionOS Simulator,visionOS)' -derivedDataPath $(XROS_DIR)/derived $(if $(filter 1,$(XROS_ALLOW_PROVISIONING)),-allowProvisioningUpdates) -quiet ARCHS=arm64 CODE_SIGNING_ALLOWED=$(if $(filter xrsimulator,$(XROS_SDK)),NO,$(XROS_CODE_SIGNING)) $(XROS_SIGN_FLAGS) VXRT_LIBDIR=$(CURDIR)/$(XROS_DIR) 'HEADER_SEARCH_PATHS=$(CURDIR)/src $(CURDIR)/translator' $(XROS_FIXTURE_APP_FLAGS) build
