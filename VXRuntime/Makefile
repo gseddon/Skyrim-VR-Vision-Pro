@@ -319,6 +319,14 @@ xros-mods-check: tests/xros_mods_test.swift xros/app/Sources/VXMods.swift
 	swiftc -parse-as-library -o build/xros_mods_test xros/app/Sources/VXMods.swift tests/xros_mods_test.swift
 	build/xros_mods_test tests/fixtures/mods_pack_skyland.json
 .PHONY: xros-settings-check xros-mods-check xros-prune-check
+# The two menu buttons' logic for the performance panel (xros/app/Sources/VXStatsPanel.swift, VXMenuChord): a single press still reaches
+# the game, both held for a second switch the panel. -D VX_CHORD_TEST leaves the panel itself out.
+xros-stats-chord-check: tests/xros_stats_chord_test.swift xros/app/Sources/VXStatsPanel.swift
+	@mkdir -p build
+	swiftc -D VX_CHORD_TEST -parse-as-library -o build/xros_stats_chord_test xros/app/Sources/VXStatsPanel.swift tests/xros_stats_chord_test.swift
+	build/xros_stats_chord_test
+check: xros-stats-chord-check
+.PHONY: xros-stats-chord-check
 
 native-vr-check: build/vxrt build/vxrt-arm64 build/vxrt-aot build/native_vr_d3d11.exe build/native_vr_test
 	build/native_vr_test

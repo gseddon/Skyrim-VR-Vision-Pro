@@ -340,6 +340,7 @@ final class VXSettings: ObservableObject {
 
     // UserDefaults keys. The first two are Klepton's.
     static let renderScaleKey = "klepton.renderScale"
+    static let statsPanelKey = "vxrt.statsCard"       // (this app's own, not one of Klepton's two)
     static let handsKey = "klepton.chroma"
     static let latencyKey = "vxrt.latency"
     static let maxRateKey = "klepton.maxRate"       // Klepton's key and values (KleptonTuning.swift, KleptonRendering.maxRate)
@@ -438,6 +439,9 @@ final class VXSettings: ObservableObject {
         didSet { if !suppress, let d = try? JSONEncoder().encode(VXHandsBlob(handMatting: showHands)) { defaults.set(d, forKey: Self.handsKey) } }
     }
     @Published var startAutomatically: Bool { didSet { if !suppress { defaults.set(startAutomatically, forKey: Self.autoStartKey) } } }
+    // Whether the performance panel is in the view from the start. Create + Options held for a second shows and hides it at any time
+    // (VXStatsPanel.swift); this is only where it begins.
+    @Published var statsPanel: Bool { didSet { if !suppress { defaults.set(statsPanel, forKey: Self.statsPanelKey) } } }
     // Head-pose prediction horizon in ms; nil = follow the measured delay (the runtime's default).
     @Published var predictMs: Double? {
         didSet {
@@ -523,6 +527,13 @@ final class VXSettings: ObservableObject {
         if let d = defaults.data(forKey: Self.handsKey), let b = try? JSONDecoder().decode(VXHandsBlob.self, from: d) { hands = b.handMatting }
         if let v = Self.flag(environment["VXRT_SHOW_HANDS"] ?? environment["KL_HAND_MATTING"]) { hands = v }
         showHands = hands
+
+        // The performance panel from the start: env VXRT_STATS_CARD (or Klepton's KL_STATS_CARD), then the saved choice, then the
+        // Info.plist default (VXStatsCardDefault), then off.
+        var stats = (info["VXStatsCardDefault"] as? String).map { $0 == "1" } ?? false
+        if let v = defaults.object(forKey: Self.statsPanelKey) as? Bool { stats = v }
+        if let v = Self.flag(environment["VXRT_STATS_CARD"] ?? environment["KL_STATS_CARD"]) { stats = v }
+        statsPanel = stats
 
         var lat: VXLatency = (info["VXLatencyDefault"] as? String).flatMap(VXLatency.init(stored:)) ?? .smart
         if let s = defaults.string(forKey: Self.latencyKey), let l = VXLatency(stored: s) { lat = l }

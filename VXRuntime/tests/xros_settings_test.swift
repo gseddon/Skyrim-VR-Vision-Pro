@@ -208,6 +208,20 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         s = VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_RENDER_SCALE": "0.6", "KL_OVRP_RENDER_SCALE": "0.9"])
         check(s.renderScale == 0.6, "VXRT_* wins over its KL_* alias")
 
+        // the performance panel from the start: off by default, saved, the plist default, env wins
+        let sd = fresh()
+        let st1 = VXSettings(defaults: sd, info: [:], environment: [:])
+        check(!st1.statsPanel, "stats panel off by default")
+        st1.statsPanel = true
+        check(VXSettings(defaults: sd, info: [:], environment: [:]).statsPanel, "stats panel persisted")
+        check(VXSettings(defaults: fresh(), info: ["VXStatsCardDefault": "1"], environment: [:]).statsPanel, "stats panel plist default")
+        st1.statsPanel = false
+        check(!VXSettings(defaults: sd, info: ["VXStatsCardDefault": "1"], environment: [:]).statsPanel, "stats panel saved beats plist")
+        st1.statsPanel = true
+        check(!VXSettings(defaults: sd, info: [:], environment: ["VXRT_STATS_CARD": "0"]).statsPanel, "stats panel env off")
+        check(VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_STATS_CARD": "1"]).statsPanel, "stats panel env on")
+        check(VXSettings(defaults: fresh(), info: [:], environment: ["KL_STATS_CARD": "1"]).statsPanel, "stats panel Klepton's env name")
+
         // a blob written by Klepton (more fields) is understood; a broken one falls back
         d = fresh(); d.set(Data("{\"enabled\":true,\"distMin\":0.4,\"handMatting\":true,\"colorR\":0.1}".utf8), forKey: "klepton.chroma")
         check(VXSettings(defaults: d, info: [:], environment: [:]).showHands, "Klepton-written blob read")

@@ -113,6 +113,26 @@ The 385 GB `Guard` region in the crash report is the system's own: `va_range` (m
 `va_guard_1gb` could not map (`alloc_kr` 3), so our `va_range_make` claimed none of it; `va_range_extended` only accounts the 63 GB
 `0x7040000000-0x8000000000` app range for `VirtualAlloc`. The 52 GB shared region at `0x2ea000000` is the dyld shared cache.
 
+## Performance panel (2026-11-13)
+
+Read in the fork `https://github.com/myMartek/Klepton` at tag `toolchain-890` (commit `99774b764ada1c70226b3baf844c28efd7833d80`; SHA-256 of
+the fork's copies): `visionos/Sources/KleptonMetrics.swift` `5918eb5c344d08838a3503e40b197c7d402c949786a984bcbe0f680cea21909c`,
+`runtime/gfx/kl_mtl_busy.m` `fb7c440009cf204bb0f1b9ee48fcfe7fd08b3c7832ec5f64114c6b4468ef26b5`,
+`runtime/diag/kl_metrics.c` `c7124b02c5d3365c92fc6ad48255c48bc256dac338dad870e3c6bdae6ede028a`; also `KleptonCompositor.swift` (the metrics
+panel) and `KleptonControllers.swift` (`applyPanelChord`). MIT, Copyright (c) 2026 Max Thomas and contributors; the license text is
+`third_party/klepton_openxr/LICENSE`.
+
+| Piece | Klepton origin | Local form |
+| --- | --- | --- |
+| The panel's drawing (numbers of the last second, graphs of the last minute) | `KleptonMetrics.swift`, whole file | `VXRuntime/xros/app/Sources/KleptonMetrics.swift`: **copied**, two places marked "VX" (no "Shaders" row or graph where shaders are not counted) |
+| The GPU's working time for the process (a completed handler on every committed command buffer, spans merged) and the count of shaders and pipeline states compiled or fetched | `runtime/gfx/kl_mtl_busy.m` | `VXRuntime/xros/app/Sources/VXGpuBusy.m`: **copied** under this app's names, without the logic-operation part; installed when the panel is first shown |
+| Create + Options held for a second shows and hides the panel; a press reaches the game a quarter of a second late, a tap is replayed, nothing while both are down | `kl_metrics.c` `kl_metrics_chord`, `KleptonControllers.swift` `applyPanelChord` | `VXStatsPanel.swift` `VXMenuChord` (reimplemented in Swift, tested by `tests/xros_stats_chord_test.swift`), applied in `VXNativeXRTracking.publish`; `VXRT_STATS_CARD_BUTTONS=0` (or `KL_STATS_CARD_BUTTONS`) turns it off |
+| The panel in the view, fixed to the head, drawn off the frame thread once a second | `KleptonCompositor.swift` (`KL_STATS_CARD`) | `VXStatsPanel.swift`: a bitmap drawn as a quad in a pass of its own over each eye's finished picture (`VXOverlay.swift`, ours); samples from the once-a-second `vr`/`mtp` records; from the start with the setting `vxrt.statsCard` (Info.plist `VXStatsCardDefault`, `VXRT_STATS_CARD` or `KL_STATS_CARD`), which the start window applies when it starts the game |
+| The panel's size and place (0.338 m wide at 1.2 m, middle at -0.05, 0.101 in the head's frame) | `KleptonMetrics.swift` `panelSize`, `KleptonCompositor.swift` (the panel's pose) | `VXStatsPanel.swift` |
+
+Not adopted: the one-line readout (`KL_STATS_CARD=line`), the tap of Create + Options (MetalFX on and off, frame generation); the
+sample's fields for them stay at their defaults.
+
 ## Run 7 reconciliation with the fork (2026-11-10)
 
 Compared again with `KleptonApp.swift` (BootView `openImmersiveSpace(id: Immersive.id)`, `dismissWindow()` once `.opened`) and `KleptonCompositor.swift`
