@@ -251,7 +251,9 @@ VX_CAS_MSL
 "   float3 cl=sqrt(max(img.sample(smp,tu-tdx).rgb,0.)), cr=sqrt(max(img.sample(smp,tu+tdx).rgb,0.)); float3 sh=vx_cas(c0,cu,cd,cl,cr,p.probe.z);\n"
 "   game.rgb=max(game.rgb+(sh*sh-c0*c0),0.); } }\n"
 " if (p.probe.x>.5) { float3 pc=probe(t,p.dst,uv,p.maskins,p.maskrad); if (p.probe.x>1.5) { bool ink=any(abs(pc-float3(.05,.05,.07))>.02); return ink?float4(pc,1):game; } return float4(pc,1); }\n"
-" return game; }\n";
+/* alpha 1: in the mixed space (the frame-rate choice "up to 100") a pixel's alpha is how much of the room shows through it, and the game's
+ * own alpha means nothing of the kind */
+" return float4(game.rgb,1.); }\n";
 
 static id<MTLRasterizationRateMap> g_eye_rate_map[2];
 static MTLViewport g_eye_viewport[2];

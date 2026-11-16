@@ -316,6 +316,19 @@ func map(_ s: VXSettings) -> [String: String] { Dictionary(uniqueKeysWithValues:
         check(!VXLaunchGate.enabled(info: ["VXStartWindow": "1"], environment: ["VXRT_START_WINDOW": "0"], defaultLaunch: true), "env off")
         check(!VXLaunchGate.enabled(info: ["VXStartWindow": "0"], environment: [:], defaultLaunch: true), "plist off")
 
+        // frame rate, Klepton's key and values: 120 by default (the fully immersive space, as before the setting), 100 stored and from the
+        // Info.plist default; anything else is 120; not an export (the app's scene reads it)
+        let rd = fresh()
+        let r1 = VXSettings(defaults: rd, info: [:], environment: [:])
+        check(r1.maxRate == 120 && rd.object(forKey: "klepton.maxRate") == nil, "frame rate default")
+        r1.maxRate = 100
+        check(rd.integer(forKey: "klepton.maxRate") == 100 && VXSettings(defaults: rd, info: [:], environment: [:]).maxRate == 100, "frame rate persisted under Klepton's key")
+        check(VXSettings(defaults: fresh(), info: ["KLMaxRateDefault": "100"], environment: [:]).maxRate == 100, "frame rate plist default")
+        check(VXSettings(defaults: rd, info: ["KLMaxRateDefault": "120"], environment: [:]).maxRate == 100, "saved frame rate beats plist")
+        check(VXSettings(defaults: rd, info: [:], environment: ["VXRT_MAX_RATE": "120"]).maxRate == 120, "frame rate env wins")
+        check(VXSettings(defaults: fresh(), info: [:], environment: ["VXRT_MAX_RATE": "90"]).maxRate == 120, "an unknown rate is 120")
+        check(map(r1)["VXRT_MAX_RATE"] == nil, "frame rate exports nothing \(map(r1))")
+
         // the controller-alignment file
         let v = VXSenseValues.parse("pitch=-12.5 yaw=3 roll=0.25 pos=0.01,-0.02,0.03")
         check(v.pitch == -12.5 && v.yaw == 3 && v.roll == 0.25 && v.pos == SIMD3<Float>(0.01, -0.02, 0.03), "sense parse")

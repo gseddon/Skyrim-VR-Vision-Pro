@@ -274,6 +274,15 @@ struct VXSettingsPage: View {
                                  : "The game runs ahead freely: the most game frames a second, but each picture is built from an older head pose.")
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    GroupBox("Frame rate") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker("Frame rate", selection: $settings.maxRate) {
+                                Text("Up to 100").tag(100)
+                                Text("Up to 120").tag(120)
+                            }.pickerStyle(.segmented).labelsHidden()
+                            note("How often the display shows a picture; the game's own pictures come more slowly and are fitted to your head in between. Up to 120 is the default: the fully immersive space. Up to 100 shows the game in the mixed space instead, its picture still covering the whole view. When the app cannot keep up, the Vision Pro halves the rate for a while: to 60 from 120, to 50 from 100.")
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     GroupBox("Your hands") {
                         VStack(alignment: .leading, spacing: 10) {
                             Toggle("Show my real hands over the game", isOn: $settings.showHands)
